@@ -1,51 +1,33 @@
+//! Thin compatibility shim for the native audio spike.
+//!
+//! The deterministic helpers validated by the spike now live in the production
+//! audio module (`crate::audio`). These wrappers preserve the spike binary and
+//! `tests/audio_spike.rs` API while delegating to that production logic, so
+//! there is a single source of truth. New code should call `crate::audio`
+//! directly rather than going through this shim.
+
+use crate::audio::{self, StreamMount};
+
+/// See [`crate::audio::stream_extension`].
 pub fn stream_extension(path_or_url: &str) -> Option<&'static str> {
-    let path = path_or_url.split('?').next().unwrap_or(path_or_url);
-    if path.ends_with(".mp3") {
-        Some("mp3")
-    } else if path.ends_with(".aac") {
-        Some("aac")
-    } else if path.ends_with(".m4a") {
-        Some("m4a")
-    } else {
-        None
-    }
+    audio::stream_extension(path_or_url)
 }
 
+/// Resolve a curated-style base URL by appending a `/stream` mount when needed.
+///
+/// The spike always treated its input as a curated base, so this maps to
+/// [`StreamMount::CuratedStreamBase`]. Production Radio Browser URLs must use
+/// [`StreamMount::Direct`] instead; see `docs/audio-spike.md`.
 pub fn resolve_stream_url(audio_base_url: &str) -> String {
-    let trimmed = audio_base_url.trim_end_matches('/');
-    if trimmed.ends_with("/stream")
-        || trimmed.contains("/stream/")
-        || stream_extension(trimmed).is_some()
-    {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/stream")
-    }
+    audio::resolve_stream_url(audio_base_url, StreamMount::CuratedStreamBase)
 }
 
+/// See [`crate::audio::icy::parse_stream_title`].
 pub fn parse_icy_title(metadata: &str) -> Option<String> {
-    let marker = "StreamTitle='";
-    let start = metadata.find(marker)? + marker.len();
-    let rest = &metadata[start..];
-    let end = rest.find("';")?;
-    let title = rest[..end].trim();
-    if title.is_empty() {
-        None
-    } else {
-        Some(title.to_string())
-    }
+    audio::icy::parse_stream_title(metadata)
 }
 
-fn soft_compress(x: f32) -> f32 {
-    let k = 2.0;
-    (k * x) / (1.0 + k * x)
-}
-
+/// See [`crate::audio::analyzer::normalize_value`].
 pub fn normalize_value(x: f32, gain: f32) -> f32 {
-    let amplified = x * gain;
-    if amplified >= 100.0 {
-        1.0
-    } else {
-        soft_compress(amplified).clamp(0.0, 1.0)
-    }
+    audio::analyzer::normalize_value(x, gain)
 }

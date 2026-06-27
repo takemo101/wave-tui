@@ -74,6 +74,27 @@ impl FocusPane {
     }
 }
 
+/// Status of the online search, shown in the search strip.
+///
+/// Pure display state owned by [`App`]: the controller sets it as a search
+/// progresses (`Loading` before a fetch, `Loaded` afterward, distinguishing a
+/// cache hit from a fresh fetch, or `Offline`/`Error` on failure). This carries
+/// no IO, debounce, or network concern itself.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SearchStatus {
+    /// No search in progress; showing the catalog or last results.
+    #[default]
+    Idle,
+    /// A search request is in flight.
+    Loading,
+    /// Results are loaded; `from_cache` is `true` for a cache hit.
+    Loaded { from_cache: bool },
+    /// The search could not run because the network is unreachable.
+    Offline,
+    /// The search failed for another reason; carries a short message.
+    Error(String),
+}
+
 /// An intent dispatched to the [`App`] reducer.
 ///
 /// Actions map to the keyboard model in `docs/SPEC.md`. UI translates key events
@@ -113,6 +134,10 @@ pub enum Action {
     ShowSection(Section),
     /// Replace the visible list with online search results.
     SearchResults(SearchResults),
+    /// Replace the live search query text shown in the search strip.
+    SetSearchQuery(String),
+    /// Update the search status shown in the search strip.
+    SetSearchStatus(SearchStatus),
     /// Set the offline flag (network/Radio Browser reachability).
     SetOffline(bool),
     /// Apply an audio runtime event to playback state.
@@ -137,6 +162,8 @@ pub struct App {
     current: Option<Station>,
     viz: VizFrame,
     offline: bool,
+    search_query: String,
+    search_status: SearchStatus,
 }
 
 impl App {
@@ -160,6 +187,8 @@ impl App {
             current,
             viz: VizFrame::silent(VIZ_BANDS),
             offline: false,
+            search_query: String::new(),
+            search_status: SearchStatus::Idle,
         }
     }
 
@@ -184,6 +213,8 @@ impl App {
                 self.replace_visible(self.catalog.section_stations(section))
             }
             Action::SearchResults(results) => self.apply_search_results(results),
+            Action::SetSearchQuery(query) => self.search_query = query,
+            Action::SetSearchStatus(status) => self.search_status = status,
             Action::SetOffline(offline) => self.offline = offline,
             Action::Audio(event) => self.apply_audio(event),
         }
@@ -383,6 +414,16 @@ impl App {
     /// Whether the app is in an offline/unreachable-network state.
     pub fn is_offline(&self) -> bool {
         self.offline
+    }
+
+    /// The live search query text shown in the search strip.
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// The current search status shown in the search strip.
+    pub fn search_status(&self) -> &SearchStatus {
+        &self.search_status
     }
 
     /// The active theme name.
@@ -708,6 +749,28 @@ mod tests {
         assert!(app.is_offline());
         app.apply(Action::SearchResults(SearchResults::empty()));
         assert!(!app.is_offline());
+    }
+
+    #[test]
+    fn search_query_and_status_update_via_actions() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        // Defaults: empty query, idle status.
+        assert_eq!(app.search_query(), "");
+        assert_eq!(app.search_status(), &SearchStatus::Idle);
+
+        app.apply(Action::SetSearchQuery("lofi jazz".to_string()));
+        assert_eq!(app.search_query(), "lofi jazz");
+
+        app.apply(Action::SetSearchStatus(SearchStatus::Loading));
+        assert_eq!(app.search_status(), &SearchStatus::Loading);
+
+        app.apply(Action::SetSearchStatus(SearchStatus::Loaded {
+            from_cache: true,
+        }));
+        assert_eq!(
+            app.search_status(),
+            &SearchStatus::Loaded { from_cache: true }
+        );
     }
 
     #[test]

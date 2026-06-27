@@ -6,6 +6,12 @@
 //! output device. The streaming runtime that feeds samples into [`analyze`] is
 //! implemented in a later task.
 
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use crate::model::VizFrame;
@@ -43,7 +49,6 @@ pub(crate) fn normalize_value(x: f32, gain: f32) -> f32 {
 ///
 /// Each returned `(start, end)` is a half-open bin range into the lower half of
 /// the spectrum. Ranges are non-empty (`end > start`) and clamped to `1..=n/2`.
-#[allow(dead_code)] // Wired into the playback runtime in a later task; covered by tests now.
 pub(crate) fn log_bands(sample_rate: f32, n_fft: usize, band_count: usize) -> Vec<(usize, usize)> {
     let nyquist = sample_rate / 2.0;
     let max_hz = nyquist.min(MAX_BAND_HZ);
@@ -71,7 +76,6 @@ pub(crate) fn log_bands(sample_rate: f32, n_fft: usize, band_count: usize) -> Ve
 /// `band_count` log-spaced bands, normalizes each band into `0.0..=1.0`, and
 /// pairs them with the windowed RMS. Returns a silent frame when there are
 /// fewer than `n_fft` samples. The result is deterministic for a given input.
-#[allow(dead_code)] // Wired into the playback runtime in a later task; covered by tests now.
 pub(crate) fn analyze(
     samples: &[f32],
     sample_rate: u32,
@@ -122,8 +126,73 @@ pub(crate) fn analyze(
     VizFrame::new(bands, rms)
 }
 
+/// Append `sample` to `history`, keeping only the most recent `n_fft * 4`
+/// samples so the working set stays bounded during long playback.
+fn push_history(history: &mut VecDeque<f32>, sample: f32, n_fft: usize) {
+    history.push_back(sample);
+    while history.len() > n_fft * 4 {
+        history.pop_front();
+    }
+}
+
+/// Consume mirrored played samples from `rx` and emit a normalized [`VizFrame`]
+/// at most once per `interval`, until `stop` is set or the sender is dropped.
+///
+/// This is the streaming bridge between the realtime output callback (which
+/// mirrors mono samples into `rx`) and the visualizer: it keeps a rolling
+/// history, runs [`analyze`] over the newest `n_fft` samples on a cadence, and
+/// hands each frame to `on_frame`. Keeping the callback a plain `FnMut` keeps
+/// this module independent of the runtime's event type. A final frame is emitted
+/// when the stream disconnects so the visualizer reflects the last audio played.
+pub(crate) fn run_analyzer_loop(
+    rx: Receiver<f32>,
+    sample_rate: u32,
+    band_count: usize,
+    n_fft: usize,
+    interval: Duration,
+    stop: Arc<AtomicBool>,
+    mut on_frame: impl FnMut(VizFrame),
+) {
+    let mut history: VecDeque<f32> = VecDeque::with_capacity(n_fft * 4);
+    let mut buffer = vec![0.0_f32; n_fft];
+    let mut emit = |history: &VecDeque<f32>, buffer: &mut [f32]| {
+        if history.len() < n_fft {
+            return;
+        }
+        let start = history.len() - n_fft;
+        for (dst, src) in buffer.iter_mut().zip(history.iter().skip(start)) {
+            *dst = *src;
+        }
+        on_frame(analyze(buffer, sample_rate, n_fft, band_count));
+    };
+
+    let mut last_emit = Instant::now();
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(sample) => push_history(&mut history, sample, n_fft),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                emit(&history, &mut buffer);
+                break;
+            }
+        }
+        while let Ok(sample) = rx.try_recv() {
+            push_history(&mut history, sample, n_fft);
+        }
+        if history.len() >= n_fft && last_emit.elapsed() >= interval {
+            emit(&history, &mut buffer);
+            last_emit = Instant::now();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc::sync_channel;
+
     use super::*;
 
     /// Deterministic sine wave for FFT tests; no RNG, no live audio.
@@ -194,5 +263,50 @@ mod tests {
         let frame = analyze(&vec![0.0; n_fft], 44_100, n_fft, 8);
         assert_eq!(frame.bands, vec![0.0; 8]);
         assert_eq!(frame.rms, 0.0);
+    }
+
+    #[test]
+    fn analyzer_loop_emits_a_frame_then_stops_on_disconnect() {
+        // Drive the streaming loop without any real audio device: pre-fill a
+        // channel with > n_fft samples, drop the sender, and run the loop in
+        // this thread. With a zero interval it emits as soon as it has enough
+        // history, then exits when the channel disconnects.
+        let n_fft = 256;
+        let band_count = 8;
+        let (tx, rx) = sync_channel::<f32>(2048);
+        for sample in sine(440.0, 44_100, n_fft * 2) {
+            tx.try_send(sample).unwrap();
+        }
+        drop(tx);
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut frames = Vec::new();
+        run_analyzer_loop(
+            rx,
+            44_100,
+            band_count,
+            n_fft,
+            Duration::ZERO,
+            stop,
+            |frame| frames.push(frame),
+        );
+
+        assert!(!frames.is_empty(), "expected at least one visualizer frame");
+        assert_eq!(frames[0].bands.len(), band_count);
+        assert!(frames[0].bands.iter().any(|b| *b > 0.0));
+    }
+
+    #[test]
+    fn analyzer_loop_exits_immediately_when_stop_is_set() {
+        // A pre-set stop flag must short-circuit the loop with no frames, even
+        // when the channel still has a live sender.
+        let (tx, rx) = sync_channel::<f32>(8);
+        tx.try_send(0.1).unwrap();
+        let stop = Arc::new(AtomicBool::new(true));
+        let mut frames = Vec::new();
+        run_analyzer_loop(rx, 44_100, 8, 256, Duration::ZERO, stop, |frame| {
+            frames.push(frame)
+        });
+        assert!(frames.is_empty());
     }
 }

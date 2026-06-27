@@ -2,18 +2,345 @@
 //!
 //! This is the public entry point for the audio module. Decoder, output,
 //! analyzer, and ICY details are kept private behind this facade so callers
-//! depend on the facade rather than on CPAL/Symphonia/RustFFT specifics. The
-//! runtime, commands, and events are implemented in a later task.
+//! depend on the facade rather than on CPAL/Symphonia/RustFFT specifics.
+//!
+//! The runtime ([`AudioRuntime::spawn`]) owns a background control thread that
+//! turns [`AudioCommand`]s into playback and reports progress as
+//! [`AudioEvent`]s, including [`AudioEvent::Viz`] visualizer frames. Callers
+//! interact only through the returned [`AudioHandle`]'s channels and never touch
+//! CPAL/Symphonia/RustFFT directly.
 //!
 //! Deterministic helpers validated by the native audio spike live here and in
 //! the private submodules: stream-URL resolution policy (this file), FFT
 //! normalization and log-band mapping ([`analyzer`]), and ICY `StreamTitle`
 //! parsing ([`icy`]). See `docs/audio-spike.md`.
 
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, Sender},
+    Arc,
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use ringbuf::{
+    traits::{Observer, Producer, Split},
+    HeapRb,
+};
+
+use crate::model::{Station, StationId, VizFrame, VolumePercent};
+
+use self::decoder::StreamDecoder;
+use self::output::SharedVolume;
+
 pub(crate) mod analyzer;
 mod decoder;
 pub(crate) mod icy;
 mod output;
+
+/// FFT window size used by the streaming analyzer. Matches the spike.
+const FFT_SIZE: usize = 1024;
+/// Number of visualizer bands emitted per [`VizFrame`].
+const BAND_COUNT: usize = 16;
+/// Visualizer frame cadence under normal operation.
+const VIZ_INTERVAL: Duration = Duration::from_millis(120);
+/// Slower visualizer cadence when [`AudioRuntimeConfig::low_power`] is set.
+const VIZ_INTERVAL_LOW_POWER: Duration = Duration::from_millis(250);
+
+/// A command sent to the audio runtime's control thread.
+#[derive(Debug, Clone)]
+pub enum AudioCommand {
+    /// Stop any current playback and start `station` at `volume`.
+    ///
+    /// The station is boxed to keep the command enum small (a `Station` carries
+    /// several owned fields), so cloning/queuing commands stays cheap.
+    Play {
+        station: Box<Station>,
+        volume: VolumePercent,
+    },
+    /// Stop current playback.
+    Stop,
+    /// Change the live output volume without restarting playback.
+    SetVolume(VolumePercent),
+    /// Stop playback and shut the runtime down.
+    Shutdown,
+}
+
+/// A progress event emitted by the audio runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AudioEvent {
+    /// Connecting to the station's stream (emitted before the network attempt).
+    Connecting { station: StationId },
+    /// Playback has started for the station.
+    Playing { station: StationId },
+    /// Playback stopped (in response to `Stop`).
+    Stopped,
+    /// Playback could not start or failed; the station is recoverable-failed.
+    Failed { station: StationId, message: String },
+    /// The live volume changed.
+    VolumeChanged(VolumePercent),
+    /// A visualizer frame derived from the most recent played samples.
+    Viz(VizFrame),
+}
+
+/// Configuration for [`AudioRuntime::spawn`].
+#[derive(Debug, Clone, Default)]
+pub struct AudioRuntimeConfig {
+    /// Preferred output device name; `None` uses the host default device.
+    pub output_device: Option<String>,
+    /// Reduce visualizer cadence to lower CPU use.
+    pub low_power: bool,
+}
+
+/// Handle to a running audio runtime: send [`AudioCommand`]s and receive
+/// [`AudioEvent`]s. Dropping the handle (and thus `command_tx`) shuts the
+/// runtime down.
+pub struct AudioHandle {
+    pub command_tx: Sender<AudioCommand>,
+    pub event_rx: Receiver<AudioEvent>,
+}
+
+/// The native audio runtime. Use [`AudioRuntime::spawn`] to start it.
+pub struct AudioRuntime;
+
+impl AudioRuntime {
+    /// Spawn the control thread and return a handle to drive it.
+    ///
+    /// The thread lives until it receives [`AudioCommand::Shutdown`] or the
+    /// command channel is closed (handle dropped).
+    pub fn spawn(config: AudioRuntimeConfig) -> AudioHandle {
+        let (command_tx, command_rx) = mpsc::channel::<AudioCommand>();
+        let (event_tx, event_rx) = mpsc::channel::<AudioEvent>();
+        thread::spawn(move || run_control_loop(config, command_rx, event_tx));
+        AudioHandle {
+            command_tx,
+            event_rx,
+        }
+    }
+}
+
+/// An active playback session: the CPAL stream plus its worker threads.
+///
+/// Held only on the control thread, so the non-`Send` CPAL stream never crosses
+/// threads. Dropping it tears playback down: the stop flag is raised and both
+/// worker threads are joined (the analyzer wakes within its recv timeout; the
+/// decoder thread observes the flag and exits once the queue stops draining).
+struct Playback {
+    // `stream` is dropped after `Drop::drop` returns; declaration order keeps it
+    // alive while the worker threads are joined.
+    _stream: cpal::Stream,
+    stop: Arc<AtomicBool>,
+    decoder_thread: Option<JoinHandle<()>>,
+    analyzer_thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Playback {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.decoder_thread.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.analyzer_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// The control thread body: own current playback and the live volume, and
+/// translate commands into playback actions and events.
+fn run_control_loop(
+    config: AudioRuntimeConfig,
+    command_rx: Receiver<AudioCommand>,
+    event_tx: Sender<AudioEvent>,
+) {
+    // Volume persists across stations; `Play` overrides it with its own value.
+    let volume = SharedVolume::new(VolumePercent::clamped(100));
+    let mut current: Option<Playback> = None;
+
+    while let Ok(command) = command_rx.recv() {
+        match command {
+            AudioCommand::Play { station, volume: v } => {
+                // Stop the previous stream before announcing the new one.
+                drop(current.take());
+                let station_id = station.id.clone();
+                let _ = event_tx.send(AudioEvent::Connecting {
+                    station: station_id.clone(),
+                });
+                volume.set(v);
+                match start_playback(&station, &config, &volume, &event_tx) {
+                    Ok(playback) => {
+                        current = Some(playback);
+                        let _ = event_tx.send(AudioEvent::Playing {
+                            station: station_id,
+                        });
+                    }
+                    Err(err) => {
+                        let _ = event_tx.send(AudioEvent::Failed {
+                            station: station_id,
+                            message: format!("{err:#}"),
+                        });
+                    }
+                }
+            }
+            AudioCommand::Stop => {
+                drop(current.take());
+                let _ = event_tx.send(AudioEvent::Stopped);
+            }
+            AudioCommand::SetVolume(v) => {
+                volume.set(v);
+                let _ = event_tx.send(AudioEvent::VolumeChanged(v));
+            }
+            AudioCommand::Shutdown => {
+                drop(current.take());
+                break;
+            }
+        }
+    }
+    // Dropping `current` on the way out tears down any active playback.
+}
+
+/// Start decoding, output, and analysis for `station`, returning a live
+/// [`Playback`]. Any failure (network, device, unsupported rate, decode) is
+/// returned as an error for the caller to surface as [`AudioEvent::Failed`].
+fn start_playback(
+    station: &Station,
+    config: &AudioRuntimeConfig,
+    volume: &SharedVolume,
+    event_tx: &Sender<AudioEvent>,
+) -> anyhow::Result<Playback> {
+    // The station URL is treated as a direct, authoritative stream URL; mount
+    // resolution (`/stream` for curated bases) is a catalog concern applied
+    // upstream, per the audio spike findings.
+    let decoder = StreamDecoder::new_http(station.url.as_str())?;
+    let sample_rate = decoder.sample_rate();
+    let source_channels = decoder.channels();
+
+    let device = output::select_output_device(config.output_device.as_deref())?;
+    let output_config = output::choose_output_config(&device, sample_rate)?;
+
+    let queue_capacity = sample_rate as usize * source_channels.max(1) * 2;
+    let (queue_tx, queue_rx) = HeapRb::<f32>::new(queue_capacity).split();
+    // Bounded mirror channel: a slow analyzer drops samples rather than stalling
+    // the realtime output callback.
+    let (played_tx, played_rx) = mpsc::sync_channel::<f32>(sample_rate as usize / 2);
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Build the output stream (the last fallible step) *before* spawning any
+    // worker threads, so an output-setup failure cannot leak threads. A CPAL
+    // device error after this point is surfaced as a recoverable failure.
+    let station_id = station.id.clone();
+    let output_err_tx = event_tx.clone();
+    let output_err_station = station_id.clone();
+    let stream = output::build_output_stream(
+        &device,
+        output_config,
+        queue_rx,
+        source_channels,
+        volume.clone(),
+        played_tx,
+        move |message| {
+            let _ = output_err_tx.send(AudioEvent::Failed {
+                station: output_err_station.clone(),
+                message,
+            });
+        },
+    )?;
+
+    // From here on, threads are spawned; any later failure must tear them down.
+    let decoder_stop = Arc::clone(&stop);
+    let decoder_event_tx = event_tx.clone();
+    let decoder_thread = thread::spawn(move || {
+        pump_decoder(
+            decoder,
+            queue_tx,
+            decoder_stop,
+            decoder_event_tx,
+            station_id,
+        )
+    });
+
+    let analyzer_stop = Arc::clone(&stop);
+    let viz_tx = event_tx.clone();
+    let interval = if config.low_power {
+        VIZ_INTERVAL_LOW_POWER
+    } else {
+        VIZ_INTERVAL
+    };
+    let analyzer_thread = thread::spawn(move || {
+        analyzer::run_analyzer_loop(
+            played_rx,
+            sample_rate,
+            BAND_COUNT,
+            FFT_SIZE,
+            interval,
+            analyzer_stop,
+            |frame| {
+                let _ = viz_tx.send(AudioEvent::Viz(frame));
+            },
+        );
+    });
+
+    use cpal::traits::StreamTrait;
+    if let Err(err) = stream.play() {
+        // Tear the just-spawned workers down rather than leaking them.
+        stop.store(true, Ordering::Relaxed);
+        let _ = decoder_thread.join();
+        let _ = analyzer_thread.join();
+        return Err(anyhow::anyhow!("failed to start output stream: {err}"));
+    }
+
+    Ok(Playback {
+        _stream: stream,
+        stop,
+        decoder_thread: Some(decoder_thread),
+        analyzer_thread: Some(analyzer_thread),
+    })
+}
+
+/// Drain the decoder into the output queue until the stream ends or `stop`.
+///
+/// Back-pressure: when the queue is full it briefly sleeps and retries, checking
+/// `stop` so teardown is prompt even while the consumer is paused. If the stream
+/// ends on its own (network read error / decode error) while `stop` is unset —
+/// abnormal for a live radio stream — it emits [`AudioEvent::Failed`] so the
+/// failure is surfaced instead of silently draining the output to silence.
+fn pump_decoder(
+    mut decoder: StreamDecoder,
+    mut queue_tx: ringbuf::HeapProd<f32>,
+    stop: Arc<AtomicBool>,
+    event_tx: Sender<AudioEvent>,
+    station: StationId,
+) {
+    // `by_ref` keeps `decoder` alive after the loop so we can read why it ended.
+    for sample in decoder.by_ref() {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        loop {
+            match queue_tx.try_push(sample) {
+                Ok(()) => break,
+                Err(returned) => {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                    if queue_tx.vacant_len() > 0 {
+                        let _ = queue_tx.try_push(returned);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Only an unsolicited end is a failure; a stop request is a clean teardown.
+    if !stop.load(Ordering::Relaxed) {
+        let message = decoder
+            .take_last_error()
+            .unwrap_or_else(|| "stream ended unexpectedly".to_string());
+        let _ = event_tx.send(AudioEvent::Failed { station, message });
+    }
+}
 
 /// How a raw station URL should be resolved into a concrete stream URL.
 ///

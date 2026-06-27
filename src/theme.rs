@@ -5,6 +5,8 @@
 //! task. Themes are stored as stable lowercase strings (`minimal`, `neon`,
 //! `crt`); unknown names fall back to `Minimal` at the boundary.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::model::DomainError;
 
 /// One of the built-in High Contrast Trio themes. Always valid by construction.
@@ -47,6 +49,29 @@ impl Default for ThemeName {
     }
 }
 
+/// Themes persist as their stable lowercase string identifier.
+impl Serialize for ThemeName {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// Strict deserialization: unknown names are a parse error so corrupt persisted
+/// settings fail at the boundary rather than silently coercing. Lenient
+/// fallback to the default theme belongs to [`ThemeName::parse_or_default`].
+impl<'de> Deserialize<'de> for ThemeName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        ThemeName::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +97,18 @@ mod tests {
         for theme in [ThemeName::Minimal, ThemeName::Neon, ThemeName::Crt] {
             assert_eq!(ThemeName::parse(theme.as_str()).unwrap(), theme);
         }
+    }
+
+    #[test]
+    fn theme_name_serializes_as_lowercase_string_and_roundtrips() {
+        let json = serde_json::to_string(&ThemeName::Neon).unwrap();
+        assert_eq!(json, "\"neon\"");
+        let decoded: ThemeName = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, ThemeName::Neon);
+    }
+
+    #[test]
+    fn theme_name_deserialization_rejects_unknown_strictly() {
+        assert!(serde_json::from_str::<ThemeName>("\"solarized\"").is_err());
     }
 }

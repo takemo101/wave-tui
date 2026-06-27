@@ -1,0 +1,22 @@
+project:
+  key: MIK
+  name: radio
+board:
+  columns:
+    - id: backlog
+      title: Backlog
+    - id: ready
+      title: Ready
+    - id: active
+      title: Active
+    - id: blocked
+      title: Blocked
+    - id: completed
+      title: Completed
+    - id: archived
+      title: Archived
+labels:
+  - id: automation
+    title: Automation
+  - id: herdr
+    title: Herdr

@@ -3,7 +3,6 @@
 # Local agent/tool state
 .asem.yaml
 .mcp.json
-.mikan/
 .claude/
 .pi/
 

@@ -158,6 +158,39 @@ For non-trivial code changes, follow the existing implementation plan in
 `docs/superpowers/plans/2026-06-27-radio-replacement.md` unless the user asks to
 revise it.
 
+### Delegated implementation/review workflow with asem
+
+For non-trivial implementation work, prefer dogfooding asem Sessions while the
+parent Session stays responsible for planning, final judgment, validation, and
+version-control decisions.
+
+Use the local asem skill when operating asem. Prefer MCP tools if available
+(`create_session`, `send_message`, `list_messages`, `report_parent`,
+`close_session`); otherwise use the CLI (`asem session create`,
+`asem message send`, `asem message wait`, `asem report parent`,
+`asem session close`).
+
+Recommended flow:
+
+1. Parent/orchestrator Session reads the relevant docs and mikan Issue, then
+   prepares a bounded task prompt with scope, acceptance criteria, and checks.
+2. Launch a worker child Session for exactly one implementation slice.
+3. Wait for the child Report. Treat the Report as communication, not proof of
+   success.
+4. For non-trivial changes, launch a separate reviewer child Session to compare
+   the implementation against the request, docs, tests, and these repo rules.
+5. If review finds issues, send a Message back to the worker with concrete
+   repair instructions and wait for another Report.
+6. Parent Session runs final validation locally, updates mikan, and handles
+   GitButler/version-control steps with `but` if needed.
+7. Close child Sessions to preserve Message/Report history. Do not delete asem
+   history unless the user explicitly asks.
+
+Keep asem semantics narrow: Session status is process state, not work outcome;
+Messages and Reports are coordination records, not task lifecycle state. Do not
+edit `.asem/sessions/`, `.asem/current-session*.json`, `.asem/tokens/`, or other
+asem runtime files directly.
+
 ## Testability rules
 
 Default tests should not require real network, real audio devices, or a real

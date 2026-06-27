@@ -1,0 +1,13 @@
+/target
+
+# Local agent/tool state
+.asem.yaml
+.mcp.json
+.mikan/
+.claude/
+.pi/
+
+# asem runtime state (token-bearing files; never commit)
+.asem/sessions/
+.asem/current-session*.json
+.asem/tokens/

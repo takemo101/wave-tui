@@ -79,6 +79,16 @@ impl SearchResults {
         Self(Vec::new())
     }
 
+    /// Build ranked results from already-normalized stations.
+    ///
+    /// Mirrors [`crate::settings::Favorites::from_stations`]: callers that hold
+    /// typed [`Station`] values (the app replacing visible results, tests) can
+    /// construct results without going through the transport. Ranking is applied
+    /// so the invariant "results are ranked" holds however they are built.
+    pub fn from_stations(stations: impl IntoIterator<Item = Station>) -> Self {
+        Self::ranked(stations.into_iter().collect())
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }

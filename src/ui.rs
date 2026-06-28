@@ -455,18 +455,9 @@ fn render_spectrum(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let frame = app.viz();
-    let bands = &frame.bands;
-    if bands.is_empty() {
-        return;
-    }
-
-    let count = (bands.len() as u16).min(area.width) as usize;
-    let last = bands.len().saturating_sub(1).max(1) as f32;
-    for (i, band) in bands.iter().take(count).enumerate() {
-        let position = i as f32 / last;
+    let columns = spectrum_columns(&app.viz().bands, area.width as usize);
+    for (i, (magnitude, position)) in columns.into_iter().enumerate() {
         let color = theme.spectrum_color(position);
-        let magnitude = band.clamp(0.0, 1.0);
         let filled = (magnitude * area.height as f32).round() as u16;
         let x = area.x + i as u16;
         for row in 0..filled {
@@ -476,6 +467,42 @@ fn render_spectrum(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
             }
         }
     }
+}
+
+/// Resample the FFT `bands` into one `(magnitude, position)` column per pane
+/// cell so the Spectrum Stack fills the full pane width.
+///
+/// `magnitude` is the bar height in `0.0..=1.0`, linearly interpolated between
+/// the two nearest bands so columns stay smooth when the pane is wider than the
+/// band count. `position` is the column's normalized `0.0..=1.0` location, used
+/// by [`Theme::spectrum_color`] so the low/mid/high color split stretches across
+/// the whole pane rather than only the first `bands.len()` columns.
+///
+/// Pure and deterministic; returns an empty vector for empty bands or zero
+/// width, so callers stay safe for tiny panes and silent/empty frames.
+fn spectrum_columns(bands: &[f32], width: usize) -> Vec<(f32, f32)> {
+    if bands.is_empty() || width == 0 {
+        return Vec::new();
+    }
+    let last_band = bands.len() - 1;
+    let last_col = width - 1;
+    (0..width)
+        .map(|col| {
+            let position = if last_col == 0 {
+                0.0
+            } else {
+                col as f32 / last_col as f32
+            };
+            // Map the column onto the band range and interpolate between the two
+            // nearest bands. Endpoints land exactly on the first/last band.
+            let sample = position * last_band as f32;
+            let lo = sample.floor() as usize;
+            let hi = (lo + 1).min(last_band);
+            let frac = sample - lo as f32;
+            let magnitude = bands[lo] + (bands[hi] - bands[lo]) * frac;
+            (magnitude.clamp(0.0, 1.0), position)
+        })
+        .collect()
 }
 
 /// Footer key hints plus network/offline state.
@@ -1149,6 +1176,101 @@ mod tests {
             text.lines().nth(fav_row).unwrap().contains('●'),
             "active Favorites source not marked in Browse: {text}"
         );
+    }
+
+    // --- Spectrum pane-width usage (MIK-025) ----------------------------
+
+    #[test]
+    fn spectrum_columns_resamples_to_full_width_preserving_endpoints() {
+        // The helper produces exactly one column per pane cell, so the bars use
+        // the full pane width instead of the band count.
+        let bands = [0.2_f32, 0.4, 0.6, 0.8];
+        let cols = spectrum_columns(&bands, 16);
+        assert_eq!(cols.len(), 16, "one column per pane cell");
+
+        // Endpoints map to the first/last band magnitude exactly.
+        assert!((cols.first().unwrap().0 - 0.2).abs() < 1e-6);
+        assert!((cols.last().unwrap().0 - 0.8).abs() < 1e-6);
+
+        // Positions span the full 0.0..=1.0 range so the low/mid/high color
+        // split stretches across the whole pane.
+        assert_eq!(cols.first().unwrap().1, 0.0);
+        assert!((cols.last().unwrap().1 - 1.0).abs() < 1e-6);
+
+        // Monotonic bands resample to non-decreasing magnitudes (smooth fill).
+        for pair in cols.windows(2) {
+            assert!(
+                pair[1].0 >= pair[0].0 - 1e-6,
+                "interpolated magnitudes should not jitter for monotonic bands"
+            );
+        }
+    }
+
+    #[test]
+    fn spectrum_columns_is_deterministic() {
+        let bands = [0.1_f32, 0.5, 0.9];
+        assert_eq!(spectrum_columns(&bands, 24), spectrum_columns(&bands, 24));
+    }
+
+    #[test]
+    fn spectrum_columns_is_safe_for_empty_bands_and_zero_width() {
+        assert!(spectrum_columns(&[], 40).is_empty());
+        assert!(spectrum_columns(&[0.5_f32; 8], 0).is_empty());
+        // A single band still produces a full-width run without panicking.
+        assert_eq!(spectrum_columns(&[0.7_f32], 5).len(), 5);
+    }
+
+    #[test]
+    fn spectrum_fills_full_pane_width_when_wider_than_bands() {
+        // Regression: the old renderer drew only min(bands.len(), width)
+        // columns, leaving the right side of a wide pane blank. With far more
+        // pane cells than bands, every column must now carry a bar.
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut app = base_app();
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 4],
+            1.0,
+            vec![],
+        ))));
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        render_spectrum(&theme, &app, area, &mut buf);
+
+        let bottom = area.height - 1;
+        for x in 0..area.width {
+            assert_eq!(
+                buf.cell((x, bottom)).unwrap().symbol(),
+                "█",
+                "column {x} not filled across the full pane width"
+            );
+        }
+    }
+
+    #[test]
+    fn spectrum_is_safe_for_tiny_panes_and_silent_frames() {
+        let theme = Theme::for_name(ThemeName::Minimal);
+        // Silent frame: bands present but zero, so no bars are drawn.
+        let mut silent = base_app();
+        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        // Empty frame: no bands at all.
+        let mut empty = base_app();
+        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            Vec::<f32>::new(),
+            0.0,
+            vec![],
+        ))));
+
+        for app in [&silent, &empty] {
+            for (w, h) in [(1, 1), (2, 1), (1, 4), (40, 1)] {
+                let area = Rect::new(0, 0, w, h);
+                let mut buf = Buffer::empty(area);
+                render_spectrum(&theme, app, area, &mut buf);
+                assert!(
+                    !buffer_text(&buf).contains('█'),
+                    "silent/empty frame must draw no bars at {w}x{h}"
+                );
+            }
+        }
     }
 
     #[test]

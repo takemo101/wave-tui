@@ -204,6 +204,19 @@ pub enum Action {
     ClearSearch,
     /// Move the Browse source-picker selection to an explicit index.
     SetBrowseSelection(usize),
+    /// Move the Browse source-picker selection down one row (`j`/`Down` while the
+    /// Browse rail is focused).
+    BrowseSelectNext,
+    /// Move the Browse source-picker selection up one row (`k`/`Up` while the
+    /// Browse rail is focused).
+    BrowseSelectPrevious,
+    /// Jump the Browse source-picker selection to the first rail row.
+    BrowseSelectFirst,
+    /// Jump the Browse source-picker selection to the last rail row.
+    BrowseSelectLast,
+    /// Apply the currently selected Browse source and hand focus to Stations
+    /// (`Enter` while the Browse rail is focused).
+    ApplyBrowseSelection,
     /// Replace the live search query text shown in the search strip.
     SetSearchQuery(String),
     /// Update the search status shown in the search strip.
@@ -292,6 +305,13 @@ impl App {
             Action::ShowCategory(category) => self.show_source(ListSource::Category(category)),
             Action::ClearSearch => self.clear_search(),
             Action::SetBrowseSelection(index) => self.browse_selected = index,
+            Action::BrowseSelectNext => self.browse_select_next(),
+            Action::BrowseSelectPrevious => {
+                self.browse_selected = self.browse_selected.saturating_sub(1)
+            }
+            Action::BrowseSelectFirst => self.browse_selected = 0,
+            Action::BrowseSelectLast => self.browse_selected = Self::browse_last_index(),
+            Action::ApplyBrowseSelection => self.apply_browse_selection(),
             Action::SearchResults(results) => self.apply_search_results(results),
             Action::SetSearchQuery(query) => self.search_query = query,
             Action::SetSearchStatus(status) => self.search_status = status,
@@ -363,8 +383,43 @@ impl App {
     /// `previous_source` is only ever set to a non-search source (see
     /// [`Self::apply_search_results`]), so restoring it always lands on a real
     /// catalog/favorites source rather than search results.
+    ///
+    /// Restoration only happens when the Search source is actually active.
+    /// Focusing the search strip with `/` does not enter the Search source until
+    /// results arrive, so clearing before any results land must leave the current
+    /// source untouched rather than revert to a stale `previous_source`.
     fn clear_search(&mut self) {
-        self.show_source(self.previous_source);
+        if self.source.is_search() {
+            self.show_source(self.previous_source);
+        }
+    }
+
+    // --- browse rail ------------------------------------------------------
+
+    /// The last selectable index in the Browse source rail.
+    fn browse_last_index() -> usize {
+        ListSource::browse_rail().len().saturating_sub(1)
+    }
+
+    /// Move the Browse selection down one row, never past the last rail source.
+    fn browse_select_next(&mut self) {
+        self.browse_selected = (self.browse_selected + 1).min(Self::browse_last_index());
+    }
+
+    /// Apply the Browse-selected source and hand focus to Stations.
+    ///
+    /// The selection index is clamped against the rail so a stale/oversized
+    /// cursor still resolves to a real source. Applying routes through
+    /// [`Self::show_source`], so the visible list, active source, and selection
+    /// bounds stay consistent (and `Favorites` is recorded without building its
+    /// contents, which is a later slice).
+    fn apply_browse_selection(&mut self) {
+        let rail = ListSource::browse_rail();
+        let index = self.browse_selected.min(rail.len().saturating_sub(1));
+        if let Some(&source) = rail.get(index) {
+            self.show_source(source);
+        }
+        self.focus = FocusPane::Stations;
     }
 
     /// The first non-failed station index at or after `start`, wrapping once.
@@ -1121,6 +1176,24 @@ mod tests {
     }
 
     #[test]
+    fn clearing_search_before_results_land_keeps_the_current_source() {
+        // Focusing the search strip does not by itself enter the Search source;
+        // clearing before any results arrive must stay on the active source
+        // rather than restore a stale `previous_source` (default All Stations).
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ShowCategory(Category::Lofi));
+        let lofi_visible = visible_ids(&app);
+        assert_eq!(app.active_source(), ListSource::Category(Category::Lofi));
+
+        app.apply(Action::SetFocus(FocusPane::Search));
+        // No SearchResults have been applied yet.
+        app.apply(Action::ClearSearch);
+
+        assert_eq!(app.active_source(), ListSource::Category(Category::Lofi));
+        assert_eq!(visible_ids(&app), lofi_visible);
+    }
+
+    #[test]
     fn clearing_search_defaults_to_all_stations_without_a_previous_source() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(Action::SearchResults(SearchResults::from_stations([
@@ -1154,6 +1227,80 @@ mod tests {
         assert_eq!(app.browse_selected(), 0);
         app.apply(Action::SetBrowseSelection(3));
         assert_eq!(app.browse_selected(), 3);
+    }
+
+    #[test]
+    fn browse_selection_moves_within_rail_bounds() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.browse_selected(), 0);
+        // Up at the top stays at the top.
+        app.apply(Action::BrowseSelectPrevious);
+        assert_eq!(app.browse_selected(), 0);
+        // Down advances one row.
+        app.apply(Action::BrowseSelectNext);
+        assert_eq!(app.browse_selected(), 1);
+        // Last jumps to the final rail row and never past it.
+        let last = ListSource::browse_rail().len() - 1;
+        app.apply(Action::BrowseSelectLast);
+        assert_eq!(app.browse_selected(), last);
+        app.apply(Action::BrowseSelectNext);
+        assert_eq!(app.browse_selected(), last, "Down at the end stays put");
+        // First jumps back to the top.
+        app.apply(Action::BrowseSelectFirst);
+        assert_eq!(app.browse_selected(), 0);
+    }
+
+    #[test]
+    fn applying_browse_selection_sets_source_and_hands_focus_to_stations() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        // Park the Browse cursor on a known category and apply it.
+        let rail = ListSource::browse_rail();
+        let lofi_index = rail
+            .iter()
+            .position(|s| *s == ListSource::Category(Category::Lofi))
+            .unwrap();
+        app.apply(Action::SetBrowseSelection(lofi_index));
+        app.apply(Action::ApplyBrowseSelection);
+
+        assert_eq!(app.active_source(), ListSource::Category(Category::Lofi));
+        assert_eq!(app.focus(), FocusPane::Stations);
+        // The visible list is the applied source's stations, selection reset.
+        let lofi: Vec<String> = app
+            .catalog
+            .category_stations(Category::Lofi)
+            .iter()
+            .map(|s| s.id.as_str().to_string())
+            .collect();
+        assert_eq!(visible_ids(&app), lofi);
+        assert_eq!(app.selected_index(), 0);
+    }
+
+    #[test]
+    fn applying_browse_favorites_records_source_without_building_contents() {
+        // Favorites contents are a later slice (MIK-021); applying it records the
+        // source and hands off focus without populating a list here.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let rail = ListSource::browse_rail();
+        let fav_index = rail
+            .iter()
+            .position(|s| *s == ListSource::Favorites)
+            .unwrap();
+        app.apply(Action::SetBrowseSelection(fav_index));
+        app.apply(Action::ApplyBrowseSelection);
+        assert_eq!(app.active_source(), ListSource::Favorites);
+        assert_eq!(app.focus(), FocusPane::Stations);
+    }
+
+    #[test]
+    fn applying_browse_selection_clamps_an_out_of_range_cursor() {
+        // A stale/oversized Browse index must still land on a real rail source.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SetBrowseSelection(usize::MAX));
+        app.apply(Action::ApplyBrowseSelection);
+        let last = *ListSource::browse_rail().last().unwrap();
+        assert_eq!(app.active_source(), last);
+        assert_eq!(app.focus(), FocusPane::Stations);
     }
 
     #[test]

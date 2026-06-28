@@ -29,7 +29,7 @@ use ratatui::{
 
 use crate::app::{App, FocusPane, ListSource, SearchStatus};
 use crate::layout::LayoutTier;
-use crate::model::{CodecKind, PlaybackState, Station};
+use crate::model::{CodecKind, PlaybackState, Station, VisualizerMode};
 use crate::theme::Theme;
 
 /// Render the entire UI for the current terminal size.
@@ -394,7 +394,19 @@ fn render_now_playing(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, co
         .style(theme.base_style())
         .render(parts[0], buf);
 
-    render_spectrum(theme, app, parts[1], buf);
+    render_visualizer(theme, app, parts[1], buf);
+}
+
+/// Draw the visualizer pane using the app's selected [`VisualizerMode`].
+///
+/// `SpectrumStack` (the default) and `PeakDots` have renderers today; the
+/// remaining Calm Suite modes land in later slices and fall back to the shared
+/// Spectrum Stack so the pane is always populated from real `VizFrame` data.
+fn render_visualizer(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
+    match app.visualizer_mode() {
+        VisualizerMode::PeakDots => render_peak_dots(theme, app, area, buf),
+        _ => render_spectrum(theme, app, area, buf),
+    }
 }
 
 /// Build the Now Playing metadata lines from read-only app data.
@@ -465,6 +477,35 @@ fn render_spectrum(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_char('█').set_fg(color);
             }
+        }
+    }
+}
+
+/// The "Peak Dots" visualizer: one themed dot per pane column, placed at the
+/// column's FFT peak height instead of a filled bar.
+///
+/// A distinct renderer from [`render_spectrum`]: it shares the full-pane-width
+/// [`spectrum_columns`] sampling and the theme's low/mid/high spectrum split, but
+/// draws only the peak cell of each column as a dot so the visualizer reads as a
+/// quieter peak band. Columns whose magnitude rounds to zero (silent/empty
+/// frames) draw nothing. Pure function of the current [`VizFrame`]; it carries no
+/// animation or mode-specific state.
+fn render_peak_dots(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let columns = spectrum_columns(&app.viz().bands, area.width as usize);
+    for (i, (magnitude, position)) in columns.into_iter().enumerate() {
+        let filled = (magnitude * area.height as f32).round() as u16;
+        if filled == 0 {
+            continue;
+        }
+        let color = theme.spectrum_color(position);
+        let x = area.x + i as u16;
+        // The peak sits at the top of where a filled bar would reach.
+        let y = area.y + area.height - filled;
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char('●').set_fg(color);
         }
     }
 }
@@ -1268,6 +1309,145 @@ mod tests {
                 assert!(
                     !buffer_text(&buf).contains('█'),
                     "silent/empty frame must draw no bars at {w}x{h}"
+                );
+            }
+        }
+    }
+
+    // --- PeakDots visualizer mode (MIK-026) -----------------------------
+
+    use crate::model::VisualizerMode;
+
+    /// Render only the active visualizer into a standalone buffer, the routed
+    /// path used by Now Playing (mode-aware) rather than a fixed renderer.
+    fn render_viz_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        let theme = app.theme().theme();
+        render_visualizer(&theme, app, area, &mut buf);
+        buf
+    }
+
+    #[test]
+    fn selecting_peak_dots_changes_the_rendered_visualizer() {
+        // The default SpectrumStack fills bars; cycling to PeakDots routes to a
+        // distinct renderer that emphasizes the per-column peak with a dot.
+        let mut app = base_app();
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 8],
+            1.0,
+            vec![],
+        ))));
+        assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
+
+        let stack_text = buffer_text(&render_viz_buffer(&app, 32, 8));
+        assert!(stack_text.contains('█'), "spectrum stack bars missing");
+        assert!(
+            !stack_text.contains('●'),
+            "spectrum stack must not draw peak dots"
+        );
+
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::PeakDots);
+        let dots_text = buffer_text(&render_viz_buffer(&app, 32, 8));
+        assert!(
+            dots_text.contains('●'),
+            "peak dots must draw dot markers: {dots_text}"
+        );
+        assert_ne!(
+            stack_text, dots_text,
+            "the rendered visualizer must change with the selected mode"
+        );
+    }
+
+    #[test]
+    fn peak_dots_fills_full_pane_width_with_real_bands() {
+        // Far more pane cells than bands: every column carries a peak dot, drawn
+        // from the shared full-width sampling helper, not just bands.len() cells.
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut app = base_app();
+        app.apply(Action::CycleVisualizerMode); // SpectrumStack -> PeakDots
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 4],
+            1.0,
+            vec![],
+        ))));
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        render_peak_dots(&theme, &app, area, &mut buf);
+
+        // Full magnitude lands the peak dot on the top row of every column.
+        for x in 0..area.width {
+            assert_eq!(
+                buf.cell((x, 0)).unwrap().symbol(),
+                "●",
+                "column {x} not capped with a peak dot across the full pane width"
+            );
+        }
+    }
+
+    #[test]
+    fn peak_dots_uses_theme_spectrum_colors() {
+        // Dots are colored by the low/mid/high spectrum split, not an ad hoc
+        // palette, so they stay theme-driven like the shared Spectrum Stack.
+        let mut app = base_app();
+        app.apply(Action::CycleTheme); // Minimal -> Neon
+        app.apply(Action::CycleVisualizerMode); // -> PeakDots
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 8],
+            1.0,
+            vec![],
+        ))));
+        let theme = app.theme().theme();
+        let buf = render_viz_buffer(&app, 30, 8);
+        assert!(
+            has_fg(&buf, theme.spectrum_low)
+                || has_fg(&buf, theme.spectrum_mid)
+                || has_fg(&buf, theme.spectrum_high),
+            "peak dot colors not themed"
+        );
+    }
+
+    #[test]
+    fn peak_dots_renders_in_every_layout_tier() {
+        // Selecting PeakDots changes the visualizer at the full-UI level across
+        // Wide, Medium, and Compact, while station context stays visible.
+        let mut app = base_app();
+        app.apply(Action::CycleVisualizerMode); // -> PeakDots
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.9_f32; 16],
+            0.8,
+            vec![],
+        ))));
+        play_first(&mut app);
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(text.contains('●'), "peak dots missing at {w}x{h}: {text}");
+        }
+    }
+
+    #[test]
+    fn peak_dots_is_safe_for_tiny_panes_and_silent_frames() {
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut silent = base_app();
+        silent.apply(Action::CycleVisualizerMode);
+        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        let mut empty = base_app();
+        empty.apply(Action::CycleVisualizerMode);
+        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            Vec::<f32>::new(),
+            0.0,
+            vec![],
+        ))));
+
+        for app in [&silent, &empty] {
+            for (w, h) in [(1, 1), (2, 1), (1, 4), (40, 1)] {
+                let area = Rect::new(0, 0, w, h);
+                let mut buf = Buffer::empty(area);
+                render_peak_dots(&theme, app, area, &mut buf);
+                assert!(
+                    !buffer_text(&buf).contains('●'),
+                    "silent/empty frame must draw no peak dots at {w}x{h}"
                 );
             }
         }

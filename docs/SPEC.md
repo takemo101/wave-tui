@@ -207,6 +207,34 @@ Favorites are added from:
 - built-in catalog stations
 - online search results
 
+Planned polish for `MIK-014` and `MIK-016` uses a unified station-list source
+model. The app should track the active `ListSource` explicitly rather than
+letting the visible list be anonymous. Sources are:
+
+- `AllStations`
+- `Section(Music | Spoken / News)`
+- `Category(Lofi | Ambient | Jazz | Classical | Electronic | News | Talk)`
+- `Favorites`
+- `Search`
+
+The Wide `Browse` pane should become a flat source picker containing `All
+Stations`, `Favorites`, both sections, and all categories. While Browse is
+focused, `j`/`k` or arrows move the Browse selection and `Enter` applies the
+source, replaces the station list, resets station selection safely, and moves
+focus to Stations. While Stations is focused, the same keys keep their current
+station-list behavior.
+
+Favorites-only view is built from persisted `Settings::favorites`, so saved
+favorite stations are reachable even when absent from the current catalog/search
+view. Removing a favorite while the Favorites source is active immediately
+removes it from the list and clamps selection. Empty Favorites remains on the
+Favorites source and shows a helpful empty-state message instead of silently
+falling back to All Stations.
+
+Search is also a `ListSource`, but it remembers the previous non-search source.
+Clearing search with `Esc` restores that previous source (for example Favorites
+or Lofi), with All Stations as the default previous source.
+
 ### Offline / Network Failure
 
 If network is unavailable or Radio Browser cannot be reached:
@@ -321,6 +349,42 @@ Theme implementation notes:
 - Minimal should avoid loud glow effects by default.
 - Neon may use glow-like color contrast, but not terminal effects that hurt readability.
 - CRT may use green/amber accents, but scanline effects should be optional or subtle.
+
+Planned theme polish for `MIK-017` expands the built-in theme set to six stable
+lowercase persisted names:
+
+1. `minimal`
+2. `neon`
+3. `crt`
+4. `solarized`
+5. `midnight`
+6. `sakura`
+
+`Minimal` remains the default and unknown persisted theme names still fall back
+to `minimal` at the settings boundary. The `t` key remains a simple one-way
+cycle through the documented order; no theme picker is planned for this set.
+
+### Visualizer Modes
+
+The MVP visualizer is Spectrum Stack. Planned polish for `MIK-015` keeps that as
+the default while adding selectable visualizer modes driven by real audio data.
+`VizFrame` should be extended with a low-resolution, normalized time-domain
+`waveform` series in addition to FFT bands and RMS. UI code receives only this
+small drawing-oriented shape, not raw audio buffers.
+
+Initial visualizer modes:
+
+1. `SpectrumStack` — current vertical FFT bars and default mode.
+2. `PeakDots` — FFT bars with a dot/peak emphasis.
+3. `WaveScope` — waveform line/scope display from `VizFrame::waveform`.
+4. `MirrorWave` — symmetrical waveform display for a calmer oscilloscope feel.
+5. `AmbientPulse` — low-noise RMS/band-driven ambient display.
+
+Every mode should use the full width of its allocated visualizer pane by
+resampling/interpolating the available bands or waveform points to the render
+area width. The layout does not need to become a full-width visualizer panel, and
+compact mode must still keep station context plus playback visible. The `v` key
+cycles visualizer mode and the selected mode is persisted like theme/volume.
 
 ### CLI Options
 

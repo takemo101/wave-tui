@@ -552,26 +552,60 @@ fn volume_gauge_line<'a>(theme: &Theme, volume: u8, width: usize) -> Line<'a> {
     ])
 }
 
-/// The shared "Spectrum Stack": vertical FFT bars colored by the active theme.
+/// Spectrum-column particle glyphs, ordered faint → heavy. A cell's depth within
+/// its column (heavy at the base, fine toward the top) selects the grain, so a
+/// column fills like a textured analyzer bar made of particles instead of a solid
+/// block. All are calm one-cell dot glyphs — no `*`, no `█` bars, no mosaic
+/// block/shade glyphs, no stars/diamonds; no color lives here (colors come from
+/// [`Theme`]).
+const DUST_GLYPHS: [char; 3] = ['·', '∙', '•'];
+
+/// The shared "Spectrum Stack": a traditional bottom-up **spectrum analyzer**
+/// whose columns are filled with **particles** instead of solid bars (MIK-035).
 ///
-/// This single renderer is used by every layout tier. Bands map to columns and
-/// fill from the bottom up; each column's color comes from the theme's
-/// low→mid→high spectrum gradient via [`Theme::spectrum_color`].
+/// This single renderer is used by every layout tier. Each band maps to a column
+/// (stretched to the full pane width via [`spectrum_columns`]); the column's height
+/// is `round(magnitude * pane_height)`, so the **silhouette is the real spectrum
+/// shape**. Every cell from the floor up to that height is filled: the grain
+/// ([`DUST_GLYPHS`] `·∙•`) is chosen by the cell's *depth* in the column — heavy
+/// `•` at the base fading to fine `·` near the top — themed via
+/// [`Theme::spectrum_color`] (the faint top is muted). The renderer is a pure,
+/// static function of `(frame, area, theme)` — no RNG, no time/frame/tick state —
+/// so the same frame always renders identically. A silent column draws nothing.
+/// All colors come from the active [`Theme`].
 fn render_spectrum(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let columns = spectrum_columns(&app.viz().bands, area.width as usize);
+    let top = DUST_GLYPHS.len() - 1;
     for (i, (magnitude, position)) in columns.into_iter().enumerate() {
-        let color = theme.spectrum_color(position);
-        let filled = (magnitude * area.height as f32).round() as u16;
-        let x = area.x + i as u16;
-        for row in 0..filled {
-            let y = area.y + area.height - 1 - row;
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_char('█').set_fg(color);
-            }
+        // The column height is the real spectrum shape (the analyzer silhouette).
+        let fill = (magnitude * area.height as f32).round() as u16;
+        if fill == 0 {
+            continue; // silent/too-quiet column: draw nothing
         }
+        let column_color = theme.spectrum_color(position);
+        let x = area.x + i as u16;
+        for row in 0..fill {
+            let y = area.y + area.height - 1 - row;
+            // Grain by depth in the column: heavy `•` at the base, fine `·` on top.
+            let depth = 1.0 - row as f32 / fill as f32;
+            let level = ((depth * DUST_GLYPHS.len() as f32) as usize).min(top);
+            let color = if level == 0 {
+                theme.muted
+            } else {
+                column_color
+            };
+            set_cell(buf, x, y, DUST_GLYPHS[level], color);
+        }
+    }
+}
+
+/// Write a single glyph in `fg` into the buffer if `(x, y)` is in bounds.
+fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: ratatui::style::Color) {
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        cell.set_char(ch).set_fg(fg);
     }
 }
 
@@ -1275,13 +1309,18 @@ mod tests {
         );
         // The player stays visible: playback state is shown.
         assert!(text.contains("Playing"));
-        // The compact visualizer is present but not full-screen: bars render and
-        // the station list region above still has content.
-        assert!(text.contains('█'));
+        // The compact visualizer is present but not full-screen: particles render
+        // and the station list region above still has content. The heavy grains
+        // (`∙`/`•`) are unique to the visualizer (the gauge uses `█`/`░`), so their
+        // presence proves the columns drew.
+        assert!(
+            text.chars().any(|c| matches!(c, '∙' | '•')),
+            "compact particle visualizer missing: {text}"
+        );
     }
 
     #[test]
-    fn spectrum_stack_is_shared_and_renders_themed_bars_across_tiers() {
+    fn spectrum_stack_is_shared_and_renders_themed_particles_across_tiers() {
         let mut app = base_app();
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
             vec![1.0_f32; 16],
@@ -1293,8 +1332,13 @@ mod tests {
         let theme = app.theme().theme();
         for (w, h) in [(130, 32), (100, 24), (70, 16)] {
             let buf = render_buffer(&app, w, h);
-            assert!(buffer_text(&buf).contains('█'), "no bars at {w}x{h}");
-            // Bars use theme spectrum colors, not an ad hoc palette.
+            // The particle columns render at every tier: heavy grains (`∙`/`•`) are
+            // unique to the visualizer, so their presence proves it drew.
+            assert!(
+                buffer_text(&buf).chars().any(|c| matches!(c, '∙' | '•')),
+                "no particles at {w}x{h}"
+            );
+            // The particles use theme spectrum colors, not an ad hoc palette.
             assert!(
                 has_fg(&buf, theme.spectrum_low)
                     || has_fg(&buf, theme.spectrum_mid)
@@ -1305,29 +1349,26 @@ mod tests {
     }
 
     #[test]
-    fn spectrum_bars_use_interpolated_gradient_not_discrete_band_cutoffs() {
+    fn spectrum_particles_use_interpolated_gradient_not_discrete_band_cutoffs() {
         // MIK-032: the spectrum gradient means intermediate columns blend between
-        // the low/mid/high anchors. Prove at least one rendered bar cell carries a
+        // the low/mid/high anchors. Prove at least one rendered grain carries a
         // color that is none of the three discrete anchors — i.e. a real gradient,
         // not the old hard low/mid/high cutoffs. All color knowledge still comes
         // from the theme; ui.rs introduces no palette constants.
-        let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 16],
-            1.0,
-            vec![1.0_f32; 16],
-        ))));
-        play_first(&mut app);
-
+        let app = with_flat_frame(1.0, 16);
         let theme = app.theme().theme();
         let discrete = [theme.spectrum_low, theme.spectrum_mid, theme.spectrum_high];
-        let buf = render_buffer(&app, 130, 32);
+        let buf = render_spectrum_buffer(&app, 130, 32);
         let area = *buf.area();
+        // Restrict to the mid/heavy grains (`∙`/`•`): those carry the spectrum
+        // gradient color, whereas faint `·` is muted, so it would not prove
+        // interpolation.
         let mut blended = false;
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = buf.cell((x, y)).unwrap();
-                if cell.symbol() == "█" && !discrete.contains(&cell.fg) {
+                let sym = cell.symbol().chars().next().unwrap_or(' ');
+                if matches!(sym, '∙' | '•') && !discrete.contains(&cell.fg) {
                     blended = true;
                 }
             }
@@ -1335,6 +1376,187 @@ mod tests {
         assert!(
             blended,
             "spectrum used only the three discrete anchors, not a gradient"
+        );
+    }
+
+    /// Render only the Spectrum Stack into a standalone buffer so artifact and
+    /// shape assertions are isolated from the surrounding panes (whose volume
+    /// gauge also uses `░`).
+    fn render_spectrum_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        let theme = app.theme().theme();
+        render_spectrum(&theme, app, area, &mut buf);
+        buf
+    }
+
+    /// Apply a steady viz frame whose bands are all `level`.
+    fn with_flat_frame(level: f32, bands: usize) -> App {
+        let mut app = base_app();
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![level; bands],
+            level,
+            vec![level; bands],
+        ))));
+        app
+    }
+
+    /// Mosaic/block glyphs the particle base must NOT use as its visual language.
+    const MOSAIC_BLOCKS: [char; 5] = ['░', '▒', '▓', '▄', '▀'];
+
+    /// True for any glyph the particle spectrum may draw: a dust grain.
+    fn is_particle(c: char) -> bool {
+        DUST_GLYPHS.contains(&c)
+    }
+
+    #[test]
+    fn spectrum_stack_renders_particles_not_mosaic_or_bars() {
+        // The columns must read as a particle/dot fill: only dust grains (`·∙•`)
+        // are drawn — no `*`, no solid `█` bars, and no mosaic block/shade glyphs
+        // (`░▒▓▄▀`).
+        let app = with_flat_frame(1.0, 16);
+        let text = buffer_text(&render_spectrum_buffer(&app, 48, 16));
+        let particles = text.chars().filter(|c| is_particle(*c)).count();
+        assert!(particles > 0, "no particles drawn: {text}");
+        assert!(
+            !text.contains('*'),
+            "SpectrumStack must not use `*`: {text}"
+        );
+        assert!(
+            !text.contains('+'),
+            "static spectrum must not draw `+`: {text}"
+        );
+        assert!(
+            !text.contains('█'),
+            "particles must not be solid bars: {text}"
+        );
+        for block in MOSAIC_BLOCKS {
+            assert!(
+                !text.contains(block),
+                "mosaic block glyph {block} leaked into the particle fill"
+            );
+        }
+        // Every drawn cell is a particle grain.
+        let drawn = text.chars().filter(|&c| c != ' ' && c != '\n').count();
+        assert_eq!(particles, drawn, "non-particle glyphs leaked into the fill");
+    }
+
+    #[test]
+    fn spectrum_stack_is_static_and_deterministic_for_same_frame_and_area() {
+        // Pure, static function of frame + area + theme: there is no animation tick,
+        // and rendering the same frame twice yields an identical buffer (symbols
+        // and colors), with no RNG/time/tick state.
+        let mut app = base_app();
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.3, 0.6, 0.9, 0.2, 0.7, 1.0, 0.4, 0.5],
+            0.6,
+            vec![0.0; 8],
+        ))));
+        let first = render_spectrum_buffer(&app, 40, 12);
+        let second = render_spectrum_buffer(&app, 40, 12);
+        assert_eq!(first, second, "SpectrumStack render is not deterministic");
+    }
+
+    #[test]
+    fn spectrum_stack_column_height_tracks_band_magnitude() {
+        // Traditional analyzer responsiveness: a loud band's column is taller than
+        // a quiet band's, and a louder overall frame fills more cells.
+        let mut bands = vec![0.1_f32; 16];
+        bands[0] = 1.0; // loud band
+        bands[15] = 0.25; // quiet band
+        let mut app = base_app();
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            bands,
+            0.5,
+            vec![0.0; 16],
+        ))));
+        let h = 16u16;
+        let buf = render_spectrum_buffer(&app, 16, h);
+        let col_height = |x: u16| {
+            (0..h)
+                .filter(|&y| buf.cell((x, y)).unwrap().symbol() != " ")
+                .count()
+        };
+        assert_eq!(col_height(0), 16, "loud band should fill its whole column");
+        assert!(
+            col_height(0) > col_height(15),
+            "loud column ({}) not taller than quiet column ({})",
+            col_height(0),
+            col_height(15)
+        );
+
+        let count = |level: f32| {
+            buffer_text(&render_spectrum_buffer(&with_flat_frame(level, 16), 32, 16))
+                .chars()
+                .filter(|c| is_particle(*c))
+                .count()
+        };
+        assert!(count(1.0) > count(0.3), "louder frame not denser");
+    }
+
+    #[test]
+    fn spectrum_stack_is_a_traditional_bottom_up_silhouette() {
+        // Each column is a contiguous bottom-up fill to `round(magnitude*height)`:
+        // filled from the floor with no gaps, and empty above. This is the normal
+        // analyzer silhouette, not a free particle field.
+        let h = 16u16;
+        let app = with_flat_frame(0.5, 16);
+        let expected = (0.5 * h as f32).round() as u16; // 8
+        let buf = render_spectrum_buffer(&app, 20, h);
+        for x in 0..20u16 {
+            for row in 0..h {
+                let y = h - 1 - row; // row counts up from the floor
+                let filled = buf.cell((x, y)).unwrap().symbol() != " ";
+                assert_eq!(
+                    filled,
+                    row < expected,
+                    "column {x} row {row}: expected filled={}",
+                    row < expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spectrum_stack_draws_nothing_for_silent_or_zero_frame() {
+        // Silent/empty frames stay calm: no particles at all. Also safe for tiny
+        // and zero-sized panes.
+        let mut silent = base_app();
+        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        let mut empty = base_app();
+        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            Vec::<f32>::new(),
+            0.0,
+            vec![],
+        ))));
+        for app in [&silent, &empty] {
+            for (w, h) in [(0, 0), (1, 1), (2, 4), (48, 16)] {
+                let text = buffer_text(&render_spectrum_buffer(app, w, h));
+                assert!(
+                    !text.chars().any(is_particle),
+                    "silent/empty frame drew particles at {w}x{h}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn peak_dots_is_unaffected_by_spectrum_particles() {
+        // The animated particle upgrade is scoped to SpectrumStack: the adjacent
+        // PeakDots mode still draws its peak dots and carries no particle glyphs.
+        let mut app = with_flat_frame(1.0, 16);
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::PeakDots);
+
+        let area = Rect::new(0, 0, 48, 16);
+        let mut buf = Buffer::empty(area);
+        let theme = app.theme().theme();
+        render_peak_dots(&theme, &app, area, &mut buf);
+        let text = buffer_text(&buf);
+        assert!(text.contains('●'), "PeakDots lost its dots: {text}");
+        assert!(
+            !text.chars().any(is_particle),
+            "particle glyphs leaked into PeakDots: {text}"
         );
     }
 
@@ -1691,7 +1913,9 @@ mod tests {
     fn spectrum_fills_full_pane_width_when_wider_than_bands() {
         // Regression: the old renderer drew only min(bands.len(), width)
         // columns, leaving the right side of a wide pane blank. With far more
-        // pane cells than bands, every column must now carry a bar.
+        // pane cells than bands, every column must now carry dust. With a loud
+        // flat frame every column lights at least one particle near the floor, so
+        // assert per-column coverage (each column carries at least one dust cell).
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut app = base_app();
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
@@ -1703,20 +1927,25 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render_spectrum(&theme, &app, area, &mut buf);
 
-        let bottom = area.height - 1;
         for x in 0..area.width {
-            assert_eq!(
-                buf.cell((x, bottom)).unwrap().symbol(),
-                "█",
-                "column {x} not filled across the full pane width"
-            );
+            let filled = (0..area.height).any(|y| {
+                is_particle(
+                    buf.cell((x, y))
+                        .unwrap()
+                        .symbol()
+                        .chars()
+                        .next()
+                        .unwrap_or(' '),
+                )
+            });
+            assert!(filled, "column {x} not filled across the full pane width");
         }
     }
 
     #[test]
     fn spectrum_is_safe_for_tiny_panes_and_silent_frames() {
         let theme = Theme::for_name(ThemeName::Minimal);
-        // Silent frame: bands present but zero, so no bars are drawn.
+        // Silent frame: bands present but zero, so no dust is drawn.
         let mut silent = base_app();
         silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
         // Empty frame: no bands at all.
@@ -1733,8 +1962,8 @@ mod tests {
                 let mut buf = Buffer::empty(area);
                 render_spectrum(&theme, app, area, &mut buf);
                 assert!(
-                    !buffer_text(&buf).contains('█'),
-                    "silent/empty frame must draw no bars at {w}x{h}"
+                    !buffer_text(&buf).chars().any(is_particle),
+                    "silent/empty frame must draw no mosaic at {w}x{h}"
                 );
             }
         }
@@ -1756,8 +1985,8 @@ mod tests {
 
     #[test]
     fn selecting_peak_dots_changes_the_rendered_visualizer() {
-        // The default SpectrumStack fills bars; cycling to PeakDots routes to a
-        // distinct renderer that emphasizes the per-column peak with a dot.
+        // The default SpectrumStack draws a particle field; cycling to PeakDots
+        // routes to a distinct renderer that emphasizes the per-column peak.
         let mut app = base_app();
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
             vec![1.0_f32; 8],
@@ -1767,7 +1996,10 @@ mod tests {
         assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
 
         let stack_text = buffer_text(&render_viz_buffer(&app, 32, 8));
-        assert!(stack_text.contains('█'), "spectrum stack bars missing");
+        assert!(
+            stack_text.chars().any(is_particle),
+            "spectrum stack particles missing: {stack_text}"
+        );
         assert!(
             !stack_text.contains('●'),
             "spectrum stack must not draw peak dots"

@@ -681,9 +681,8 @@ impl App {
 
     /// The active visualizer mode.
     ///
-    /// Only `SpectrumStack` has a renderer today; later slices add the rest. The
-    /// reducer still cycles through all five so persistence and the `v` key are
-    /// in place before the renderers land.
+    /// All supported visualizer modes have renderers; the reducer cycles through
+    /// the persisted mode order used by the `v` key.
     pub fn visualizer_mode(&self) -> VisualizerMode {
         self.settings.visualizer
     }

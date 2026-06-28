@@ -380,7 +380,7 @@ drawing-oriented shape, not raw audio buffers.
 
 Visualizer modes (all implemented and selectable via `v`):
 
-1. `SpectrumStack` — current vertical FFT bars and default mode.
+1. `SpectrumStack` — particle-filled vertical FFT analyzer columns and default mode.
 2. `PeakDots` — FFT bars with a dot/peak emphasis.
 3. `SkylinePeaks` — stateless FFT skyline: a bright peak cap over a subtle dashed
    tail, distinct from both `SpectrumStack` and `PeakDots`.

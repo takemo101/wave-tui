@@ -11,8 +11,8 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 
 - **Native Rust playback** — MP3/AAC-centered HTTP streams play through a
   `reqwest` + `symphonia` + `cpal` pipeline. No external `ffplay`/`mpv` process.
-- **Real FFT visualizer** — the Spectrum Stack bars are driven by actual played
-  audio samples via `rustfft`, not a simulation. Six calm modes are selectable
+- **Real FFT visualizer** — the Spectrum Stack's particle-filled analyzer is driven
+  by actual played audio samples via `rustfft`, not a simulation. Six calm modes are selectable
   with `v` (see [Visualizer modes](#visualizer-modes)); all are real-audio-driven
   and stretch to fill the visualizer pane.
 - **Auto-resume** — launching `wave-tui` replays your previous station; first
@@ -116,7 +116,7 @@ layout into a full-screen visualizer.
 
 | Mode            | Source                | Look                                            |
 | --------------- | --------------------- | ----------------------------------------------- |
-| `SpectrumStack` | FFT bands             | Vertical bars filling from the bottom (default) |
+| `SpectrumStack` | FFT bands             | Particle-filled analyzer columns from the bottom (default) |
 | `PeakDots`      | FFT bands             | One peak dot per column                         |
 | `SkylinePeaks`  | FFT bands             | Bright peak cap over a subtle dashed tail       |
 | `WaveScope`     | Waveform              | Oscilloscope trace around the center line       |

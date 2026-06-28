@@ -394,6 +394,20 @@ mod tests {
     }
 
     #[test]
+    fn favorites_iterate_in_insertion_order() {
+        // The Favorites ListSource builds its visible list from this iteration,
+        // so insertion order must be preserved (favorites are user-curated, not
+        // re-ranked).
+        let favorites = Favorites::from_stations([
+            station("a", "https://a.example/1.mp3", "A"),
+            station("b", "https://b.example/2.mp3", "B"),
+            station("c", "https://c.example/3.mp3", "C"),
+        ]);
+        let ids: Vec<&str> = favorites.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
     fn favorites_remove_uses_id_or_url_identity() {
         let mut favorites =
             Favorites::from_stations([station("id-one", "https://a.example/1.mp3", "One")]);

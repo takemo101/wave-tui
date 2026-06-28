@@ -101,11 +101,11 @@ pub enum SearchStatus {
 /// The app tracks the active source explicitly instead of letting the visible
 /// list be anonymous, so Browse (a flat source picker) and Search clearing can
 /// reason about it. Per the design deck the Wide Browse pane offers `All
-/// Stations`, `Favorites`, both sections, and every category as sources; this
-/// slice models the full set but only the catalog-derived sources (All,
-/// Section, Category) build their list here. `Favorites` contents and `Search`
-/// results are produced by other slices/controllers; the reducer only records
-/// that one of them is active.
+/// Stations`, `Favorites`, both sections, and every category as sources. The
+/// catalog-derived sources (All, Section, Category) and `Favorites` (from
+/// persisted settings) build their list in the reducer; `Search` results are
+/// produced by the controller and arrive via [`Action::SearchResults`], so the
+/// reducer only records that the search source is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListSource {
     /// The full curated catalog, ranked.
@@ -352,15 +352,28 @@ impl App {
         self.clamp_selection();
     }
 
+    /// Replace the visible list but keep the current selection index, clamped.
+    ///
+    /// Used when the active list shrinks in place (e.g. removing the selected
+    /// favorite): keeping the index lands selection on the next valid row, falls
+    /// back to the previous row when the last row was removed, and resolves to
+    /// the empty-state position when nothing remains.
+    fn refresh_visible_keeping_selection(&mut self, stations: Stations) {
+        self.visible = stations;
+        self.clamp_selection();
+    }
+
     // --- list source -----------------------------------------------------
 
     /// Apply a non-search source: record it as active and rebuild the visible
-    /// list from the catalog, resetting/clamping selection safely.
+    /// list, resetting/clamping selection safely.
     ///
-    /// Only catalog-derived sources (All, Section, Category) build their list in
-    /// this slice. `Favorites` contents come from a later slice, so applying it
-    /// here records the source without rebuilding the list; `Search` is never
-    /// routed through here (it arrives via [`Self::apply_search_results`]).
+    /// `AllStations`, `Section`, and `Category` build from the catalog;
+    /// `Favorites` builds from persisted [`Settings::favorites`] so saved
+    /// stations stay reachable even when absent from the catalog/search view.
+    /// `Search` is never routed through here (it arrives via
+    /// [`Self::apply_search_results`]); applying it only clamps selection so the
+    /// bounds invariant holds.
     fn show_source(&mut self, source: ListSource) {
         self.source = source;
         match source {
@@ -371,11 +384,17 @@ impl App {
             ListSource::Category(category) => {
                 self.replace_visible(self.catalog.category_stations(category))
             }
-            // Favorites list contents are out of scope for this slice; Search is
-            // applied via search results, not this path. Selection is still
-            // clamped so the bounds invariant holds after the source change.
-            ListSource::Favorites | ListSource::Search => self.clamp_selection(),
+            ListSource::Favorites => self.replace_visible(self.favorite_stations()),
+            ListSource::Search => self.clamp_selection(),
         }
+    }
+
+    /// The persisted favorites as a station list, in saved (insertion) order.
+    ///
+    /// Favorites are user-curated, so they are presented in saved order rather
+    /// than re-ranked by playback likelihood like the catalog sources.
+    fn favorite_stations(&self) -> Stations {
+        self.settings.favorites.iter().cloned().collect()
     }
 
     /// Restore the previous non-search source when search is cleared.
@@ -411,8 +430,8 @@ impl App {
     /// The selection index is clamped against the rail so a stale/oversized
     /// cursor still resolves to a real source. Applying routes through
     /// [`Self::show_source`], so the visible list, active source, and selection
-    /// bounds stay consistent (and `Favorites` is recorded without building its
-    /// contents, which is a later slice).
+    /// bounds stay consistent (including `Favorites`, built from persisted
+    /// settings).
     fn apply_browse_selection(&mut self) {
         let rail = ListSource::browse_rail();
         let index = self.browse_selected.min(rail.len().saturating_sub(1));
@@ -445,6 +464,10 @@ impl App {
     /// deduplication (same id or URL) is enforced by the collection rather than
     /// here. This mutates persisted intent only; writing the file is the
     /// controller's job.
+    ///
+    /// When the Favorites source is active the visible list is rebuilt from the
+    /// updated collection so a removal disappears immediately, keeping selection
+    /// in place (clamped) rather than resetting to the top.
     fn toggle_favorite(&mut self) {
         let Some(station) = self.selected_station().cloned() else {
             return;
@@ -453,6 +476,10 @@ impl App {
             self.settings.favorites.remove(&station);
         } else {
             self.settings.favorites.add(station);
+        }
+        if self.source == ListSource::Favorites {
+            let stations = self.favorite_stations();
+            self.refresh_visible_keeping_selection(stations);
         }
     }
 
@@ -669,6 +696,7 @@ mod tests {
     use crate::model::{
         BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl, VolumePercent,
     };
+    use crate::settings::Favorites;
     use crate::theme::ThemeName;
 
     fn station(id: &str, url: &str) -> Station {
@@ -1277,9 +1305,9 @@ mod tests {
     }
 
     #[test]
-    fn applying_browse_favorites_records_source_without_building_contents() {
-        // Favorites contents are a later slice (MIK-021); applying it records the
-        // source and hands off focus without populating a list here.
+    fn applying_browse_favorites_records_source_and_builds_from_settings() {
+        // Applying Favorites records the source, hands off focus, and builds the
+        // visible list from persisted favorites (empty here, so an empty list).
         let mut app = App::new(Settings::default(), Catalog::curated());
         let rail = ListSource::browse_rail();
         let fav_index = rail
@@ -1290,6 +1318,7 @@ mod tests {
         app.apply(Action::ApplyBrowseSelection);
         assert_eq!(app.active_source(), ListSource::Favorites);
         assert_eq!(app.focus(), FocusPane::Stations);
+        assert!(app.visible().is_empty());
     }
 
     #[test]
@@ -1341,5 +1370,151 @@ mod tests {
             ListSource::Category(Category::Lofi).title(),
             Category::Lofi.title()
         );
+    }
+
+    // --- Favorites ListSource behavior (MIK-021) ------------------------
+
+    /// Build an app whose persisted favorites are exactly `ids`, in order.
+    fn app_with_favorites(ids: &[&str]) -> App {
+        let favorites = Favorites::from_stations(
+            ids.iter()
+                .map(|id| station(id, &format!("https://example.com/{id}.mp3"))),
+        );
+        let settings = Settings {
+            favorites,
+            ..Settings::default()
+        };
+        App::new(settings, Catalog::curated())
+    }
+
+    /// Activate the Favorites source through the Browse rail, the wired path.
+    fn apply_favorites_source(app: &mut App) {
+        let rail = ListSource::browse_rail();
+        let fav_index = rail
+            .iter()
+            .position(|s| *s == ListSource::Favorites)
+            .unwrap();
+        app.apply(Action::SetBrowseSelection(fav_index));
+        app.apply(Action::ApplyBrowseSelection);
+    }
+
+    #[test]
+    fn favorites_source_lists_persisted_favorites_and_is_playable() {
+        let mut app = app_with_favorites(&["fav-a", "fav-b"]);
+        apply_favorites_source(&mut app);
+
+        assert_eq!(app.active_source(), ListSource::Favorites);
+        // Persisted favorites are reachable from the Favorites source.
+        assert_eq!(visible_ids(&app), vec!["fav-a", "fav-b"]);
+        assert_eq!(app.selected_index(), 0);
+
+        // ...and playable like any other source.
+        app.apply(Action::PlaySelected);
+        assert_eq!(app.current_station().unwrap().id.as_str(), "fav-a");
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+    }
+
+    #[test]
+    fn empty_favorites_stays_on_favorites_source() {
+        // Empty Favorites must not silently fall back to All Stations.
+        let mut app = app_with_favorites(&[]);
+        apply_favorites_source(&mut app);
+
+        assert_eq!(app.active_source(), ListSource::Favorites);
+        assert!(app.visible().is_empty());
+        assert!(app.selected_station().is_none());
+    }
+
+    #[test]
+    fn toggling_favorite_in_favorites_source_removes_it_from_visible_immediately() {
+        let mut app = app_with_favorites(&["a", "b", "c"]);
+        apply_favorites_source(&mut app);
+        // Select the middle favorite, then unfavorite it.
+        app.apply(Action::SelectNext); // index 1 == "b"
+        app.apply(Action::ToggleFavorite);
+
+        // Removed from both the persisted collection and the visible list.
+        assert_eq!(app.settings().favorites.len(), 2);
+        assert_eq!(visible_ids(&app), vec!["a", "c"]);
+        // Selection stays in place and now points at the next valid row.
+        assert_eq!(app.selected_index(), 1);
+        assert_eq!(app.selected_station().unwrap().id.as_str(), "c");
+    }
+
+    #[test]
+    fn removing_first_favorite_keeps_selection_on_the_next_row() {
+        let mut app = app_with_favorites(&["a", "b", "c"]);
+        apply_favorites_source(&mut app);
+        app.apply(Action::SelectFirst); // index 0 == "a"
+        app.apply(Action::ToggleFavorite);
+
+        assert_eq!(visible_ids(&app), vec!["b", "c"]);
+        assert_eq!(app.selected_index(), 0);
+        assert_eq!(app.selected_station().unwrap().id.as_str(), "b");
+    }
+
+    #[test]
+    fn removing_last_favorite_clamps_selection_to_the_previous_row() {
+        let mut app = app_with_favorites(&["a", "b", "c"]);
+        apply_favorites_source(&mut app);
+        app.apply(Action::SelectLast); // index 2 == "c"
+        app.apply(Action::ToggleFavorite);
+
+        assert_eq!(visible_ids(&app), vec!["a", "b"]);
+        assert_eq!(app.selected_index(), 1);
+        assert_eq!(app.selected_station().unwrap().id.as_str(), "b");
+    }
+
+    #[test]
+    fn removing_the_only_favorite_yields_an_empty_favorites_state() {
+        let mut app = app_with_favorites(&["only"]);
+        apply_favorites_source(&mut app);
+        app.apply(Action::ToggleFavorite);
+
+        // Empty state on the Favorites source, not a fallback to All Stations.
+        assert_eq!(app.active_source(), ListSource::Favorites);
+        assert!(app.visible().is_empty());
+        assert_eq!(app.selected_index(), 0);
+        assert!(app.selected_station().is_none());
+    }
+
+    #[test]
+    fn toggling_favorite_outside_favorites_source_leaves_visible_untouched() {
+        // Unfavoriting while browsing a catalog source must not mutate the list.
+        let mut app = app_with(&["a", "b", "c"]);
+        app.apply(Action::ToggleFavorite); // favorites "a" (visible is Search source)
+        let before = visible_ids(&app);
+        app.apply(Action::ToggleFavorite); // unfavorite "a"
+        assert_eq!(visible_ids(&app), before);
+    }
+
+    #[test]
+    fn applying_favorites_resets_selection_to_the_top() {
+        // Applying the source replaces visible and resets selection, distinct from
+        // the clamp-in-place behavior of an in-source removal.
+        let mut app = app_with_favorites(&["a", "b", "c"]);
+        apply_favorites_source(&mut app);
+        app.apply(Action::SelectLast);
+        assert_eq!(app.selected_index(), 2);
+
+        apply_favorites_source(&mut app);
+        assert_eq!(app.selected_index(), 0);
+        assert_eq!(visible_ids(&app), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn clearing_search_restores_favorites_contents() {
+        let mut app = app_with_favorites(&["a", "b"]);
+        apply_favorites_source(&mut app);
+        assert_eq!(app.active_source(), ListSource::Favorites);
+
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            station("x", "https://example.com/x.mp3"),
+        ])));
+        assert_eq!(app.active_source(), ListSource::Search);
+
+        app.apply(Action::ClearSearch);
+        assert_eq!(app.active_source(), ListSource::Favorites);
+        assert_eq!(visible_ids(&app), vec!["a", "b"]);
     }
 }

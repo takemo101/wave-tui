@@ -364,8 +364,9 @@ lowercase persisted names, cycled by `t` in this order:
 to `minimal` at the settings boundary. The `t` key remains a simple one-way
 cycle through the documented order; no theme picker is planned for this set.
 
-`Solarized`, `Midnight`, and `Sakura` are added as names with placeholder
-palettes in `MIK-028`; their distinct colors are filled in by `MIK-029`.
+`Solarized`, `Midnight`, and `Sakura` were added as names with placeholder
+palettes in `MIK-028` and now carry their own distinct, dark-canvas-readable
+colors (`MIK-029`).
 
 ### Visualizer Modes
 

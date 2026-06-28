@@ -7,9 +7,10 @@
 //! `solarized`, `midnight`, `sakura`); unknown names fall back to `Minimal` at
 //! the boundary.
 //!
-//! `Solarized`, `Midnight`, and `Sakura` currently use placeholder palettes
-//! (a copy of `Minimal` carrying their own name) so naming, parsing, cycling,
-//! and persistence are stable now; `MIK-029` fills in their distinct colors.
+//! All six themes carry distinct, work-session-friendly palettes: `Minimal` is
+//! the restrained default, `Neon`/`CRT` are the high-contrast pair, and
+//! `Solarized`/`Midnight`/`Sakura` broaden the mood while staying readable on a
+//! dark terminal canvas (`MIK-029`).
 
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -143,28 +144,15 @@ pub struct Theme {
 impl Theme {
     /// Build the palette for a theme name.
     ///
-    /// `Solarized`, `Midnight`, and `Sakura` resolve to placeholder palettes
-    /// (the `Minimal` palette re-tagged with their own name) until `MIK-029`
-    /// supplies their distinct colors. They are already safe to render, persist,
-    /// and cycle through.
+    /// Every name resolves to its own distinct, dark-canvas-readable palette.
     pub fn for_name(name: ThemeName) -> Self {
         match name {
             ThemeName::Minimal => Self::minimal(),
             ThemeName::Neon => Self::neon(),
             ThemeName::Crt => Self::crt(),
-            ThemeName::Solarized => Self::placeholder(ThemeName::Solarized),
-            ThemeName::Midnight => Self::placeholder(ThemeName::Midnight),
-            ThemeName::Sakura => Self::placeholder(ThemeName::Sakura),
-        }
-    }
-
-    /// A safe placeholder palette for a theme whose colors are not designed yet
-    /// (`MIK-029`). Reuses the restrained `Minimal` palette but carries `name`,
-    /// so rendering stays readable and `Theme::for_name(name).name == name`.
-    fn placeholder(name: ThemeName) -> Self {
-        Self {
-            name,
-            ..Self::minimal()
+            ThemeName::Solarized => Self::solarized(),
+            ThemeName::Midnight => Self::midnight(),
+            ThemeName::Sakura => Self::sakura(),
         }
     }
 
@@ -224,6 +212,73 @@ impl Theme {
             spectrum_low: Color::Rgb(0, 110, 40),
             spectrum_mid: phosphor,
             spectrum_high: amber,
+        }
+    }
+
+    /// Solarized-dark inspired theme: muted teal base with blue/cyan/yellow
+    /// accents from the canonical Solarized palette, restful for long sessions.
+    fn solarized() -> Self {
+        let base03 = Color::Rgb(0, 43, 54); // background
+        let base02 = Color::Rgb(7, 54, 66); // border / subtle fill
+        let base01 = Color::Rgb(88, 110, 117); // muted
+        let base0 = Color::Rgb(131, 148, 150); // foreground
+        let base1 = Color::Rgb(147, 161, 161); // selection background
+        Self {
+            name: ThemeName::Solarized,
+            background: base03,
+            foreground: base0,
+            muted: base01,
+            accent: Color::Rgb(38, 139, 210), // blue
+            border: base02,
+            selection_fg: base03,
+            selection_bg: base1,
+            playing: Color::Rgb(133, 153, 0),       // green
+            error: Color::Rgb(220, 50, 47),         // red
+            spectrum_low: Color::Rgb(38, 139, 210), // blue
+            spectrum_mid: Color::Rgb(42, 161, 152), // cyan
+            spectrum_high: Color::Rgb(181, 137, 0), // yellow
+        }
+    }
+
+    /// Deep-night theme: dark navy base with cool blue/indigo/violet accents and
+    /// a blue→violet spectrum, calm but clearly distinct from Solarized.
+    fn midnight() -> Self {
+        let bg = Color::Rgb(11, 16, 33); // deep navy
+        Self {
+            name: ThemeName::Midnight,
+            background: bg,
+            foreground: Color::Rgb(192, 202, 245), // soft lavender white
+            muted: Color::Rgb(86, 95, 137),
+            accent: Color::Rgb(122, 162, 247), // blue
+            border: Color::Rgb(40, 52, 87),
+            selection_fg: bg,
+            selection_bg: Color::Rgb(122, 162, 247),
+            playing: Color::Rgb(158, 206, 106),       // green
+            error: Color::Rgb(247, 118, 142),         // soft red
+            spectrum_low: Color::Rgb(61, 89, 161),    // deep blue
+            spectrum_mid: Color::Rgb(122, 162, 247),  // blue
+            spectrum_high: Color::Rgb(187, 154, 247), // violet
+        }
+    }
+
+    /// Soft cherry-blossom theme: warm dark base with rose/pink accents and a
+    /// rose→pink spectrum, gentle and warm for long sessions.
+    fn sakura() -> Self {
+        let bg = Color::Rgb(31, 26, 29); // warm near-black
+        Self {
+            name: ThemeName::Sakura,
+            background: bg,
+            foreground: Color::Rgb(240, 214, 224), // soft pink white
+            muted: Color::Rgb(138, 107, 120),
+            accent: Color::Rgb(255, 143, 171), // pink
+            border: Color::Rgb(92, 68, 80),
+            selection_fg: bg,
+            selection_bg: Color::Rgb(255, 183, 197), // cherry blossom pink
+            playing: Color::Rgb(181, 232, 160),      // soft green
+            error: Color::Rgb(255, 93, 143),         // rose red
+            spectrum_low: Color::Rgb(209, 107, 165), // rose
+            spectrum_mid: Color::Rgb(255, 143, 171), // pink
+            spectrum_high: Color::Rgb(255, 209, 220), // light pink
         }
     }
 
@@ -407,5 +462,79 @@ mod tests {
         let theme = Theme::for_name(ThemeName::Minimal);
         assert_eq!(theme.spectrum_color(-1.0), theme.spectrum_low);
         assert_eq!(theme.spectrum_color(2.0), theme.spectrum_high);
+    }
+
+    /// The three themes designed in MIK-029.
+    const ADDED_THEMES: [ThemeName; 3] =
+        [ThemeName::Solarized, ThemeName::Midnight, ThemeName::Sakura];
+
+    #[test]
+    fn added_themes_are_no_longer_placeholders_of_minimal() {
+        // MIK-029 replaces the MIK-028 placeholders (a re-tagged Minimal palette)
+        // with distinct palettes, so each added theme must now differ from Minimal
+        // beyond just its name.
+        let minimal = Theme::for_name(ThemeName::Minimal);
+        for name in ADDED_THEMES {
+            let theme = Theme::for_name(name);
+            let renamed_minimal = Theme { name, ..minimal };
+            assert_ne!(
+                theme, renamed_minimal,
+                "{name:?} still mirrors the Minimal placeholder palette"
+            );
+        }
+    }
+
+    #[test]
+    fn for_name_returns_distinct_palettes_for_all_six_themes() {
+        // Switching themes must be meaningful: every accent is unique across the
+        // whole six-pack so no two themes render their headings/focus identically.
+        let accents: Vec<Color> = ALL_THEMES
+            .iter()
+            .map(|name| Theme::for_name(*name).accent)
+            .collect();
+        for i in 0..accents.len() {
+            for j in (i + 1)..accents.len() {
+                assert_ne!(
+                    accents[i], accents[j],
+                    "{:?} and {:?} share an accent color",
+                    ALL_THEMES[i], ALL_THEMES[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn added_theme_spectrum_bands_differ_so_mode_switching_is_meaningful() {
+        // Each added theme's low/mid/high spectrum colors must be distinct, so the
+        // shared SpectrumStack split (and visualizer mode switching) stays legible.
+        for name in ADDED_THEMES {
+            let theme = Theme::for_name(name);
+            assert_ne!(theme.spectrum_low, theme.spectrum_mid, "{name:?} low==mid");
+            assert_ne!(
+                theme.spectrum_mid, theme.spectrum_high,
+                "{name:?} mid==high"
+            );
+            assert_ne!(
+                theme.spectrum_low, theme.spectrum_high,
+                "{name:?} low==high"
+            );
+        }
+    }
+
+    #[test]
+    fn added_themes_are_readable_on_a_dark_canvas() {
+        // Readability proxy: foreground contrasts with the theme background, and a
+        // highlighted row keeps a legible foreground/background pair.
+        for name in ADDED_THEMES {
+            let theme = Theme::for_name(name);
+            assert_ne!(
+                theme.foreground, theme.background,
+                "{name:?} foreground equals background"
+            );
+            assert_ne!(
+                theme.selection_fg, theme.selection_bg,
+                "{name:?} selected row foreground equals its background"
+            );
+        }
     }
 }

@@ -28,8 +28,8 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 - **Three responsive layouts** — Wide "Search Console", plus Medium and Compact
   "Split Mini" tiers that keep both the station list and Now Playing visible.
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
-  `Midnight`, and `Sakura`. The latter three are placeholder palettes for now
-  (distinct colors land in `MIK-029`).
+  `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
+  readable on a dark terminal during long work sessions.
 - **Resilient offline/error handling** — a failed online search shows a clear
   offline state in every layout tier without crashing, and you can still retry
   the previous station and built-in candidates. Favorited stations are saved

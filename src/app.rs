@@ -860,11 +860,13 @@ mod tests {
     }
 
     #[test]
-    fn cycle_visualizer_mode_advances_through_the_five_modes() {
+    fn cycle_visualizer_mode_advances_through_the_six_modes() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
         app.apply(Action::CycleVisualizerMode);
         assert_eq!(app.visualizer_mode(), VisualizerMode::PeakDots);
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::SkylinePeaks);
         app.apply(Action::CycleVisualizerMode);
         assert_eq!(app.visualizer_mode(), VisualizerMode::WaveScope);
         app.apply(Action::CycleVisualizerMode);

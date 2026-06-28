@@ -380,9 +380,11 @@ Visualizer modes (all implemented and selectable via `v`):
 
 1. `SpectrumStack` — current vertical FFT bars and default mode.
 2. `PeakDots` — FFT bars with a dot/peak emphasis.
-3. `WaveScope` — waveform line/scope display from `VizFrame::waveform`.
-4. `MirrorWave` — symmetrical waveform display for a calmer oscilloscope feel.
-5. `AmbientPulse` — low-noise RMS/band-driven ambient display.
+3. `SkylinePeaks` — stateless FFT skyline: a bright peak cap over a subtle dashed
+   tail, distinct from both `SpectrumStack` and `PeakDots`.
+4. `WaveScope` — waveform line/scope display from `VizFrame::waveform`.
+5. `MirrorWave` — symmetrical waveform display for a calmer oscilloscope feel.
+6. `AmbientPulse` — low-noise RMS/band-driven ambient display.
 
 Every mode should use the full width of its allocated visualizer pane by
 resampling/interpolating the available bands or waveform points to the render

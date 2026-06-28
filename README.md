@@ -12,7 +12,7 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 - **Native Rust playback** — MP3/AAC-centered HTTP streams play through a
   `reqwest` + `symphonia` + `cpal` pipeline. No external `ffplay`/`mpv` process.
 - **Real FFT visualizer** — the Spectrum Stack bars are driven by actual played
-  audio samples via `rustfft`, not a simulation. Five calm modes are selectable
+  audio samples via `rustfft`, not a simulation. Six calm modes are selectable
   with `v` (see [Visualizer modes](#visualizer-modes)); all are real-audio-driven
   and stretch to fill the visualizer pane.
 - **Auto-resume** — launching `wave-tui` replays your previous station; first
@@ -109,7 +109,7 @@ entries, not stations guaranteed to play while offline.
 
 ### Visualizer modes
 
-The `v` key cycles a five-mode "Calm Suite" of visualizers, and the selected
+The `v` key cycles a six-mode "Calm Suite" of visualizers, and the selected
 mode is persisted across restarts. Every mode is driven by real played audio and
 stretches its source data to fill the visualizer pane width; none turns the
 layout into a full-screen visualizer.
@@ -118,6 +118,7 @@ layout into a full-screen visualizer.
 | --------------- | --------------------- | ----------------------------------------------- |
 | `SpectrumStack` | FFT bands             | Vertical bars filling from the bottom (default) |
 | `PeakDots`      | FFT bands             | One peak dot per column                         |
+| `SkylinePeaks`  | FFT bands             | Bright peak cap over a subtle dashed tail       |
 | `WaveScope`     | Waveform              | Oscilloscope trace around the center line       |
 | `MirrorWave`    | Waveform              | Symmetrical waveform mirrored above/below center|
 | `AmbientPulse`  | RMS + bands           | Low-noise centered glow that pulses with level  |

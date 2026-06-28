@@ -399,7 +399,7 @@ fn render_now_playing(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, co
 
 /// Draw the visualizer pane using the app's selected [`VisualizerMode`].
 ///
-/// Every mode in the five-mode Calm Suite has a dedicated renderer, each driven
+/// Every mode in the six-mode Calm Suite has a dedicated renderer, each driven
 /// from the real [`VizFrame`] (FFT bands, RMS, or the time-domain waveform) and
 /// each stretched to the full pane width. The match is exhaustive on purpose
 /// (MIK-026): adding a future mode is a compile error here until it is wired,
@@ -408,6 +408,7 @@ fn render_visualizer(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     match app.visualizer_mode() {
         VisualizerMode::SpectrumStack => render_spectrum(theme, app, area, buf),
         VisualizerMode::PeakDots => render_peak_dots(theme, app, area, buf),
+        VisualizerMode::SkylinePeaks => render_skyline_peaks(theme, app, area, buf),
         VisualizerMode::WaveScope => render_wave_scope(theme, app, area, buf),
         VisualizerMode::MirrorWave => render_mirror_wave(theme, app, area, buf),
         VisualizerMode::AmbientPulse => render_ambient_pulse(theme, app, area, buf),
@@ -511,6 +512,46 @@ fn render_peak_dots(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
         let y = area.y + area.height - filled;
         if let Some(cell) = buf.cell_mut((x, y)) {
             cell.set_char('●').set_fg(color);
+        }
+    }
+}
+
+/// The "Skyline Peaks" visualizer: a calm FFT skyline of bright peak caps over a
+/// subtle dashed tail.
+///
+/// A third FFT-band Spectrum-family renderer alongside [`render_spectrum`] and
+/// [`render_peak_dots`]. It shares the full-pane-width [`spectrum_columns`]
+/// sampling and the theme's low/mid/high spectrum split, but draws each column as
+/// a distinct silhouette: a bright cap glyph (`▀`) marks the peak and a light
+/// dashed tail (`╎`) fills the body below it down to the floor. This reads
+/// quieter than the solid [`render_spectrum`] bars yet carries more presence than
+/// the single [`render_peak_dots`] dot, so the three FFT modes stay visibly
+/// distinct. Columns whose magnitude rounds to zero (silent/empty frames) draw
+/// nothing. Pure function of the current [`VizFrame`]; it carries no animation or
+/// mode-specific state.
+fn render_skyline_peaks(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let columns = spectrum_columns(&app.viz().bands, area.width as usize);
+    for (i, (magnitude, position)) in columns.into_iter().enumerate() {
+        let filled = (magnitude * area.height as f32).round() as u16;
+        if filled == 0 {
+            continue;
+        }
+        let color = theme.spectrum_color(position);
+        let x = area.x + i as u16;
+        // The cap sits at the top of where a filled bar would reach; the tail is
+        // the calm dashed body beneath it, down to the floor.
+        let cap_y = area.y + area.height - filled;
+        for row in 0..filled.saturating_sub(1) {
+            let y = area.y + area.height - 1 - row;
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_char('╎').set_fg(color);
+            }
+        }
+        if let Some(cell) = buf.cell_mut((x, cap_y)) {
+            cell.set_char('▀').set_fg(color);
         }
     }
 }
@@ -1645,6 +1686,171 @@ mod tests {
                 assert!(
                     !buffer_text(&buf).contains('●'),
                     "silent/empty frame must draw no peak dots at {w}x{h}"
+                );
+            }
+        }
+    }
+
+    // --- SkylinePeaks visualizer mode (MIK-031) -------------------------
+
+    #[test]
+    fn selecting_skyline_peaks_changes_the_rendered_visualizer() {
+        // SkylinePeaks is reachable from PeakDots via the `v` cycle and routes to
+        // its own renderer: a bright cap glyph over a subtle dashed tail, distinct
+        // from both the filled SpectrumStack bars and the single PeakDots dot.
+        let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 8],
+            1.0,
+            vec![],
+        ))));
+
+        let skyline_text = buffer_text(&render_viz_buffer(&app, 32, 8));
+        assert!(
+            skyline_text.contains('▀'),
+            "skyline peaks must draw a cap glyph: {skyline_text}"
+        );
+        assert!(
+            skyline_text.contains('╎'),
+            "skyline peaks must draw a subtle tail glyph: {skyline_text}"
+        );
+        // Distinct from the sibling spectrum modes' glyph languages.
+        assert!(
+            !skyline_text.contains('●'),
+            "skyline peaks must not draw peak dots"
+        );
+
+        let mut stack = base_app();
+        stack.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 8],
+            1.0,
+            vec![],
+        ))));
+        let stack_text = buffer_text(&render_viz_buffer(&stack, 32, 8));
+        assert_ne!(
+            stack_text, skyline_text,
+            "skyline peaks must render differently from the spectrum stack"
+        );
+    }
+
+    #[test]
+    fn skyline_peaks_caps_every_column_across_the_full_pane_width() {
+        // Far more pane cells than bands: each column gets a cap drawn from the
+        // shared full-width sampling helper, not just bands.len() cells.
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 4],
+            1.0,
+            vec![],
+        ))));
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        render_skyline_peaks(&theme, &app, area, &mut buf);
+
+        // Full magnitude lands the cap on the top row of every column.
+        for x in 0..area.width {
+            assert_eq!(
+                buf.cell((x, 0)).unwrap().symbol(),
+                "▀",
+                "column {x} not capped across the full pane width"
+            );
+        }
+    }
+
+    #[test]
+    fn skyline_peaks_draws_a_subtle_tail_below_the_cap() {
+        // A tall column shows the bright cap on top and the calm dashed tail
+        // beneath it, so the silhouette reads as a skyline rather than a solid bar.
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 4],
+            1.0,
+            vec![],
+        ))));
+        let area = Rect::new(0, 0, 8, 6);
+        let mut buf = Buffer::empty(area);
+        render_skyline_peaks(&theme, &app, area, &mut buf);
+
+        let x = 0;
+        assert_eq!(buf.cell((x, 0)).unwrap().symbol(), "▀", "cap on top row");
+        for y in 1..area.height {
+            assert_eq!(
+                buf.cell((x, y)).unwrap().symbol(),
+                "╎",
+                "tail glyph below the cap at row {y}"
+            );
+        }
+        // The tail is not a solid block (distinct from the SpectrumStack fill).
+        assert!(
+            !buffer_text(&buf).contains('█'),
+            "skyline tail must not be solid bars"
+        );
+    }
+
+    #[test]
+    fn skyline_peaks_uses_theme_spectrum_colors() {
+        // Caps and tails are colored by the low/mid/high spectrum split, not an ad
+        // hoc palette, so they stay theme-driven like the shared Spectrum Stack.
+        let mut app = base_app();
+        app.apply(Action::CycleTheme); // Minimal -> Neon
+        while app.visualizer_mode() != VisualizerMode::SkylinePeaks {
+            app.apply(Action::CycleVisualizerMode);
+        }
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 8],
+            1.0,
+            vec![],
+        ))));
+        let theme = app.theme().theme();
+        let buf = render_viz_buffer(&app, 30, 8);
+        assert!(
+            has_fg(&buf, theme.spectrum_low)
+                || has_fg(&buf, theme.spectrum_mid)
+                || has_fg(&buf, theme.spectrum_high),
+            "skyline peak colors not themed"
+        );
+    }
+
+    #[test]
+    fn skyline_peaks_renders_in_every_layout_tier() {
+        let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.9_f32; 16],
+            0.8,
+            vec![],
+        ))));
+        play_first(&mut app);
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                text.contains('▀'),
+                "skyline caps missing at {w}x{h}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn skyline_peaks_is_safe_for_tiny_panes_and_silent_frames() {
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut silent = app_in_mode(VisualizerMode::SkylinePeaks);
+        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        let mut empty = app_in_mode(VisualizerMode::SkylinePeaks);
+        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            Vec::<f32>::new(),
+            0.0,
+            vec![],
+        ))));
+
+        for app in [&silent, &empty] {
+            for (w, h) in [(0u16, 0u16), (1, 1), (2, 1), (1, 4), (40, 1)] {
+                let area = Rect::new(0, 0, w, h);
+                let mut buf = Buffer::empty(area);
+                render_skyline_peaks(&theme, app, area, &mut buf);
+                assert!(
+                    !buffer_text(&buf).contains('▀'),
+                    "silent/empty frame must draw no skyline caps at {w}x{h}"
                 );
             }
         }

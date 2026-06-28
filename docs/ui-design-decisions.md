@@ -54,14 +54,17 @@ Implications:
 - Low-power mode should lower update cadence, not change the visual language.
 
 `MIK-015` polish expands the visualizer from a single renderer to a small mode
-set: `SpectrumStack`, `PeakDots`, `WaveScope`, `MirrorWave`, and `AmbientPulse`,
-all now implemented. `SpectrumStack`/`PeakDots` are FFT-band driven, `WaveScope`/
-`MirrorWave` draw the time-domain waveform, and `AmbientPulse` is an RMS/band
-ambient glow. This requires `VizFrame` to carry a low-resolution normalized
-waveform alongside FFT bands and RMS. All modes remain real-audio-driven and
-stretch/interpolate their source data to fill the allocated visualizer pane
-width; this means using the current pane fully, not turning Wide or Compact into
-a full-width/full-screen visualizer layout.
+set; `MIK-031` adds a third FFT-band member so the set is now six modes:
+`SpectrumStack`, `PeakDots`, `SkylinePeaks`, `WaveScope`, `MirrorWave`, and
+`AmbientPulse`, all implemented. `SpectrumStack`/`PeakDots`/`SkylinePeaks` are
+FFT-band driven (`SkylinePeaks` is a calm, stateless skyline of bright peak caps
+over a subtle dashed tail, distinct from the solid `SpectrumStack` bars and the
+single `PeakDots` dot), `WaveScope`/`MirrorWave` draw the time-domain waveform,
+and `AmbientPulse` is an RMS/band ambient glow. This requires `VizFrame` to carry
+a low-resolution normalized waveform alongside FFT bands and RMS. All modes
+remain real-audio-driven and stretch/interpolate their source data to fill the
+allocated visualizer pane width; this means using the current pane fully, not
+turning Wide or Compact into a full-width/full-screen visualizer layout.
 
 The `v` key cycles the visualizer mode and the selected mode is persisted.
 
@@ -134,10 +137,10 @@ A follow-up UI/UX design deck confirmed the concrete visual direction for
   picker; applying a source with `Enter` moves focus to Stations so the next
   action can be station selection or playback. Favorites uses the same source
   model and shows an explicit empty state.
-- **Visualizer language: Five-mode Calm Suite** — use the five-mode set
-  (`SpectrumStack`, `PeakDots`, `WaveScope`, `MirrorWave`, `AmbientPulse`) with
-  calm defaults and pane-width interpolation rather than a full-screen or
-  full-width layout takeover.
+- **Visualizer language: Six-mode Calm Suite** — use the six-mode set
+  (`SpectrumStack`, `PeakDots`, `SkylinePeaks`, `WaveScope`, `MirrorWave`,
+  `AmbientPulse`) with calm defaults and pane-width interpolation rather than a
+  full-screen or full-width layout takeover.
 - **Theme expansion: Calm Six-pack** — expand to Minimal, Neon, CRT, Solarized,
   Midnight, and Sakura. The added themes should broaden mood while staying
   suitable for long work sessions.

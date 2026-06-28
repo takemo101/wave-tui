@@ -376,19 +376,20 @@ pub enum PlaybackState {
 
 /// One of the selectable visualizer renderers.
 ///
-/// `SpectrumStack` is the default. All five modes of the Calm Suite
+/// `SpectrumStack` is the default. All six modes of the Calm Suite
 /// (`docs/ui-design-decisions.md`) are implemented and selectable via the `v`
-/// key: `SpectrumStack` and `PeakDots` are FFT-band driven, `WaveScope` and
-/// `MirrorWave` draw the time-domain waveform, and `AmbientPulse` is an
-/// RMS/band-driven ambient glow. Modes are stored as stable lowercase strings
-/// (`spectrum_stack`, `peak_dots`, …) so persisted settings stay stable; unknown
-/// names fall back to `SpectrumStack` at the settings boundary via
+/// key: `SpectrumStack`, `PeakDots`, and `SkylinePeaks` are FFT-band driven,
+/// `WaveScope` and `MirrorWave` draw the time-domain waveform, and `AmbientPulse`
+/// is an RMS/band-driven ambient glow. Modes are stored as stable lowercase
+/// strings (`spectrum_stack`, `peak_dots`, …) so persisted settings stay stable;
+/// unknown names fall back to `SpectrumStack` at the settings boundary via
 /// [`VisualizerMode::parse_or_default`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum VisualizerMode {
     #[default]
     SpectrumStack,
     PeakDots,
+    SkylinePeaks,
     WaveScope,
     MirrorWave,
     AmbientPulse,
@@ -396,9 +397,10 @@ pub enum VisualizerMode {
 
 impl VisualizerMode {
     /// Every mode, in `v`-key cycling order.
-    pub const ALL: [VisualizerMode; 5] = [
+    pub const ALL: [VisualizerMode; 6] = [
         VisualizerMode::SpectrumStack,
         VisualizerMode::PeakDots,
+        VisualizerMode::SkylinePeaks,
         VisualizerMode::WaveScope,
         VisualizerMode::MirrorWave,
         VisualizerMode::AmbientPulse,
@@ -409,6 +411,7 @@ impl VisualizerMode {
         match self {
             VisualizerMode::SpectrumStack => "spectrum_stack",
             VisualizerMode::PeakDots => "peak_dots",
+            VisualizerMode::SkylinePeaks => "skyline_peaks",
             VisualizerMode::WaveScope => "wave_scope",
             VisualizerMode::MirrorWave => "mirror_wave",
             VisualizerMode::AmbientPulse => "ambient_pulse",
@@ -420,6 +423,7 @@ impl VisualizerMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "spectrum_stack" => Ok(VisualizerMode::SpectrumStack),
             "peak_dots" => Ok(VisualizerMode::PeakDots),
+            "skyline_peaks" => Ok(VisualizerMode::SkylinePeaks),
             "wave_scope" => Ok(VisualizerMode::WaveScope),
             "mirror_wave" => Ok(VisualizerMode::MirrorWave),
             "ambient_pulse" => Ok(VisualizerMode::AmbientPulse),
@@ -439,7 +443,8 @@ impl VisualizerMode {
     pub fn next(self) -> Self {
         match self {
             VisualizerMode::SpectrumStack => VisualizerMode::PeakDots,
-            VisualizerMode::PeakDots => VisualizerMode::WaveScope,
+            VisualizerMode::PeakDots => VisualizerMode::SkylinePeaks,
+            VisualizerMode::SkylinePeaks => VisualizerMode::WaveScope,
             VisualizerMode::WaveScope => VisualizerMode::MirrorWave,
             VisualizerMode::MirrorWave => VisualizerMode::AmbientPulse,
             VisualizerMode::AmbientPulse => VisualizerMode::SpectrumStack,
@@ -642,6 +647,7 @@ mod tests {
     fn visualizer_mode_uses_stable_lowercase_names() {
         assert_eq!(VisualizerMode::SpectrumStack.as_str(), "spectrum_stack");
         assert_eq!(VisualizerMode::PeakDots.as_str(), "peak_dots");
+        assert_eq!(VisualizerMode::SkylinePeaks.as_str(), "skyline_peaks");
         assert_eq!(VisualizerMode::WaveScope.as_str(), "wave_scope");
         assert_eq!(VisualizerMode::MirrorWave.as_str(), "mirror_wave");
         assert_eq!(VisualizerMode::AmbientPulse.as_str(), "ambient_pulse");
@@ -672,12 +678,20 @@ mod tests {
     }
 
     #[test]
-    fn visualizer_mode_cycles_through_the_five_modes_and_wraps() {
+    fn visualizer_mode_cycles_through_the_six_modes_and_wraps() {
+        // SkylinePeaks groups with the other FFT-band modes (after PeakDots).
         assert_eq!(
             VisualizerMode::SpectrumStack.next(),
             VisualizerMode::PeakDots
         );
-        assert_eq!(VisualizerMode::PeakDots.next(), VisualizerMode::WaveScope);
+        assert_eq!(
+            VisualizerMode::PeakDots.next(),
+            VisualizerMode::SkylinePeaks
+        );
+        assert_eq!(
+            VisualizerMode::SkylinePeaks.next(),
+            VisualizerMode::WaveScope
+        );
         assert_eq!(VisualizerMode::WaveScope.next(), VisualizerMode::MirrorWave);
         assert_eq!(
             VisualizerMode::MirrorWave.next(),
@@ -687,9 +701,9 @@ mod tests {
             VisualizerMode::AmbientPulse.next(),
             VisualizerMode::SpectrumStack
         );
-        // Five steps return to the start.
+        // Six steps return to the start.
         let start = VisualizerMode::SpectrumStack;
-        assert_eq!(start.next().next().next().next().next(), start);
+        assert_eq!(start.next().next().next().next().next().next(), start);
     }
 
     #[test]

@@ -288,6 +288,24 @@ mod tests {
     }
 
     #[test]
+    fn save_then_load_roundtrips_every_visualizer_mode() {
+        // Every selectable mode (including SkylinePeaks) must survive a save/load
+        // cycle unchanged, so the persisted `v` selection is stable.
+        for mode in VisualizerMode::ALL {
+            let dir = TempDir::new();
+            let path = dir.path().join("settings.json");
+            let settings = Settings {
+                visualizer: mode,
+                ..Settings::default()
+            };
+            save_to(&path, &settings).unwrap();
+            let loaded = load_from(&path).unwrap();
+            assert_eq!(loaded.visualizer, mode);
+            assert_eq!(loaded, settings);
+        }
+    }
+
+    #[test]
     fn load_falls_back_unknown_visualizer_without_dropping_other_settings() {
         let dir = TempDir::new();
         let path = dir.path().join("settings.json");

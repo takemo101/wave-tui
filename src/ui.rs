@@ -301,14 +301,12 @@ fn render_station_list(
     if app.visible().is_empty() {
         let inner = block.inner(area);
         block.render(area, buf);
-        let note = if app.is_offline() {
-            "No stations — offline"
-        } else {
-            "No stations"
-        };
-        Paragraph::new(Line::styled(note, Style::default().fg(theme.muted)))
-            .style(theme.base_style())
-            .render(inner, buf);
+        Paragraph::new(Line::styled(
+            empty_list_note(app),
+            Style::default().fg(theme.muted),
+        ))
+        .style(theme.base_style())
+        .render(inner, buf);
         return;
     }
 
@@ -526,6 +524,25 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
 }
 
 // --- small helpers -------------------------------------------------------
+
+/// The empty-state note for the visible station list, specific to the active
+/// source.
+///
+/// The Favorites source gets an explicit save hint rather than the generic "No
+/// stations" line: an empty favorites list is a normal first-run state the user
+/// resolves by pressing `f`. That hint is shown even offline — saved favorites
+/// are retryable stream entries, not stations guaranteed to play offline, so the
+/// empty state keeps guiding the user to save rather than implying offline
+/// availability. Other sources keep the offline-aware generic note.
+fn empty_list_note(app: &App) -> &'static str {
+    if app.active_source() == ListSource::Favorites {
+        "No favorites yet — press f on a station to save it"
+    } else if app.is_offline() {
+        "No stations — offline"
+    } else {
+        "No stations"
+    }
+}
 
 /// A bordered pane block whose border highlights when the pane is focused.
 fn bordered_block(theme: &Theme, title: &str, focused: bool) -> Block<'static> {
@@ -1017,6 +1034,117 @@ mod tests {
             &minimal_buf,
             Theme::for_name(ThemeName::Neon).accent
         ));
+    }
+
+    // --- Favorites view: empty state and rendering (MIK-022) ------------
+
+    /// A station fixture for favorites tests; the id doubles as the display name
+    /// so rendered rows are easy to assert on.
+    fn fav_station(id: &str) -> Station {
+        use crate::model::{BitrateKbps, StationId, StationName, StationSource, StreamUrl};
+        Station {
+            id: StationId::new(id).unwrap(),
+            name: StationName::new(id).unwrap(),
+            url: StreamUrl::parse(format!("https://example.com/{id}.mp3")).unwrap(),
+            homepage: None,
+            country: None,
+            language: None,
+            tags: vec![],
+            codec: CodecKind::Mp3,
+            bitrate: Some(BitrateKbps::new(128).unwrap()),
+            votes: Some(10),
+            click_count: Some(10),
+            source: StationSource::RadioBrowser,
+        }
+    }
+
+    /// An app whose persisted favorites are exactly `ids`, in order.
+    fn app_with_favorites(ids: &[&str]) -> App {
+        let favorites =
+            crate::settings::Favorites::from_stations(ids.iter().map(|id| fav_station(id)));
+        let settings = Settings {
+            favorites,
+            ..Settings::default()
+        };
+        App::new(settings, Catalog::curated())
+    }
+
+    /// Activate the Favorites source through the Browse rail (the wired path).
+    fn apply_favorites_source(app: &mut App) {
+        let rail = ListSource::browse_rail();
+        let fav_index = rail
+            .iter()
+            .position(|s| *s == ListSource::Favorites)
+            .unwrap();
+        app.apply(Action::SetBrowseSelection(fav_index));
+        app.apply(Action::ApplyBrowseSelection);
+    }
+
+    #[test]
+    fn empty_favorites_shows_a_helpful_save_hint() {
+        // An empty Favorites view must be explicit and tell the user how to fill
+        // it, not show the generic "No stations" line, at every tier.
+        let mut app = app_with_favorites(&[]);
+        apply_favorites_source(&mut app);
+        assert_eq!(app.active_source(), ListSource::Favorites);
+        assert!(app.visible().is_empty());
+
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                text.contains("No favorites yet"),
+                "favorites empty hint missing at {w}x{h}: {text}"
+            );
+            assert!(
+                text.contains("press f"),
+                "favorites save hint missing at {w}x{h}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_favorites_hint_is_shown_even_offline() {
+        // Offline must not swap the save hint for a generic offline note:
+        // favorites are retryable saved entries, so the empty state keeps guiding
+        // the user to save rather than implying offline playback availability.
+        let mut app = app_with_favorites(&[]);
+        apply_favorites_source(&mut app);
+        app.apply(Action::SetOffline(true));
+        let text = buffer_text(&render_buffer(&app, 130, 32));
+        assert!(
+            text.contains("No favorites yet"),
+            "favorites hint lost while offline: {text}"
+        );
+    }
+
+    #[test]
+    fn non_empty_favorites_renders_saved_stations_with_markers() {
+        // A populated Favorites view shows the saved stations with the normal
+        // favorite star marker and not the empty-state hint.
+        let mut app = app_with_favorites(&["fav-a", "fav-b"]);
+        apply_favorites_source(&mut app);
+        let text = buffer_text(&render_buffer(&app, 130, 32));
+        assert!(text.contains("fav-a"), "saved favorite missing: {text}");
+        assert!(text.contains("fav-b"), "saved favorite missing: {text}");
+        assert!(text.contains('★'), "favorite marker missing: {text}");
+        assert!(
+            !text.contains("No favorites yet"),
+            "empty hint shown for a non-empty favorites list: {text}"
+        );
+    }
+
+    #[test]
+    fn favorites_source_is_marked_active_in_browse() {
+        // Building on MIK-019/021: when Favorites is the active source its Browse
+        // rail row carries the active dot, so the rail reflects the applied view.
+        let mut app = app_with_favorites(&["fav-a"]);
+        apply_favorites_source(&mut app);
+        let text = buffer_text(&render_browse_buffer(&app, 24, 16));
+        let fav_row = line_with(&text, "Favorites").expect("Favorites row");
+        assert!(
+            text.lines().nth(fav_row).unwrap().contains('●'),
+            "active Favorites source not marked in Browse: {text}"
+        );
     }
 
     #[test]

@@ -36,7 +36,8 @@ const VIZ_BANDS: usize = 16;
 pub enum FocusPane {
     /// Search input strip.
     Search,
-    /// Section/category shortcuts for Music and Spoken/News.
+    /// Browse source rail: the flat source picker (All Stations, Favorites,
+    /// sections, and categories).
     Sections,
     /// The visible station list (catalog or search results).
     Stations,
@@ -123,6 +124,35 @@ impl ListSource {
     /// Whether this source is the online search source.
     fn is_search(self) -> bool {
         matches!(self, ListSource::Search)
+    }
+
+    /// Human-readable label for this source, drawn from catalog state for
+    /// sections and categories so the Browse rail never duplicates ad hoc
+    /// labels.
+    pub fn title(self) -> &'static str {
+        match self {
+            ListSource::AllStations => "All Stations",
+            ListSource::Favorites => "Favorites",
+            ListSource::Section(section) => section.title(),
+            ListSource::Category(category) => category.title(),
+            ListSource::Search => "Search",
+        }
+    }
+
+    /// The flat Browse source rail, in display order: All Stations, Favorites,
+    /// then each section immediately followed by its categories.
+    ///
+    /// `Search` is never part of the rail; it is entered by typing a query, not
+    /// picked from Browse.
+    pub fn browse_rail() -> Vec<ListSource> {
+        let mut rail = vec![ListSource::AllStations, ListSource::Favorites];
+        for section in Section::ALL {
+            rail.push(ListSource::Section(section));
+            for &category in section.categories() {
+                rail.push(ListSource::Category(category));
+            }
+        }
+        rail
     }
 }
 
@@ -1124,5 +1154,45 @@ mod tests {
         assert_eq!(app.browse_selected(), 0);
         app.apply(Action::SetBrowseSelection(3));
         assert_eq!(app.browse_selected(), 3);
+    }
+
+    #[test]
+    fn browse_rail_is_a_flat_list_of_sources_and_categories() {
+        let rail = ListSource::browse_rail();
+        // Leads with the two cross-cutting sources.
+        assert_eq!(rail[0], ListSource::AllStations);
+        assert_eq!(rail[1], ListSource::Favorites);
+        // Each section is immediately followed by its own categories.
+        let music_at = rail
+            .iter()
+            .position(|s| *s == ListSource::Section(Section::Music))
+            .unwrap();
+        for (offset, &category) in Section::Music.categories().iter().enumerate() {
+            assert_eq!(rail[music_at + 1 + offset], ListSource::Category(category));
+        }
+        // Every catalog source appears exactly once; Search never does.
+        assert!(rail.contains(&ListSource::Section(Section::SpokenNews)));
+        assert!(rail.contains(&ListSource::Category(Category::Talk)));
+        assert!(!rail.contains(&ListSource::Search));
+        // 2 cross-cutting + 2 sections + every category.
+        let categories = Section::ALL
+            .iter()
+            .map(|s| s.categories().len())
+            .sum::<usize>();
+        assert_eq!(rail.len(), 2 + Section::ALL.len() + categories);
+    }
+
+    #[test]
+    fn browse_rail_titles_come_from_catalog_state() {
+        assert_eq!(ListSource::AllStations.title(), "All Stations");
+        assert_eq!(ListSource::Favorites.title(), "Favorites");
+        assert_eq!(
+            ListSource::Section(Section::SpokenNews).title(),
+            Section::SpokenNews.title()
+        );
+        assert_eq!(
+            ListSource::Category(Category::Lofi).title(),
+            Category::Lofi.title()
+        );
     }
 }

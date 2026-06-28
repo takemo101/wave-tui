@@ -27,8 +27,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, FocusPane, SearchStatus};
-use crate::catalog::Section;
+use crate::app::{App, FocusPane, ListSource, SearchStatus};
 use crate::layout::LayoutTier;
 use crate::model::{CodecKind, PlaybackState, Station};
 use crate::theme::Theme;
@@ -82,7 +81,7 @@ fn render_wide(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
     ])
     .split(rows[1]);
 
-    render_sections(app, theme, cols[0], buf);
+    render_browse(app, theme, cols[0], buf);
     render_station_list(app, theme, cols[1], buf, "Results", false);
     render_now_playing(app, theme, cols[2], buf, false);
 
@@ -218,29 +217,62 @@ fn search_status_span<'a>(app: &App, theme: &Theme) -> Span<'a> {
     }
 }
 
-/// Music / Spoken-News browse shortcuts. Wide-tier "category context" pane.
-fn render_sections(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
+/// Browse source rail: the Wide-tier "Quiet Source Rail" left column.
+///
+/// Renders the flat, actionable source picker — All Stations, Favorites, each
+/// section, and every category — from [`ListSource::browse_rail`]. Two pieces of
+/// state are shown distinctly: the Browse *selection* (the row the rail cursor is
+/// on, drawn with the selection highlight) and the *active* source (the source
+/// the visible list is built from, marked with a filled dot). Applying a
+/// selected source and moving the cursor are keyboard concerns owned by a later
+/// slice; this renderer only reflects current app state.
+fn render_browse(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let focused = app.focus() == FocusPane::Sections;
     let block = bordered_block(theme, "Browse", focused);
-    let inner = block.inner(area);
-    block.render(area, buf);
 
-    let mut lines = Vec::new();
-    for section in Section::ALL {
-        lines.push(Line::styled(section.title(), theme.accent_style()));
-        for category in section.categories() {
-            lines.push(Line::styled(
-                format!("  {}", category.title()),
-                Style::default().fg(theme.muted),
-            ));
-        }
-    }
-    Paragraph::new(lines)
-        .style(theme.base_style())
-        .render(inner, buf);
+    let rail = ListSource::browse_rail();
+    let active = app.active_source();
+    let items: Vec<ListItem> = rail
+        .iter()
+        .map(|source| browse_item(theme, *source, *source == active))
+        .collect();
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_symbol("▶ ")
+        .highlight_style(theme.selection_style());
+
+    let mut state = ListState::default();
+    state.select(Some(
+        app.browse_selected().min(rail.len().saturating_sub(1)),
+    ));
+    StatefulWidget::render(list, area, buf, &mut state);
+}
+
+/// Build one Browse rail row: categories indent under their section, and the
+/// active source carries a filled-dot marker in the playing color so it reads as
+/// applied even when it is not the current Browse selection.
+fn browse_item<'a>(theme: &Theme, source: ListSource, active: bool) -> ListItem<'a> {
+    let indent = if matches!(source, ListSource::Category(_)) {
+        "  "
+    } else {
+        ""
+    };
+    let marker = if active { "● " } else { "  " };
+    let label_style = if active {
+        Style::default()
+            .fg(theme.playing)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.foreground)
+    };
+    ListItem::new(Line::from(vec![
+        Span::styled(marker, Style::default().fg(theme.playing)),
+        Span::styled(format!("{indent}{}", source.title()), label_style),
+    ]))
 }
 
 /// Station / search-result list with selected, favorite, and failed markers.
@@ -575,7 +607,7 @@ mod tests {
     use super::*;
     use crate::app::{Action, SearchStatus};
     use crate::audio::AudioEvent;
-    use crate::catalog::Catalog;
+    use crate::catalog::{Catalog, Category};
     use crate::model::VizFrame;
     use crate::settings::Settings;
     use crate::theme::ThemeName;
@@ -638,6 +670,107 @@ mod tests {
         // Now Playing and footer hints remain visible while browsing.
         assert!(text.contains("Now Playing"));
         assert!(text.contains("search"));
+    }
+
+    /// Render only the Browse rail into a standalone buffer so per-row
+    /// assertions are not crossed by the Results / Now Playing columns.
+    fn render_browse_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        let theme = app.theme().theme();
+        render_browse(app, &theme, area, &mut buf);
+        buf
+    }
+
+    /// The buffer line (relative row) that contains `needle`, if any.
+    fn line_with(text: &str, needle: &str) -> Option<usize> {
+        text.lines().position(|line| line.contains(needle))
+    }
+
+    #[test]
+    fn wide_browse_rail_lists_every_source_as_a_flat_picker() {
+        // The whole flat rail is actionable source labels, drawn from catalog
+        // state: the two cross-cutting sources, both sections, and categories.
+        let app = base_app();
+        let text = buffer_text(&render_browse_buffer(&app, 24, 16));
+        for label in [
+            "All Stations",
+            "Favorites",
+            "Music",
+            "Lofi",
+            "Jazz",
+            "Spoken / News",
+            "News",
+            "Talk",
+        ] {
+            assert!(
+                text.contains(label),
+                "Browse rail missing {label:?}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_browse_marks_the_active_source_distinctly() {
+        // Default active source is All Stations: its row carries the active dot
+        // and no other source row does.
+        let app = base_app();
+        let text = buffer_text(&render_browse_buffer(&app, 24, 16));
+        let all_row = line_with(&text, "All Stations").expect("All Stations row");
+        let lofi_row = line_with(&text, "Lofi").expect("Lofi row");
+        assert!(
+            text.lines().nth(all_row).unwrap().contains('●'),
+            "active source not marked: {text}"
+        );
+        assert!(
+            !text.lines().nth(lofi_row).unwrap().contains('●'),
+            "inactive source wrongly marked active: {text}"
+        );
+
+        // Applying a category moves the active marker to that row.
+        let mut app = base_app();
+        app.apply(Action::ShowCategory(Category::Lofi));
+        let text = buffer_text(&render_browse_buffer(&app, 24, 16));
+        let all_row = line_with(&text, "All Stations").expect("All Stations row");
+        let lofi_row = line_with(&text, "Lofi").expect("Lofi row");
+        assert!(
+            text.lines().nth(lofi_row).unwrap().contains('●'),
+            "active marker did not follow the applied source: {text}"
+        );
+        assert!(
+            !text.lines().nth(all_row).unwrap().contains('●'),
+            "stale active marker on previous source: {text}"
+        );
+    }
+
+    #[test]
+    fn wide_browse_separates_selection_from_active_source() {
+        // The Browse cursor (selection) and the active source are different
+        // signals: parking the cursor on a row other than the active source must
+        // show both markers, on their own rows.
+        let mut app = base_app();
+        assert_eq!(app.active_source(), ListSource::AllStations);
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        let favorites_index = ListSource::browse_rail()
+            .iter()
+            .position(|s| *s == ListSource::Favorites)
+            .unwrap();
+        app.apply(Action::SetBrowseSelection(favorites_index));
+
+        let text = buffer_text(&render_browse_buffer(&app, 24, 16));
+        let active_row = line_with(&text, "All Stations").expect("All Stations row");
+        let selected_row = line_with(&text, "Favorites").expect("Favorites row");
+        assert_ne!(
+            active_row, selected_row,
+            "active and selected rows must differ for this case"
+        );
+        // The active source keeps its dot.
+        assert!(text.lines().nth(active_row).unwrap().contains('●'));
+        // The Browse selection carries the cursor symbol on its own row.
+        assert!(
+            text.lines().nth(selected_row).unwrap().contains('▶'),
+            "Browse selection cursor missing: {text}"
+        );
     }
 
     #[test]

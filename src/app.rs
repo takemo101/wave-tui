@@ -1046,7 +1046,7 @@ mod tests {
     #[test]
     fn audio_viz_updates_current_frame() {
         let mut app = app_with(&["a"]);
-        let frame = VizFrame::new([0.1, 0.9, 0.5], 0.7);
+        let frame = VizFrame::new([0.1, 0.9, 0.5], 0.7, [-0.5, 0.0, 0.5]);
         app.apply(Action::Audio(AudioEvent::Viz(frame.clone())));
         assert_eq!(app.viz(), &frame);
     }

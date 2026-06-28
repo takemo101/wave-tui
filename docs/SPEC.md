@@ -366,13 +366,13 @@ cycle through the documented order; no theme picker is planned for this set.
 
 ### Visualizer Modes
 
-The MVP visualizer is Spectrum Stack. Planned polish for `MIK-015` keeps that as
-the default while adding selectable visualizer modes driven by real audio data.
-`VizFrame` should be extended with a low-resolution, normalized time-domain
-`waveform` series in addition to FFT bands and RMS. UI code receives only this
-small drawing-oriented shape, not raw audio buffers.
+The MVP visualizer is Spectrum Stack. `MIK-015` polish keeps that as the default
+while adding the selectable visualizer modes below, all driven by real audio
+data. `VizFrame` carries a low-resolution, normalized time-domain `waveform`
+series in addition to FFT bands and RMS. UI code receives only this small
+drawing-oriented shape, not raw audio buffers.
 
-Initial visualizer modes:
+Visualizer modes (all implemented and selectable via `v`):
 
 1. `SpectrumStack` — current vertical FFT bars and default mode.
 2. `PeakDots` — FFT bars with a dot/peak emphasis.

@@ -53,11 +53,13 @@ Implications:
 - Neon and CRT can use stronger contrast/glow-like color choices.
 - Low-power mode should lower update cadence, not change the visual language.
 
-Planned `MIK-015` polish expands the visualizer from a single renderer to a
-small mode set: `SpectrumStack`, `PeakDots`, `WaveScope`, `MirrorWave`, and
-`AmbientPulse`. This requires `VizFrame` to carry a low-resolution normalized
+`MIK-015` polish expands the visualizer from a single renderer to a small mode
+set: `SpectrumStack`, `PeakDots`, `WaveScope`, `MirrorWave`, and `AmbientPulse`,
+all now implemented. `SpectrumStack`/`PeakDots` are FFT-band driven, `WaveScope`/
+`MirrorWave` draw the time-domain waveform, and `AmbientPulse` is an RMS/band
+ambient glow. This requires `VizFrame` to carry a low-resolution normalized
 waveform alongside FFT bands and RMS. All modes remain real-audio-driven and
-must stretch/interpolate their source data to fill the allocated visualizer pane
+stretch/interpolate their source data to fill the allocated visualizer pane
 width; this means using the current pane fully, not turning Wide or Compact into
 a full-width/full-screen visualizer layout.
 

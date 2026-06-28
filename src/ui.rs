@@ -399,13 +399,18 @@ fn render_now_playing(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, co
 
 /// Draw the visualizer pane using the app's selected [`VisualizerMode`].
 ///
-/// `SpectrumStack` (the default) and `PeakDots` have renderers today; the
-/// remaining Calm Suite modes land in later slices and fall back to the shared
-/// Spectrum Stack so the pane is always populated from real `VizFrame` data.
+/// Every mode in the five-mode Calm Suite has a dedicated renderer, each driven
+/// from the real [`VizFrame`] (FFT bands, RMS, or the time-domain waveform) and
+/// each stretched to the full pane width. The match is exhaustive on purpose
+/// (MIK-026): adding a future mode is a compile error here until it is wired,
+/// rather than silently falling back to the Spectrum Stack.
 fn render_visualizer(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     match app.visualizer_mode() {
+        VisualizerMode::SpectrumStack => render_spectrum(theme, app, area, buf),
         VisualizerMode::PeakDots => render_peak_dots(theme, app, area, buf),
-        _ => render_spectrum(theme, app, area, buf),
+        VisualizerMode::WaveScope => render_wave_scope(theme, app, area, buf),
+        VisualizerMode::MirrorWave => render_mirror_wave(theme, app, area, buf),
+        VisualizerMode::AmbientPulse => render_ambient_pulse(theme, app, area, buf),
     }
 }
 
@@ -508,6 +513,172 @@ fn render_peak_dots(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
             cell.set_char('●').set_fg(color);
         }
     }
+}
+
+/// The "WaveScope" visualizer: an oscilloscope trace of [`VizFrame::waveform`].
+///
+/// One trace point per pane column, sampled from the full-width
+/// [`waveform_columns`] interpolation so the scope spans the whole pane. A
+/// sample of `0.0` sits on the vertical center, `+1.0` reaches the top, and
+/// `-1.0` the bottom; the point's color comes from the theme's spectrum split
+/// keyed on the signal's amplitude so louder excursions read brighter. Empty and
+/// all-zero waveforms both render as a flat baseline (stable silence), per the
+/// MIK-024 reviewer note. Pure function of the current [`VizFrame`].
+fn render_wave_scope(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let columns = waveform_columns(&app.viz().waveform, area.width as usize);
+    let center = (area.height - 1) / 2;
+    let half = (area.height - 1) as f32 / 2.0;
+    let top = area.y;
+    let bottom = area.y + area.height - 1;
+    for (i, (sample, _position)) in columns.into_iter().enumerate() {
+        let offset = (sample * half).round() as i32;
+        let y = ((area.y + center) as i32 - offset).clamp(top as i32, bottom as i32) as u16;
+        let color = theme.spectrum_color(sample.abs());
+        let x = area.x + i as u16;
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char('•').set_fg(color);
+        }
+    }
+}
+
+/// The "MirrorWave" visualizer: a symmetrical oscilloscope around the center.
+///
+/// For each pane column the waveform sample's magnitude is mirrored above and
+/// below the vertical center, giving a calmer, balanced scope than the raw
+/// [`render_wave_scope`] trace. The center cell is always drawn so the baseline
+/// stays visible, and louder samples extend the symmetric bars further out.
+/// Color follows the theme's spectrum split keyed on amplitude. Empty and
+/// all-zero waveforms render as the flat center baseline (silence). Pure
+/// function of the current [`VizFrame`].
+fn render_mirror_wave(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let columns = waveform_columns(&app.viz().waveform, area.width as usize);
+    let center = area.y + (area.height - 1) / 2;
+    let reach_max = (area.height - 1) / 2;
+    let bottom = area.y + area.height - 1;
+    for (i, (sample, _position)) in columns.into_iter().enumerate() {
+        let amplitude = sample.abs();
+        let reach = (amplitude * reach_max as f32).round() as u16;
+        let color = theme.spectrum_color(amplitude);
+        let x = area.x + i as u16;
+        for r in 0..=reach {
+            let up = center as i32 - r as i32;
+            if up >= area.y as i32 {
+                if let Some(cell) = buf.cell_mut((x, up as u16)) {
+                    cell.set_char('┃').set_fg(color);
+                }
+            }
+            let down = center + r;
+            if down <= bottom {
+                if let Some(cell) = buf.cell_mut((x, down)) {
+                    cell.set_char('┃').set_fg(color);
+                }
+            }
+        }
+    }
+}
+
+/// The "AmbientPulse" visualizer: a low-noise glow driven by RMS and bands.
+///
+/// Each column blends the interpolated FFT band magnitude with the frame RMS
+/// into a calm level, drawn as a vertically centered shaded band whose height
+/// and shade density (`░`/`▒`/`▓`) grow with that level. When the frame carries
+/// no bands the RMS alone pulses uniformly across the pane, so the mode stays
+/// real-data-driven rather than animating on its own. A silent frame draws
+/// nothing. Bands are stretched to the full pane width via [`spectrum_columns`].
+fn render_ambient_pulse(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let frame = app.viz();
+    let rms = frame.rms;
+    // Prefer the band shape for the per-column glow; with no bands the RMS still
+    // pulses the whole pane so the mode reflects real playback level.
+    let columns = if frame.bands.is_empty() {
+        let last_col = area.width.saturating_sub(1) as usize;
+        (0..area.width as usize)
+            .map(|col| {
+                let position = if last_col == 0 {
+                    0.0
+                } else {
+                    col as f32 / last_col as f32
+                };
+                (rms, position)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        spectrum_columns(&frame.bands, area.width as usize)
+    };
+
+    for (i, (magnitude, position)) in columns.into_iter().enumerate() {
+        let level = (magnitude * 0.6 + rms * 0.4).clamp(0.0, 1.0);
+        let shade = if level < 0.15 {
+            None
+        } else if level < 0.45 {
+            Some('░')
+        } else if level < 0.75 {
+            Some('▒')
+        } else {
+            Some('▓')
+        };
+        let Some(shade) = shade else { continue };
+
+        let fill = (level * area.height as f32).round() as u16;
+        if fill == 0 {
+            continue;
+        }
+        let start = area.y + (area.height - fill) / 2;
+        let color = theme.spectrum_color(position);
+        let x = area.x + i as u16;
+        for y in start..(start + fill).min(area.y + area.height) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_char(shade).set_fg(color);
+            }
+        }
+    }
+}
+
+/// Resample the time-domain `waveform` into one `(sample, position)` column per
+/// pane cell so the waveform modes fill the full pane width.
+///
+/// `sample` is the interpolated signed amplitude in `-1.0..=1.0`, linearly
+/// interpolated between the two nearest waveform points; `position` is the
+/// column's normalized `0.0..=1.0` location, used for the theme color split. An
+/// empty waveform is treated as flat silence: every column samples `0.0`, so an
+/// empty and an all-zero waveform render identically (a flat baseline), per the
+/// MIK-024 reviewer note. Returns an empty vector only for zero width.
+fn waveform_columns(waveform: &[f32], width: usize) -> Vec<(f32, f32)> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let last_col = width - 1;
+    let position_of = |col: usize| {
+        if last_col == 0 {
+            0.0
+        } else {
+            col as f32 / last_col as f32
+        }
+    };
+    if waveform.is_empty() {
+        return (0..width).map(|col| (0.0, position_of(col))).collect();
+    }
+    let last_sample = waveform.len() - 1;
+    (0..width)
+        .map(|col| {
+            let position = position_of(col);
+            let point = position * last_sample as f32;
+            let lo = point.floor() as usize;
+            let hi = (lo + 1).min(last_sample);
+            let frac = point - lo as f32;
+            let sample = waveform[lo] + (waveform[hi] - waveform[lo]) * frac;
+            (sample.clamp(-1.0, 1.0), position)
+        })
+        .collect()
 }
 
 /// Resample the FFT `bands` into one `(magnitude, position)` column per pane
@@ -1449,6 +1620,300 @@ mod tests {
                     !buffer_text(&buf).contains('●'),
                     "silent/empty frame must draw no peak dots at {w}x{h}"
                 );
+            }
+        }
+    }
+
+    // --- Waveform / RMS visualizer modes (MIK-027) ----------------------
+
+    /// Cycle a fresh app to `mode` via the public `v`-key action.
+    fn app_in_mode(mode: VisualizerMode) -> App {
+        let mut app = base_app();
+        while app.visualizer_mode() != mode {
+            app.apply(Action::CycleVisualizerMode);
+        }
+        app
+    }
+
+    /// The set of buffer rows (relative y) whose line contains `glyph`.
+    fn rows_with(text: &str, glyph: char) -> std::collections::BTreeSet<usize> {
+        text.lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains(glyph))
+            .map(|(y, _)| y)
+            .collect()
+    }
+
+    /// True if the cell at `(x, y)` carries `glyph`.
+    fn cell_is(buf: &Buffer, x: u16, y: u16, glyph: &str) -> bool {
+        buf.cell((x, y)).unwrap().symbol() == glyph
+    }
+
+    #[test]
+    fn wave_scope_renders_a_waveform_trace() {
+        // WaveScope draws one trace point per column from VizFrame::waveform; a
+        // non-flat waveform produces a trace that varies in height.
+        let mut app = app_in_mode(VisualizerMode::WaveScope);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![],
+            0.0,
+            vec![-1.0, -0.5, 0.0, 0.5, 1.0],
+        ))));
+        let text = buffer_text(&render_viz_buffer(&app, 16, 7));
+        assert!(text.contains('•'), "wave scope trace missing: {text}");
+        assert!(
+            rows_with(&text, '•').len() > 1,
+            "wave scope trace is flat for a non-flat waveform: {text}"
+        );
+    }
+
+    #[test]
+    fn wave_scope_treats_empty_and_zeroed_waveform_as_flat_silence() {
+        // MIK-024 reviewer note: empty and all-zero waveforms are both flat
+        // silence and must render identically — a single baseline row.
+        let render = |wf: Vec<f32>| {
+            let mut app = app_in_mode(VisualizerMode::WaveScope);
+            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+                vec![],
+                0.0,
+                wf,
+            ))));
+            buffer_text(&render_viz_buffer(&app, 16, 7))
+        };
+        let empty = render(vec![]);
+        let zeroed = render(vec![0.0; 8]);
+        assert_eq!(
+            empty, zeroed,
+            "empty and zeroed waveform must render identically"
+        );
+        assert_eq!(
+            rows_with(&empty, '•').len(),
+            1,
+            "silence must be a single flat baseline: {empty}"
+        );
+    }
+
+    #[test]
+    fn wave_scope_fills_full_pane_width() {
+        let mut app = app_in_mode(VisualizerMode::WaveScope);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![],
+            0.0,
+            vec![0.2, -0.2, 0.6, -0.6],
+        ))));
+        let (w, h) = (40u16, 8u16);
+        let buf = render_viz_buffer(&app, w, h);
+        for x in 0..w {
+            assert!(
+                (0..h).any(|y| cell_is(&buf, x, y, "•")),
+                "wave scope column {x} empty (not full width)"
+            );
+        }
+    }
+
+    #[test]
+    fn mirror_wave_is_symmetric_around_center() {
+        let mut app = app_in_mode(VisualizerMode::MirrorWave);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![],
+            0.0,
+            vec![0.8; 8],
+        ))));
+        let h = 7u16;
+        let buf = render_viz_buffer(&app, 20, h);
+        assert!(buffer_text(&buf).contains('┃'), "mirror wave bars missing");
+        let center = (h - 1) / 2;
+        let x = 5u16;
+        for r in 0..=center {
+            assert_eq!(
+                cell_is(&buf, x, center - r, "┃"),
+                cell_is(&buf, x, center + r, "┃"),
+                "mirror wave not symmetric at offset {r}"
+            );
+        }
+    }
+
+    #[test]
+    fn mirror_wave_reflects_waveform_and_is_flat_for_silence() {
+        let render = |wf: Vec<f32>| {
+            let mut app = app_in_mode(VisualizerMode::MirrorWave);
+            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+                vec![],
+                0.0,
+                wf,
+            ))));
+            buffer_text(&render_viz_buffer(&app, 20, 7))
+        };
+        let loud = render(vec![0.9; 8]);
+        let silent = render(vec![]);
+        assert!(
+            rows_with(&loud, '┃').len() > rows_with(&silent, '┃').len(),
+            "louder waveform must reach further from center: {loud}"
+        );
+        assert_eq!(
+            rows_with(&silent, '┃').len(),
+            1,
+            "silence must be a single baseline row: {silent}"
+        );
+        assert_eq!(
+            silent,
+            render(vec![0.0; 8]),
+            "empty and zeroed waveform must render identically"
+        );
+    }
+
+    #[test]
+    fn mirror_wave_fills_full_pane_width() {
+        let mut app = app_in_mode(VisualizerMode::MirrorWave);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![],
+            0.0,
+            vec![0.3, -0.3, 0.7],
+        ))));
+        let (w, h) = (40u16, 8u16);
+        let buf = render_viz_buffer(&app, w, h);
+        for x in 0..w {
+            assert!(
+                (0..h).any(|y| cell_is(&buf, x, y, "┃")),
+                "mirror wave column {x} empty (not full width)"
+            );
+        }
+    }
+
+    /// True if `text` contains any ambient shade glyph.
+    fn has_ambient_shade(text: &str) -> bool {
+        text.chars().any(|c| matches!(c, '░' | '▒' | '▓'))
+    }
+
+    #[test]
+    fn ambient_pulse_is_rms_driven_not_fake_animation() {
+        // Real RMS + bands produce ambient shading; a silent frame draws nothing
+        // (proving the mode reacts to data instead of animating on its own).
+        let mut active = app_in_mode(VisualizerMode::AmbientPulse);
+        active.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.9; 8],
+            0.8,
+            vec![],
+        ))));
+        let active_text = buffer_text(&render_viz_buffer(&active, 24, 7));
+        assert!(
+            has_ambient_shade(&active_text),
+            "ambient pulse drew nothing for real data: {active_text}"
+        );
+
+        let mut silent = app_in_mode(VisualizerMode::AmbientPulse);
+        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(8))));
+        let silent_text = buffer_text(&render_viz_buffer(&silent, 24, 7));
+        assert!(
+            !has_ambient_shade(&silent_text),
+            "ambient pulse must be silent for a silent frame: {silent_text}"
+        );
+    }
+
+    #[test]
+    fn ambient_pulse_pulses_from_rms_without_bands() {
+        // RMS alone (no bands) still drives the ambient display.
+        let mut app = app_in_mode(VisualizerMode::AmbientPulse);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![],
+            0.9,
+            vec![],
+        ))));
+        let text = buffer_text(&render_viz_buffer(&app, 24, 7));
+        assert!(has_ambient_shade(&text), "rms-only ambient missing: {text}");
+    }
+
+    #[test]
+    fn ambient_pulse_fills_full_pane_width() {
+        let mut app = app_in_mode(VisualizerMode::AmbientPulse);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0; 8],
+            1.0,
+            vec![],
+        ))));
+        let (w, h) = (40u16, 7u16);
+        let buf = render_viz_buffer(&app, w, h);
+        for x in 0..w {
+            let filled = (0..h).any(|y| {
+                let s = buf.cell((x, y)).unwrap().symbol();
+                s == "░" || s == "▒" || s == "▓"
+            });
+            assert!(filled, "ambient column {x} empty (not full width)");
+        }
+    }
+
+    #[test]
+    fn each_visualizer_mode_renders_distinctly() {
+        // Cycling through every mode with the same frame yields five distinct
+        // renders, so each mode has its own visual language.
+        let frame = VizFrame::new(
+            vec![1.0, 0.2, 0.8, 0.4, 0.9, 0.1, 0.6, 0.3],
+            0.7,
+            vec![-0.9, -0.3, 0.2, 0.8, 0.5, -0.6, 0.1, 0.7],
+        );
+        let mut app = base_app();
+        let mut texts = Vec::new();
+        for _ in 0..VisualizerMode::ALL.len() {
+            app.apply(Action::Audio(AudioEvent::Viz(frame.clone())));
+            texts.push(buffer_text(&render_viz_buffer(&app, 32, 9)));
+            app.apply(Action::CycleVisualizerMode);
+        }
+        for i in 0..texts.len() {
+            for j in (i + 1)..texts.len() {
+                assert_ne!(texts[i], texts[j], "modes {i} and {j} render identically");
+            }
+        }
+    }
+
+    #[test]
+    fn waveform_and_ambient_modes_render_in_every_tier() {
+        for mode in [
+            VisualizerMode::WaveScope,
+            VisualizerMode::MirrorWave,
+            VisualizerMode::AmbientPulse,
+        ] {
+            let mut app = app_in_mode(mode);
+            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+                vec![0.9; 16],
+                0.8,
+                vec![-0.8, -0.2, 0.4, 0.9, 0.1, -0.5, 0.6, -0.3],
+            ))));
+            play_first(&mut app);
+            let glyphs: &[char] = match mode {
+                VisualizerMode::WaveScope => &['•'],
+                VisualizerMode::MirrorWave => &['┃'],
+                VisualizerMode::AmbientPulse => &['░', '▒', '▓'],
+                _ => &[],
+            };
+            for (w, h) in TIER_SIZES {
+                let text = buffer_text(&render_buffer(&app, w, h));
+                assert!(
+                    glyphs.iter().any(|g| text.contains(*g)),
+                    "{mode:?} missing at {w}x{h}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn waveform_and_ambient_modes_are_safe_for_tiny_panes_and_silent_frames() {
+        for mode in [
+            VisualizerMode::WaveScope,
+            VisualizerMode::MirrorWave,
+            VisualizerMode::AmbientPulse,
+        ] {
+            let mut silent = app_in_mode(mode);
+            silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+            let mut empty = app_in_mode(mode);
+            empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+                Vec::<f32>::new(),
+                0.0,
+                Vec::<f32>::new(),
+            ))));
+            for app in [&silent, &empty] {
+                for (w, h) in [(0u16, 0u16), (1, 1), (2, 1), (1, 4), (40, 1)] {
+                    let _ = render_viz_buffer(app, w, h);
+                }
             }
         }
     }

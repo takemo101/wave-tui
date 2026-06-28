@@ -43,15 +43,25 @@ Implications:
 
 ### Visualizer: Spectrum Stack
 
-The primary visualizer should be vertical FFT bars inspired by cliamp.
+The primary/default visualizer should be vertical FFT bars inspired by cliamp.
 
 Implications:
 
-- Use one shared `SpectrumStack` component across all layout tiers.
+- Keep `SpectrumStack` as the default mode across all layout tiers.
 - Map FFT bands to theme colors: low, mid, high.
 - Minimal theme should render restrained bars.
 - Neon and CRT can use stronger contrast/glow-like color choices.
 - Low-power mode should lower update cadence, not change the visual language.
+
+Planned `MIK-015` polish expands the visualizer from a single renderer to a
+small mode set: `SpectrumStack`, `PeakDots`, `WaveScope`, `MirrorWave`, and
+`AmbientPulse`. This requires `VizFrame` to carry a low-resolution normalized
+waveform alongside FFT bands and RMS. All modes remain real-audio-driven and
+must stretch/interpolate their source data to fill the allocated visualizer pane
+width; this means using the current pane fully, not turning Wide or Compact into
+a full-width/full-screen visualizer layout.
+
+The `v` key cycles the visualizer mode and the selected mode is persisted.
 
 ### Theme Set: High Contrast Trio
 
@@ -69,9 +79,45 @@ Initial themes:
 
 Themes should differ clearly enough that switching themes feels meaningful.
 
+Planned `MIK-017` polish expands the set to six themes while preserving Minimal
+as the default:
+
+1. `Minimal`
+2. `Neon`
+3. `CRT`
+4. `Solarized`
+5. `Midnight`
+6. `Sakura`
+
+The `t` key remains a simple one-way cycle; no picker is planned for six themes.
+
+### Browse and Favorites Polish
+
+Planned `MIK-014`/`MIK-016` polish changes the Wide `Browse` pane from static
+category context into a flat list-source picker. The active station list source
+should be explicit: All Stations, Favorites, sections, categories, or Search.
+
+Implications:
+
+- Browse displays `All Stations`, `Favorites`, `Music`, all Music categories,
+  `Spoken / News`, and all Spoken categories in one flat list.
+- When Browse is focused, `j`/`k` and arrows move the Browse selection; `Enter`
+  applies that source and moves focus to Stations.
+- When Stations is focused, the same navigation keys continue to move station
+  selection and `Enter` plays the selected station.
+- Favorites is a real source built from persisted favorite station entries, not
+  only a marker inside the current catalog/search list.
+- Removing a favorite while the Favorites source is active removes it from that
+  list immediately and clamps selection.
+- Empty Favorites stays in the Favorites source and shows an explicit helpful
+  empty state.
+- Clearing Search restores the previous non-search source rather than always
+  forcing All Stations.
+
 ## Implementation Notes
 
-- Store theme as a stable lowercase string: `minimal`, `neon`, `crt`.
+- Store theme as a stable lowercase string. Current names are `minimal`, `neon`,
+  and `crt`; planned names add `solarized`, `midnight`, and `sakura`.
 - Unknown theme names should fall back to `minimal`.
 - Theme structs should centralize all UI colors; rendering code should not
   hard-code palette values.

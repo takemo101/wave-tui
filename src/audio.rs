@@ -81,6 +81,9 @@ pub enum AudioEvent {
     VolumeChanged(VolumePercent),
     /// A visualizer frame derived from the most recent played samples.
     Viz(VizFrame),
+    /// A new ICY/Shoutcast `StreamTitle` was demuxed for `station`. Emitted only
+    /// when the title changes, so the app is not flooded with repeats.
+    IcyTitle { station: StationId, title: String },
 }
 
 /// Configuration for [`AudioRuntime::spawn`].
@@ -211,7 +214,19 @@ fn start_playback(
     // The station URL is treated as a direct, authoritative stream URL; mount
     // resolution (`/stream` for curated bases) is a catalog concern applied
     // upstream, per the audio spike findings.
-    let decoder = StreamDecoder::new_http(station.url.as_str())?;
+    //
+    // ICY titles are demuxed inside the decoder and surfaced as events tagged
+    // with this station's id, so the app can ignore stale titles from a station
+    // it has since left.
+    let icy_event_tx = event_tx.clone();
+    let icy_station = station.id.clone();
+    let on_title: Box<dyn FnMut(String) + Send + Sync> = Box::new(move |title| {
+        let _ = icy_event_tx.send(AudioEvent::IcyTitle {
+            station: icy_station.clone(),
+            title,
+        });
+    });
+    let decoder = StreamDecoder::new_http(station.url.as_str(), on_title)?;
     let sample_rate = decoder.sample_rate();
     let source_channels = decoder.channels();
 

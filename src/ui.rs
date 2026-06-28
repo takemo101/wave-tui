@@ -378,6 +378,16 @@ fn now_playing_lines<'a>(app: &App, theme: &Theme, compact: bool) -> Vec<Line<'a
                 station.name.as_str().to_string(),
                 theme.accent_style(),
             ));
+            // ICY now-playing title takes priority above station metadata; when
+            // absent the station-level fields below remain the only source.
+            if let Some(title) = app.now_playing_title() {
+                lines.push(Line::styled(
+                    title.to_string(),
+                    Style::default()
+                        .fg(theme.foreground)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             lines.push(Line::from(playback_span(theme, app.playback())));
 
             if !compact {
@@ -724,6 +734,44 @@ mod tests {
                 "spectrum colors not themed at {w}x{h}"
             );
         }
+    }
+
+    #[test]
+    fn now_playing_shows_icy_title_when_present() {
+        let mut app = base_app();
+        let id = app.selected_station().unwrap().id.clone();
+        play_first(&mut app);
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station: id,
+            title: "Live Track Title".to_string(),
+        }));
+        let buf = render_buffer(&app, 130, 32);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Live Track Title"),
+            "ICY title missing from Now Playing: {text}"
+        );
+    }
+
+    #[test]
+    fn now_playing_falls_back_to_station_metadata_without_icy_title() {
+        let mut app = base_app();
+        let station = app.selected_station().unwrap().clone();
+        let station_name = station.name.as_str().to_string();
+        let meta = station_meta(&station);
+        play_first(&mut app);
+        // No ICY title received: station name and codec/bitrate stay the source.
+        assert!(app.now_playing_title().is_none());
+        let buf = render_buffer(&app, 130, 32);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains(&station_name),
+            "station name fallback missing: {text}"
+        );
+        assert!(
+            text.contains(&meta),
+            "codec metadata fallback missing ({meta:?}): {text}"
+        );
     }
 
     #[test]

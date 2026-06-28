@@ -16,12 +16,14 @@ use symphonia::{
         audio::{AudioBufferRef, SampleBuffer},
         codecs::{Decoder, DecoderOptions},
         formats::{FormatOptions, FormatReader},
-        io::{MediaSourceStream, ReadOnlySource},
+        io::{MediaSource, MediaSourceStream, ReadOnlySource},
         meta::MetadataOptions,
         probe::Hint,
     },
     default::{get_codecs, get_probe},
 };
+
+use super::icy::IcyReader;
 
 /// Pull-based decoder over a live HTTP audio stream.
 ///
@@ -63,7 +65,16 @@ impl StreamDecoder {
     /// The URL is used verbatim (it must already be a direct stream URL). A
     /// non-success HTTP status, missing track, or unsupported codec is returned
     /// as an error.
-    pub(crate) fn new_http(url: &str) -> Result<Self> {
+    ///
+    /// ICY/Shoutcast metadata is requested with `Icy-MetaData: 1`. When the
+    /// server answers with an `icy-metaint`, the response is wrapped in an
+    /// [`IcyReader`] so interleaved metadata blocks are demuxed out before
+    /// Symphonia ever sees the bytes, and each changed `StreamTitle` is forwarded
+    /// to `on_title`. Streams that omit `icy-metaint` are decoded unchanged.
+    pub(crate) fn new_http(
+        url: &str,
+        on_title: Box<dyn FnMut(String) + Send + Sync>,
+    ) -> Result<Self> {
         // Bounded connect and per-read timeouts. The blocking client applies
         // `timeout` per socket read, so this does not impose a total deadline on
         // the unbounded stream; it only bounds a single stalled read.
@@ -74,13 +85,22 @@ impl StreamDecoder {
             .context("failed to build http client")?;
         let resp = client
             .get(url)
+            .header("Icy-MetaData", "1")
             .send()
             .context("http get")?
             .error_for_status()
             .with_context(|| format!("stream request failed for {url}"))?;
         let final_url = resp.url().clone();
-        let source = ReadOnlySource::new(resp);
-        let mss = MediaSourceStream::new(Box::new(source), Default::default());
+        let metaint = parse_metaint(resp.headers());
+        // Only streams that advertise a positive `icy-metaint` carry interleaved
+        // metadata; everything else is passed through to Symphonia untouched.
+        let source: Box<dyn MediaSource> = match metaint {
+            Some(metaint) if metaint > 0 => {
+                Box::new(ReadOnlySource::new(IcyReader::new(resp, metaint, on_title)))
+            }
+            _ => Box::new(ReadOnlySource::new(resp)),
+        };
+        let mss = MediaSourceStream::new(source, Default::default());
         let mut hint = Hint::new();
         // Hint the probe with the container extension when the resolved URL has
         // one; default to MP3, the dominant format for these streams.
@@ -190,6 +210,22 @@ impl Iterator for StreamDecoder {
     }
 }
 
+/// Read the `icy-metaint` interval (in bytes) from response headers, if present.
+///
+/// Returns `None` when the header is absent or unparsable; a malformed value is
+/// treated as "no ICY framing" rather than a hard error so playback still works.
+fn parse_metaint(headers: &reqwest::header::HeaderMap) -> Option<usize> {
+    headers
+        .get("icy-metaint")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_metaint_value)
+}
+
+/// Parse an `icy-metaint` header value into a byte interval.
+fn parse_metaint_value(value: &str) -> Option<usize> {
+    value.trim().parse::<usize>().ok()
+}
+
 /// Append a decoded Symphonia buffer to `out` as interleaved `f32` samples,
 /// reusing `convert_buf` across calls when it is large enough.
 fn push_interleaved_samples(
@@ -213,4 +249,23 @@ fn push_interleaved_samples(
     buf.copy_interleaved_ref(decoded);
     out.extend_from_slice(buf.samples());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_valid_metaint_values() {
+        assert_eq!(parse_metaint_value("16000"), Some(16000));
+        assert_eq!(parse_metaint_value("  8192 "), Some(8192));
+        assert_eq!(parse_metaint_value("0"), Some(0));
+    }
+
+    #[test]
+    fn rejects_malformed_metaint_values() {
+        assert_eq!(parse_metaint_value(""), None);
+        assert_eq!(parse_metaint_value("not-a-number"), None);
+        assert_eq!(parse_metaint_value("-1"), None);
+    }
 }

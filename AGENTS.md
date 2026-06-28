@@ -109,8 +109,9 @@ Important caveats from [`docs/audio-spike.md`](docs/audio-spike.md):
 - Prefer CPAL output configs matching the stream sample rate.
 - Add resampling or a clear unsupported-rate failure path before broad Radio
   Browser rollout.
-- ICY `StreamTitle` parsing is helper-tested; full `icy-metaint` demuxing still
-  belongs in the real audio implementation.
+- ICY `StreamTitle` parsing and full `icy-metaint` demuxing are implemented in
+  `src/audio/icy.rs` and wired through `src/audio/decoder.rs`; both are covered
+  by pure tests with synthetic byte streams.
 
 Broken remote stations, unsupported codecs, network timeouts, and unavailable
 audio devices are recoverable failures. Report them as `Result` values or audio

@@ -167,6 +167,7 @@ pub struct App {
     offline: bool,
     search_query: String,
     search_status: SearchStatus,
+    now_playing_title: Option<String>,
 }
 
 impl App {
@@ -192,6 +193,7 @@ impl App {
             offline: false,
             search_query: String::new(),
             search_status: SearchStatus::Idle,
+            now_playing_title: None,
         }
     }
 
@@ -301,6 +303,11 @@ impl App {
     /// Promote the selected station to the current station and begin connecting.
     fn play_selected(&mut self) {
         if let Some(station) = self.selected_station().cloned() {
+            // Switching to a different station drops the old ICY title so a stale
+            // one never lingers; resuming the same station keeps it.
+            if self.current.as_ref().map(|c| &c.id) != Some(&station.id) {
+                self.now_playing_title = None;
+            }
             self.current = Some(station);
             self.playback = PlaybackState::Connecting;
         }
@@ -331,6 +338,22 @@ impl App {
             AudioEvent::Failed { station, message } => self.on_failed(station, message),
             AudioEvent::VolumeChanged(volume) => self.settings.volume = volume,
             AudioEvent::Viz(frame) => self.viz = frame,
+            AudioEvent::IcyTitle { station, title } => self.on_icy_title(station, title),
+        }
+    }
+
+    /// Apply an ICY title, but only when it belongs to the current station.
+    ///
+    /// Title events race with station switches: an event emitted for a station
+    /// the user has since left is stale and must be ignored so the displayed
+    /// title always matches what is actually playing.
+    fn on_icy_title(&mut self, station: StationId, title: String) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.id == station)
+        {
+            self.now_playing_title = Some(title);
         }
     }
 
@@ -408,6 +431,12 @@ impl App {
     /// The current station (playing, connecting, or last/previous).
     pub fn current_station(&self) -> Option<&Station> {
         self.current.as_ref()
+    }
+
+    /// The live ICY/Shoutcast title for the current station, when one has been
+    /// received. `None` falls the UI back to station-level metadata.
+    pub fn now_playing_title(&self) -> Option<&str> {
+        self.now_playing_title.as_deref()
     }
 
     /// The most recent visualizer frame.
@@ -714,6 +743,48 @@ mod tests {
         app.apply(Action::PlaySelected); // current = "a"
         app.apply(Action::Audio(AudioEvent::Playing { station: a.clone() }));
         assert!(!app.is_failed(&a));
+    }
+
+    #[test]
+    fn icy_title_updates_now_playing_for_current_station() {
+        let mut app = app_with(&["a", "b"]);
+        app.apply(Action::PlaySelected); // current = "a"
+        assert!(app.now_playing_title().is_none());
+
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station: StationId::new("a").unwrap(),
+            title: "Artist - Hit".to_string(),
+        }));
+        assert_eq!(app.now_playing_title(), Some("Artist - Hit"));
+    }
+
+    #[test]
+    fn icy_title_from_a_non_current_station_is_ignored() {
+        let mut app = app_with(&["a", "b"]);
+        app.apply(Action::PlaySelected); // current = "a"
+
+        // A late event from a station the user already left must not show.
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station: StationId::new("b").unwrap(),
+            title: "Stale Title".to_string(),
+        }));
+        assert!(app.now_playing_title().is_none());
+    }
+
+    #[test]
+    fn switching_station_clears_a_previous_icy_title() {
+        let mut app = app_with(&["a", "b"]);
+        app.apply(Action::PlaySelected); // current = "a"
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station: StationId::new("a").unwrap(),
+            title: "On A".to_string(),
+        }));
+        assert_eq!(app.now_playing_title(), Some("On A"));
+
+        // Move to a different station: the stale title must not linger.
+        app.apply(Action::SelectNext);
+        app.apply(Action::PlaySelected); // current = "b"
+        assert!(app.now_playing_title().is_none());
     }
 
     #[test]

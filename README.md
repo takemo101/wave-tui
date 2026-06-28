@@ -79,6 +79,7 @@ search controls act on the focused pane.
 | `+` / `-`       | volume up / down                               |
 | `f`             | toggle favorite for the selected station       |
 | `t`             | cycle theme (Minimal → Neon → CRT)             |
+| `v`             | cycle visualizer mode                          |
 | `/`             | focus search and type to search Radio Browser  |
 | `Esc`           | while searching: clear search and return to catalog |
 | `q` / `Esc`     | quit (`Esc` quits when not searching)          |

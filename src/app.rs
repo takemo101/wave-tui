@@ -15,7 +15,7 @@
 
 use crate::audio::AudioEvent;
 use crate::catalog::{Catalog, Category, Section, SessionStationHealth, Stations};
-use crate::model::{PlaybackState, Station, StationId, VizFrame, VolumePercent};
+use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
 use crate::theme::ThemeName;
@@ -186,6 +186,8 @@ pub enum Action {
     ToggleFavorite,
     /// Cycle to the next theme (`t`).
     CycleTheme,
+    /// Cycle to the next visualizer mode (`v`).
+    CycleVisualizerMode,
     /// Increase volume by one step (`+`).
     VolumeUp,
     /// Decrease volume by one step (`-`).
@@ -297,6 +299,9 @@ impl App {
             Action::TogglePlayback => self.toggle_playback(),
             Action::ToggleFavorite => self.toggle_favorite(),
             Action::CycleTheme => self.settings.theme = self.settings.theme.next(),
+            Action::CycleVisualizerMode => {
+                self.settings.visualizer = self.settings.visualizer.next()
+            }
             Action::VolumeUp => self.change_volume(VOLUME_STEP),
             Action::VolumeDown => self.change_volume(-VOLUME_STEP),
             Action::SetVolume(volume) => self.settings.volume = volume,
@@ -674,6 +679,15 @@ impl App {
         self.settings.theme
     }
 
+    /// The active visualizer mode.
+    ///
+    /// Only `SpectrumStack` has a renderer today; later slices add the rest. The
+    /// reducer still cycles through all five so persistence and the `v` key are
+    /// in place before the renderers land.
+    pub fn visualizer_mode(&self) -> VisualizerMode {
+        self.settings.visualizer
+    }
+
     /// Read-only access to settings (volume, theme, favorites, previous station).
     pub fn settings(&self) -> &Settings {
         &self.settings
@@ -694,7 +708,8 @@ impl App {
 mod tests {
     use super::*;
     use crate::model::{
-        BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl, VolumePercent,
+        BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl, VisualizerMode,
+        VolumePercent,
     };
     use crate::settings::Favorites;
     use crate::theme::ThemeName;
@@ -831,6 +846,36 @@ mod tests {
         assert_eq!(app.theme(), ThemeName::Crt);
         app.apply(Action::CycleTheme);
         assert_eq!(app.theme(), ThemeName::Minimal);
+    }
+
+    #[test]
+    fn visualizer_mode_defaults_to_spectrum_stack() {
+        let app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
+    }
+
+    #[test]
+    fn cycle_visualizer_mode_advances_through_the_five_modes() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::PeakDots);
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::WaveScope);
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::MirrorWave);
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::AmbientPulse);
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
+    }
+
+    #[test]
+    fn cycling_visualizer_mode_updates_persisted_settings() {
+        // The selected mode lives in settings so it persists like theme/volume.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::CycleVisualizerMode);
+        assert_eq!(app.settings().visualizer, VisualizerMode::PeakDots);
     }
 
     #[test]

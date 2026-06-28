@@ -26,6 +26,8 @@ pub enum DomainError {
     InvalidSampleRate(u32),
     /// Theme name that does not match a known built-in theme.
     UnknownTheme(String),
+    /// Visualizer mode name that does not match a known built-in mode.
+    UnknownVisualizerMode(String),
 }
 
 impl fmt::Display for DomainError {
@@ -41,6 +43,9 @@ impl fmt::Display for DomainError {
             DomainError::InvalidBitrate(value) => write!(f, "invalid bitrate (kbps): {value}"),
             DomainError::InvalidSampleRate(value) => write!(f, "invalid sample rate (hz): {value}"),
             DomainError::UnknownTheme(raw) => write!(f, "unknown theme name: {raw:?}"),
+            DomainError::UnknownVisualizerMode(raw) => {
+                write!(f, "unknown visualizer mode: {raw:?}")
+            }
         }
     }
 }
@@ -369,6 +374,100 @@ pub enum PlaybackState {
     Failed(String),
 }
 
+/// One of the selectable visualizer renderers.
+///
+/// `SpectrumStack` is the default and the only renderer wired today; the other
+/// modes are the planned five-mode Calm Suite (`docs/ui-design-decisions.md`)
+/// whose renderers land in later slices. Modes are stored as stable lowercase
+/// strings (`spectrum_stack`, `peak_dots`, …) so persisted settings stay stable;
+/// unknown names fall back to `SpectrumStack` at the settings boundary via
+/// [`VisualizerMode::parse_or_default`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum VisualizerMode {
+    #[default]
+    SpectrumStack,
+    PeakDots,
+    WaveScope,
+    MirrorWave,
+    AmbientPulse,
+}
+
+impl VisualizerMode {
+    /// Every mode, in `v`-key cycling order.
+    pub const ALL: [VisualizerMode; 5] = [
+        VisualizerMode::SpectrumStack,
+        VisualizerMode::PeakDots,
+        VisualizerMode::WaveScope,
+        VisualizerMode::MirrorWave,
+        VisualizerMode::AmbientPulse,
+    ];
+
+    /// Stable lowercase identifier used for persistence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VisualizerMode::SpectrumStack => "spectrum_stack",
+            VisualizerMode::PeakDots => "peak_dots",
+            VisualizerMode::WaveScope => "wave_scope",
+            VisualizerMode::MirrorWave => "mirror_wave",
+            VisualizerMode::AmbientPulse => "ambient_pulse",
+        }
+    }
+
+    /// Strict boundary parser; rejects unknown names with a [`DomainError`].
+    pub fn parse(raw: &str) -> Result<Self, DomainError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "spectrum_stack" => Ok(VisualizerMode::SpectrumStack),
+            "peak_dots" => Ok(VisualizerMode::PeakDots),
+            "wave_scope" => Ok(VisualizerMode::WaveScope),
+            "mirror_wave" => Ok(VisualizerMode::MirrorWave),
+            "ambient_pulse" => Ok(VisualizerMode::AmbientPulse),
+            other => Err(DomainError::UnknownVisualizerMode(other.to_string())),
+        }
+    }
+
+    /// Lenient boundary parser; unknown names fall back to the default mode.
+    pub fn parse_or_default(raw: &str) -> Self {
+        Self::parse(raw).unwrap_or(VisualizerMode::SpectrumStack)
+    }
+
+    /// Next mode in the cycling order, wrapping back to `SpectrumStack`.
+    ///
+    /// Bound to the `v` key; the order is stable so repeated presses are
+    /// predictable.
+    pub fn next(self) -> Self {
+        match self {
+            VisualizerMode::SpectrumStack => VisualizerMode::PeakDots,
+            VisualizerMode::PeakDots => VisualizerMode::WaveScope,
+            VisualizerMode::WaveScope => VisualizerMode::MirrorWave,
+            VisualizerMode::MirrorWave => VisualizerMode::AmbientPulse,
+            VisualizerMode::AmbientPulse => VisualizerMode::SpectrumStack,
+        }
+    }
+}
+
+/// Visualizer modes persist as their stable lowercase string identifier.
+impl Serialize for VisualizerMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// Strict deserialization: unknown names are a parse error so corrupt persisted
+/// settings fail at the boundary rather than silently coercing. Lenient fallback
+/// to the default mode belongs to [`VisualizerMode::parse_or_default`].
+impl<'de> Deserialize<'de> for VisualizerMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        VisualizerMode::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A single visualizer frame: normalized spectrum bands plus an RMS level.
 ///
 /// Bands and RMS are clamped to `0.0..=1.0` on construction so renderers never
@@ -508,6 +607,85 @@ mod tests {
             CodecKind::parse("flac"),
             CodecKind::Other("flac".to_string())
         );
+    }
+
+    #[test]
+    fn visualizer_mode_default_is_spectrum_stack() {
+        assert_eq!(VisualizerMode::default(), VisualizerMode::SpectrumStack);
+    }
+
+    #[test]
+    fn visualizer_mode_roundtrips_through_str() {
+        for mode in VisualizerMode::ALL {
+            assert_eq!(VisualizerMode::parse(mode.as_str()).unwrap(), mode);
+        }
+    }
+
+    #[test]
+    fn visualizer_mode_uses_stable_lowercase_names() {
+        assert_eq!(VisualizerMode::SpectrumStack.as_str(), "spectrum_stack");
+        assert_eq!(VisualizerMode::PeakDots.as_str(), "peak_dots");
+        assert_eq!(VisualizerMode::WaveScope.as_str(), "wave_scope");
+        assert_eq!(VisualizerMode::MirrorWave.as_str(), "mirror_wave");
+        assert_eq!(VisualizerMode::AmbientPulse.as_str(), "ambient_pulse");
+    }
+
+    #[test]
+    fn visualizer_mode_parses_case_insensitively() {
+        assert_eq!(
+            VisualizerMode::parse(" Spectrum_Stack ").unwrap(),
+            VisualizerMode::SpectrumStack
+        );
+        assert_eq!(
+            VisualizerMode::parse("WAVE_SCOPE").unwrap(),
+            VisualizerMode::WaveScope
+        );
+    }
+
+    #[test]
+    fn unknown_visualizer_mode_is_rejected_but_falls_back_leniently() {
+        assert!(matches!(
+            VisualizerMode::parse("hologram"),
+            Err(DomainError::UnknownVisualizerMode(_))
+        ));
+        assert_eq!(
+            VisualizerMode::parse_or_default("hologram"),
+            VisualizerMode::SpectrumStack
+        );
+    }
+
+    #[test]
+    fn visualizer_mode_cycles_through_the_five_modes_and_wraps() {
+        assert_eq!(
+            VisualizerMode::SpectrumStack.next(),
+            VisualizerMode::PeakDots
+        );
+        assert_eq!(VisualizerMode::PeakDots.next(), VisualizerMode::WaveScope);
+        assert_eq!(VisualizerMode::WaveScope.next(), VisualizerMode::MirrorWave);
+        assert_eq!(
+            VisualizerMode::MirrorWave.next(),
+            VisualizerMode::AmbientPulse
+        );
+        assert_eq!(
+            VisualizerMode::AmbientPulse.next(),
+            VisualizerMode::SpectrumStack
+        );
+        // Five steps return to the start.
+        let start = VisualizerMode::SpectrumStack;
+        assert_eq!(start.next().next().next().next().next(), start);
+    }
+
+    #[test]
+    fn visualizer_mode_serializes_as_lowercase_string_and_roundtrips() {
+        let json = serde_json::to_string(&VisualizerMode::PeakDots).unwrap();
+        assert_eq!(json, "\"peak_dots\"");
+        let decoded: VisualizerMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, VisualizerMode::PeakDots);
+    }
+
+    #[test]
+    fn visualizer_mode_deserialization_rejects_unknown_strictly() {
+        assert!(serde_json::from_str::<VisualizerMode>("\"hologram\"").is_err());
     }
 
     #[test]

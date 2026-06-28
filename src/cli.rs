@@ -211,6 +211,8 @@ pub enum KeyOutcome {
     TogglePlayback,
     ToggleFavorite,
     CycleTheme,
+    /// `v`: cycle the visualizer mode.
+    CycleVisualizerMode,
     VolumeUp,
     VolumeDown,
     /// `/`: focus the search strip.
@@ -277,6 +279,7 @@ pub fn map_key(key: KeyEvent, searching: bool) -> KeyOutcome {
             KeyCode::Char('-') | KeyCode::Char('_') => KeyOutcome::VolumeDown,
             KeyCode::Char('f') => KeyOutcome::ToggleFavorite,
             KeyCode::Char('t') => KeyOutcome::CycleTheme,
+            KeyCode::Char('v') => KeyOutcome::CycleVisualizerMode,
             _ => KeyOutcome::Ignore,
         }
     }
@@ -776,6 +779,7 @@ fn handle_key(
         }
         KeyOutcome::ToggleFavorite => app.apply(Action::ToggleFavorite),
         KeyOutcome::CycleTheme => app.apply(Action::CycleTheme),
+        KeyOutcome::CycleVisualizerMode => app.apply(Action::CycleVisualizerMode),
         KeyOutcome::VolumeUp => {
             app.apply(Action::VolumeUp);
             persistence.mark_user_changed_volume();
@@ -1082,6 +1086,24 @@ mod tests {
         let _ = Category::Lofi; // Category is exercised by the reducer tests.
     }
 
+    #[test]
+    fn v_key_cycles_visualizer_mode_through_the_controller() {
+        use crate::model::VisualizerMode;
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
+
+        handle_key(
+            key(KeyCode::Char('v')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.visualizer_mode(), VisualizerMode::PeakDots);
+        assert_eq!(app.settings().visualizer, VisualizerMode::PeakDots);
+    }
+
     // --- parse_args ------------------------------------------------------
 
     fn parse(args: &[&str]) -> Result<CliInvocation, CliError> {
@@ -1220,6 +1242,10 @@ mod tests {
             KeyOutcome::CycleTheme
         );
         assert_eq!(
+            map_key(key(KeyCode::Char('v')), false),
+            KeyOutcome::CycleVisualizerMode
+        );
+        assert_eq!(
             map_key(key(KeyCode::Char('/')), false),
             KeyOutcome::BeginSearch
         );
@@ -1238,6 +1264,10 @@ mod tests {
         assert_eq!(
             map_key(key(KeyCode::Char('j')), true),
             KeyOutcome::SearchChar('j')
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Char('v')), true),
+            KeyOutcome::SearchChar('v')
         );
         assert_eq!(
             map_key(key(KeyCode::Backspace), true),

@@ -494,6 +494,7 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
             ("Spc", "stop"),
             ("f", "fav"),
             ("t", "theme"),
+            ("v", "viz"),
             ("q", "quit"),
         ]
     } else {
@@ -504,6 +505,7 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
             ("Space", "stop/play"),
             ("f", "favorite"),
             ("t", "theme"),
+            ("v", "visualizer"),
             ("q", "quit"),
         ]
     };

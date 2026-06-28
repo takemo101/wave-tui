@@ -696,6 +696,12 @@ fn event_loop(
     }
 }
 
+/// Whether the Browse source rail currently holds focus, so list-navigation and
+/// `Enter` act on the source picker instead of the station list.
+fn browse_focused(app: &App) -> bool {
+    app.focus() == FocusPane::Sections
+}
+
 /// Translate a key event into app actions and audio/search side effects.
 fn handle_key(
     key: KeyEvent,
@@ -712,17 +718,43 @@ fn handle_key(
         KeyOutcome::Ignore => {}
         KeyOutcome::FocusNext => app.apply(Action::FocusNext),
         KeyOutcome::FocusPrevious => app.apply(Action::FocusPrevious),
-        KeyOutcome::SelectNext => app.apply(Action::SelectNext),
-        KeyOutcome::SelectPrevious => app.apply(Action::SelectPrevious),
-        KeyOutcome::SelectFirst => app.apply(Action::SelectFirst),
-        KeyOutcome::SelectLast => app.apply(Action::SelectLast),
+        // List-navigation keys act on the focused pane: while the Browse rail is
+        // focused they move the Browse source cursor; everywhere else they move
+        // the station-list selection. `map_key` stays focus-agnostic; the
+        // focus-aware split lives here in the controller.
+        KeyOutcome::SelectNext => app.apply(if browse_focused(app) {
+            Action::BrowseSelectNext
+        } else {
+            Action::SelectNext
+        }),
+        KeyOutcome::SelectPrevious => app.apply(if browse_focused(app) {
+            Action::BrowseSelectPrevious
+        } else {
+            Action::SelectPrevious
+        }),
+        KeyOutcome::SelectFirst => app.apply(if browse_focused(app) {
+            Action::BrowseSelectFirst
+        } else {
+            Action::SelectFirst
+        }),
+        KeyOutcome::SelectLast => app.apply(if browse_focused(app) {
+            Action::BrowseSelectLast
+        } else {
+            Action::SelectLast
+        }),
         KeyOutcome::Play => {
-            app.apply(Action::PlaySelected);
-            if let Some(station) = app.current_station().cloned() {
-                let _ = audio.command_tx.send(AudioCommand::Play {
-                    station: Box::new(station),
-                    volume: app.settings().volume,
-                });
+            if browse_focused(app) {
+                // Browse focused: Enter applies the selected source and hands
+                // focus to Stations rather than starting playback.
+                app.apply(Action::ApplyBrowseSelection);
+            } else {
+                app.apply(Action::PlaySelected);
+                if let Some(station) = app.current_station().cloned() {
+                    let _ = audio.command_tx.send(AudioCommand::Play {
+                        station: Box::new(station),
+                        volume: app.settings().volume,
+                    });
+                }
             }
         }
         KeyOutcome::TogglePlayback => {
@@ -838,9 +870,216 @@ fn apply_search_response(app: &mut App, debounce: &SearchDebounce, response: Sea
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ListSource;
+    use crate::catalog::{Category, Section};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    // --- focus-aware key dispatch (event-loop controller) ----------------
+
+    /// A fake audio handle whose command channel can be drained to assert what
+    /// playback side effects a key press produced, without a real device.
+    fn fake_audio() -> (AudioHandle, Receiver<AudioCommand>) {
+        let (command_tx, command_rx) = mpsc::channel();
+        let (_event_tx, event_rx) = mpsc::channel();
+        (
+            AudioHandle {
+                command_tx,
+                event_rx,
+            },
+            command_rx,
+        )
+    }
+
+    /// Controller scaffolding: an app on the curated catalog plus the debounce
+    /// and persistence the event loop threads through `handle_key`.
+    fn controller() -> (App, SearchDebounce, Persistence) {
+        (
+            App::new(Settings::default(), Catalog::curated()),
+            SearchDebounce::new(SEARCH_DEBOUNCE),
+            Persistence::new(VolumePercent::new(50).unwrap()),
+        )
+    }
+
+    #[test]
+    fn sections_focus_routes_navigation_to_browse_not_stations() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        let station_before = app.selected_index();
+
+        handle_key(
+            key(KeyCode::Char('j')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.browse_selected(), 1, "j moves the Browse selection");
+        assert_eq!(
+            app.selected_index(),
+            station_before,
+            "station selection must not move while Browse is focused"
+        );
+
+        handle_key(
+            key(KeyCode::Char('k')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(
+            app.browse_selected(),
+            0,
+            "k moves the Browse selection back"
+        );
+    }
+
+    #[test]
+    fn sections_focus_enter_applies_source_and_hands_focus_without_playing() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        let rail = ListSource::browse_rail();
+        let music_index = rail
+            .iter()
+            .position(|s| *s == ListSource::Section(Section::Music))
+            .unwrap();
+        app.apply(Action::SetBrowseSelection(music_index));
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
+        assert_eq!(app.focus(), FocusPane::Stations);
+        // Applying a Browse source must not start playback.
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "no audio command should be sent when applying a Browse source"
+        );
+        assert!(app.current_station().is_none());
+    }
+
+    #[test]
+    fn stations_focus_navigation_and_enter_playback_are_unchanged() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        // Default focus is Stations.
+        assert_eq!(app.focus(), FocusPane::Stations);
+
+        handle_key(
+            key(KeyCode::Char('j')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.selected_index(), 1, "j moves the station selection");
+        assert_eq!(app.browse_selected(), 0, "Browse selection stays put");
+
+        let expected = app.selected_station().unwrap().id.clone();
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.current_station().unwrap().id, expected);
+        match cmd_rx.try_recv() {
+            Ok(AudioCommand::Play { station, .. }) => assert_eq!(station.id, expected),
+            other => panic!("expected a Play command for the selected station, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clearing_search_in_the_event_loop_restores_previous_source() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        // A non-search source is active, then a search lands (as a response would
+        // deliver it), so the previous source is remembered.
+        app.apply(Action::ShowSection(Section::Music));
+        app.apply(Action::SetFocus(FocusPane::Search));
+        app.apply(Action::SearchResults(SearchResults::empty()));
+        assert_eq!(app.active_source(), ListSource::Search);
+
+        // Esc while the search strip is focused clears search end-to-end and
+        // restores the previous non-search source, handing focus to Stations.
+        handle_key(
+            key(KeyCode::Esc),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
+        assert_eq!(app.focus(), FocusPane::Stations);
+        assert_eq!(app.search_query(), "");
+    }
+
+    #[test]
+    fn clearing_search_before_results_land_keeps_the_current_source() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        // A non-default source is active; the user opens search but no results
+        // arrive before they back out with Esc.
+        app.apply(Action::ShowCategory(Category::Lofi));
+        let lofi_top = app.selected_station().unwrap().id.clone();
+
+        handle_key(
+            key(KeyCode::Char('/')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.focus(), FocusPane::Search);
+
+        handle_key(
+            key(KeyCode::Esc),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        // The original source and its list stay put; focus returns to Stations.
+        assert_eq!(app.active_source(), ListSource::Category(Category::Lofi));
+        assert_eq!(app.selected_station().unwrap().id, lofi_top);
+        assert_eq!(app.focus(), FocusPane::Stations);
+    }
+
+    #[test]
+    fn sections_focus_does_not_treat_category_jump_keys_as_station_jumps() {
+        // Home/End (and g/G) move the Browse cursor, not the hidden station list,
+        // while the Browse rail is focused.
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        let station_before = app.selected_index();
+
+        handle_key(
+            key(KeyCode::End),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(
+            app.browse_selected(),
+            ListSource::browse_rail().len() - 1,
+            "End jumps the Browse cursor to the last source"
+        );
+        assert_eq!(app.selected_index(), station_before);
+        let _ = Category::Lofi; // Category is exercised by the reducer tests.
     }
 
     // --- parse_args ------------------------------------------------------

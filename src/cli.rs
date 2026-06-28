@@ -773,7 +773,7 @@ fn handle_key(
             debounce.note_query("", Instant::now());
             app.apply(Action::SetSearchQuery(String::new()));
             app.apply(Action::SetSearchStatus(SearchStatus::Idle));
-            app.apply(Action::ShowCatalog);
+            app.apply(Action::ClearSearch);
             app.apply(Action::SetFocus(FocusPane::Stations));
         }
     }
@@ -791,7 +791,7 @@ fn update_search(app: &mut App, debounce: &mut SearchDebounce, query: String) {
         QueryChange::Scheduled => app.apply(Action::SetSearchStatus(SearchStatus::Loading)),
         QueryChange::Cleared => {
             app.apply(Action::SetSearchStatus(SearchStatus::Idle));
-            app.apply(Action::ShowCatalog);
+            app.apply(Action::ClearSearch);
         }
     }
 }

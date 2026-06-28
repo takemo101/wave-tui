@@ -14,7 +14,7 @@
 //! reducer pure and testable without a terminal, audio device, or network.
 
 use crate::audio::AudioEvent;
-use crate::catalog::{Catalog, Section, SessionStationHealth, Stations};
+use crate::catalog::{Catalog, Category, Section, SessionStationHealth, Stations};
 use crate::model::{PlaybackState, Station, StationId, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
@@ -95,6 +95,37 @@ pub enum SearchStatus {
     Error(String),
 }
 
+/// What the visible station list is currently showing.
+///
+/// The app tracks the active source explicitly instead of letting the visible
+/// list be anonymous, so Browse (a flat source picker) and Search clearing can
+/// reason about it. Per the design deck the Wide Browse pane offers `All
+/// Stations`, `Favorites`, both sections, and every category as sources; this
+/// slice models the full set but only the catalog-derived sources (All,
+/// Section, Category) build their list here. `Favorites` contents and `Search`
+/// results are produced by other slices/controllers; the reducer only records
+/// that one of them is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListSource {
+    /// The full curated catalog, ranked.
+    AllStations,
+    /// One curated section (Music or Spoken/News), ranked.
+    Section(Section),
+    /// One curated category, ranked.
+    Category(Category),
+    /// The persisted favorites collection.
+    Favorites,
+    /// Online search results.
+    Search,
+}
+
+impl ListSource {
+    /// Whether this source is the online search source.
+    fn is_search(self) -> bool {
+        matches!(self, ListSource::Search)
+    }
+}
+
 /// An intent dispatched to the [`App`] reducer.
 ///
 /// Actions map to the keyboard model in `docs/SPEC.md`. UI translates key events
@@ -135,8 +166,14 @@ pub enum Action {
     ShowCatalog,
     /// Replace the visible list with one curated section, ranked.
     ShowSection(Section),
+    /// Replace the visible list with one curated category, ranked.
+    ShowCategory(Category),
     /// Replace the visible list with online search results.
     SearchResults(SearchResults),
+    /// Clear the search and restore the previous non-search source.
+    ClearSearch,
+    /// Move the Browse source-picker selection to an explicit index.
+    SetBrowseSelection(usize),
     /// Replace the live search query text shown in the search strip.
     SetSearchQuery(String),
     /// Update the search status shown in the search strip.
@@ -160,6 +197,9 @@ pub struct App {
     health: SessionStationHealth,
     visible: Stations,
     selected: usize,
+    source: ListSource,
+    previous_source: ListSource,
+    browse_selected: usize,
     focus: FocusPane,
     playback: PlaybackState,
     current: Option<Station>,
@@ -186,6 +226,9 @@ impl App {
             health: SessionStationHealth::new(),
             visible,
             selected: 0,
+            source: ListSource::AllStations,
+            previous_source: ListSource::AllStations,
+            browse_selected: 0,
             focus: FocusPane::Stations,
             playback: PlaybackState::Stopped,
             current,
@@ -214,10 +257,11 @@ impl App {
             Action::VolumeUp => self.change_volume(VOLUME_STEP),
             Action::VolumeDown => self.change_volume(-VOLUME_STEP),
             Action::SetVolume(volume) => self.settings.volume = volume,
-            Action::ShowCatalog => self.replace_visible(self.catalog.stations().ranked()),
-            Action::ShowSection(section) => {
-                self.replace_visible(self.catalog.section_stations(section))
-            }
+            Action::ShowCatalog => self.show_source(ListSource::AllStations),
+            Action::ShowSection(section) => self.show_source(ListSource::Section(section)),
+            Action::ShowCategory(category) => self.show_source(ListSource::Category(category)),
+            Action::ClearSearch => self.clear_search(),
+            Action::SetBrowseSelection(index) => self.browse_selected = index,
             Action::SearchResults(results) => self.apply_search_results(results),
             Action::SetSearchQuery(query) => self.search_query = query,
             Action::SetSearchStatus(status) => self.search_status = status,
@@ -256,6 +300,41 @@ impl App {
         self.visible = stations;
         self.selected = 0;
         self.clamp_selection();
+    }
+
+    // --- list source -----------------------------------------------------
+
+    /// Apply a non-search source: record it as active and rebuild the visible
+    /// list from the catalog, resetting/clamping selection safely.
+    ///
+    /// Only catalog-derived sources (All, Section, Category) build their list in
+    /// this slice. `Favorites` contents come from a later slice, so applying it
+    /// here records the source without rebuilding the list; `Search` is never
+    /// routed through here (it arrives via [`Self::apply_search_results`]).
+    fn show_source(&mut self, source: ListSource) {
+        self.source = source;
+        match source {
+            ListSource::AllStations => self.replace_visible(self.catalog.stations().ranked()),
+            ListSource::Section(section) => {
+                self.replace_visible(self.catalog.section_stations(section))
+            }
+            ListSource::Category(category) => {
+                self.replace_visible(self.catalog.category_stations(category))
+            }
+            // Favorites list contents are out of scope for this slice; Search is
+            // applied via search results, not this path. Selection is still
+            // clamped so the bounds invariant holds after the source change.
+            ListSource::Favorites | ListSource::Search => self.clamp_selection(),
+        }
+    }
+
+    /// Restore the previous non-search source when search is cleared.
+    ///
+    /// `previous_source` is only ever set to a non-search source (see
+    /// [`Self::apply_search_results`]), so restoring it always lands on a real
+    /// catalog/favorites source rather than search results.
+    fn clear_search(&mut self) {
+        self.show_source(self.previous_source);
     }
 
     /// The first non-failed station index at or after `start`, wrapping once.
@@ -394,9 +473,18 @@ impl App {
 
     /// Replace the visible list with search results and reset selection.
     ///
+    /// Entering the search source remembers the previous non-search source so
+    /// clearing search can restore it. Successive searches (e.g. one per
+    /// keystroke) must not overwrite that memory with `Search`, so it is only
+    /// captured on the transition into search.
+    ///
     /// Receiving results means the network round-trip succeeded, so the offline
     /// flag is cleared.
     fn apply_search_results(&mut self, results: SearchResults) {
+        if !self.source.is_search() {
+            self.previous_source = self.source;
+        }
+        self.source = ListSource::Search;
         self.replace_visible(results.into_vec().into_iter().collect());
         self.offline = false;
     }
@@ -416,6 +504,16 @@ impl App {
     /// The selected index into [`Self::visible`].
     pub fn selected_index(&self) -> usize {
         self.selected
+    }
+
+    /// The active station-list source.
+    pub fn active_source(&self) -> ListSource {
+        self.source
+    }
+
+    /// The Browse source-picker selection index.
+    pub fn browse_selected(&self) -> usize {
+        self.browse_selected
     }
 
     /// The selected station, if any are visible.
@@ -884,5 +982,147 @@ mod tests {
             .collect();
         assert_eq!(visible_ids(&app), spoken);
         assert_eq!(app.selected_index(), 0);
+    }
+
+    // --- ListSource / source-aware reducer (MIK-018) --------------------
+
+    #[test]
+    fn active_source_defaults_to_all_stations() {
+        let app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.active_source(), ListSource::AllStations);
+        assert_eq!(app.browse_selected(), 0);
+    }
+
+    #[test]
+    fn show_catalog_sets_all_stations_source() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ShowSection(Section::Music));
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
+
+        app.apply(Action::ShowCatalog);
+        assert_eq!(app.active_source(), ListSource::AllStations);
+        let all: Vec<String> = app
+            .catalog
+            .stations()
+            .ranked()
+            .iter()
+            .map(|s| s.id.as_str().to_string())
+            .collect();
+        assert_eq!(visible_ids(&app), all);
+    }
+
+    #[test]
+    fn show_section_sets_section_source() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ShowSection(Section::SpokenNews));
+        assert_eq!(
+            app.active_source(),
+            ListSource::Section(Section::SpokenNews)
+        );
+    }
+
+    #[test]
+    fn show_category_sets_category_source_and_visible() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ShowCategory(Category::Lofi));
+        assert_eq!(app.active_source(), ListSource::Category(Category::Lofi));
+        let lofi: Vec<String> = app
+            .catalog
+            .category_stations(Category::Lofi)
+            .iter()
+            .map(|s| s.id.as_str().to_string())
+            .collect();
+        assert_eq!(visible_ids(&app), lofi);
+        assert_eq!(app.selected_index(), 0);
+    }
+
+    #[test]
+    fn selection_is_clamped_safely_after_every_source_change() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        // Move selection to the end of the full catalog.
+        app.apply(Action::ShowCatalog);
+        app.apply(Action::SelectLast);
+        assert!(app.selected_index() > 0);
+
+        // A narrower source must not leave selection out of bounds.
+        app.apply(Action::ShowCategory(Category::Lofi));
+        assert_eq!(app.selected_index(), 0);
+        assert!(app.selected_index() < app.visible().len().max(1));
+        // The selected station is real (or the list is empty).
+        if !app.visible().is_empty() {
+            assert!(app.selected_station().is_some());
+        }
+    }
+
+    #[test]
+    fn searching_sets_search_source_and_remembers_previous() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ShowSection(Section::Music));
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
+
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            station("x", "https://example.com/x.mp3"),
+        ])));
+        assert_eq!(app.active_source(), ListSource::Search);
+        assert_eq!(visible_ids(&app), vec!["x"]);
+    }
+
+    #[test]
+    fn clearing_search_restores_previous_non_search_source() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ShowSection(Section::Music));
+
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            station("x", "https://example.com/x.mp3"),
+        ])));
+        assert_eq!(app.active_source(), ListSource::Search);
+
+        app.apply(Action::ClearSearch);
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
+        // The restored list is the section's stations, not the search results.
+        let music: Vec<String> = app
+            .catalog
+            .section_stations(Section::Music)
+            .iter()
+            .map(|s| s.id.as_str().to_string())
+            .collect();
+        assert_eq!(visible_ids(&app), music);
+        assert_eq!(app.selected_index(), 0);
+    }
+
+    #[test]
+    fn clearing_search_defaults_to_all_stations_without_a_previous_source() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            station("x", "https://example.com/x.mp3"),
+        ])));
+        app.apply(Action::ClearSearch);
+        assert_eq!(app.active_source(), ListSource::AllStations);
+    }
+
+    #[test]
+    fn repeated_searches_keep_the_original_previous_source() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ShowCategory(Category::Jazz));
+
+        // Two searches in a row (as keystrokes produce) must not overwrite the
+        // remembered non-search source with `Search`.
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            station("x", "https://example.com/x.mp3"),
+        ])));
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            station("y", "https://example.com/y.mp3"),
+        ])));
+
+        app.apply(Action::ClearSearch);
+        assert_eq!(app.active_source(), ListSource::Category(Category::Jazz));
+    }
+
+    #[test]
+    fn browse_selection_is_tracked_through_the_reducer() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.browse_selected(), 0);
+        app.apply(Action::SetBrowseSelection(3));
+        assert_eq!(app.browse_selected(), 3);
     }
 }

@@ -114,6 +114,29 @@ Implications:
 - Clearing Search restores the previous non-search source rather than always
   forcing All Stations.
 
+### UX Design Deck Confirmation
+
+A follow-up UI/UX design deck confirmed the concrete visual direction for
+`MIK-014` through `MIK-017`:
+
+- **Wide shell: Quiet Source Rail** — keep Browse as a quiet left rail, ranked
+  Results as the central workspace, and Now Playing/visualizer on the right.
+  This preserves the Search Console direction while making Browse actionable.
+- **Browse/Favorites: Source Picker + Focus Handoff** — Browse is a source
+  picker; applying a source with `Enter` moves focus to Stations so the next
+  action can be station selection or playback. Favorites uses the same source
+  model and shows an explicit empty state.
+- **Visualizer language: Five-mode Calm Suite** — use the five-mode set
+  (`SpectrumStack`, `PeakDots`, `WaveScope`, `MirrorWave`, `AmbientPulse`) with
+  calm defaults and pane-width interpolation rather than a full-screen or
+  full-width layout takeover.
+- **Theme expansion: Calm Six-pack** — expand to Minimal, Neon, CRT, Solarized,
+  Midnight, and Sakura. The added themes should broaden mood while staying
+  suitable for long work sessions.
+
+These deck choices are the implementation contract for the polish issues unless
+superseded by a later design decision.
+
 ## Implementation Notes
 
 - Store theme as a stable lowercase string. Current names are `minimal`, `neon`,

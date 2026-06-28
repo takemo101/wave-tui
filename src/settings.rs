@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::model::{Station, VolumePercent};
+use crate::model::{Station, VisualizerMode, VolumePercent};
 use crate::theme::ThemeName;
 
 /// Default startup volume used on first launch.
@@ -123,6 +123,8 @@ pub struct Settings {
     pub volume: VolumePercent,
     #[serde(default, deserialize_with = "deserialize_theme_or_default")]
     pub theme: ThemeName,
+    #[serde(default, deserialize_with = "deserialize_visualizer_or_default")]
+    pub visualizer: VisualizerMode,
     #[serde(default)]
     pub previous_station: Option<Station>,
     #[serde(default)]
@@ -134,6 +136,7 @@ impl Default for Settings {
         Self {
             volume: VolumePercent::clamped(DEFAULT_VOLUME as i32),
             theme: ThemeName::Minimal,
+            visualizer: VisualizerMode::SpectrumStack,
             previous_station: None,
             favorites: Favorites::new(),
         }
@@ -146,6 +149,17 @@ where
 {
     let raw = String::deserialize(deserializer)?;
     Ok(ThemeName::parse_or_default(&raw))
+}
+
+/// Lenient visualizer-mode boundary: an unknown persisted mode falls back to the
+/// default ([`VisualizerMode::SpectrumStack`]) instead of failing the whole load,
+/// so one stale value never drops the rest of a user's settings.
+fn deserialize_visualizer_or_default<'de, D>(deserializer: D) -> Result<VisualizerMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(VisualizerMode::parse_or_default(&raw))
 }
 
 /// Resolve the platform config path for the settings file.
@@ -202,7 +216,9 @@ pub fn save_to(path: &Path, settings: &Settings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl};
+    use crate::model::{
+        BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl, VisualizerMode,
+    };
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static TEMP_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -252,8 +268,64 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.volume.get(), 60);
         assert_eq!(settings.theme, ThemeName::Minimal);
+        assert_eq!(settings.visualizer, VisualizerMode::SpectrumStack);
         assert!(settings.previous_station.is_none());
         assert!(settings.favorites.is_empty());
+    }
+
+    #[test]
+    fn save_then_load_roundtrips_selected_visualizer_mode() {
+        let dir = TempDir::new();
+        let path = dir.path().join("settings.json");
+        let settings = Settings {
+            visualizer: VisualizerMode::WaveScope,
+            ..Settings::default()
+        };
+        save_to(&path, &settings).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.visualizer, VisualizerMode::WaveScope);
+        assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn load_falls_back_unknown_visualizer_without_dropping_other_settings() {
+        let dir = TempDir::new();
+        let path = dir.path().join("settings.json");
+        let raw = r#"{
+            "volume": 75,
+            "theme": "neon",
+            "visualizer": "hologram",
+            "previous_station": null,
+            "favorites": []
+        }"#;
+        std::fs::write(&path, raw).unwrap();
+
+        let settings = load_from(&path).unwrap();
+
+        // The unknown mode falls back, but every other setting is preserved.
+        assert_eq!(settings.visualizer, VisualizerMode::SpectrumStack);
+        assert_eq!(settings.volume, VolumePercent::new(75).unwrap());
+        assert_eq!(settings.theme, ThemeName::Neon);
+    }
+
+    #[test]
+    fn load_defaults_visualizer_when_absent_without_dropping_other_settings() {
+        // A settings file written before this field existed must still load.
+        let dir = TempDir::new();
+        let path = dir.path().join("settings.json");
+        let raw = r#"{
+            "volume": 75,
+            "theme": "neon",
+            "previous_station": null,
+            "favorites": []
+        }"#;
+        std::fs::write(&path, raw).unwrap();
+
+        let settings = load_from(&path).unwrap();
+
+        assert_eq!(settings.visualizer, VisualizerMode::SpectrumStack);
+        assert_eq!(settings.volume, VolumePercent::new(75).unwrap());
+        assert_eq!(settings.theme, ThemeName::Neon);
     }
 
     #[test]
@@ -271,6 +343,7 @@ mod tests {
         let settings = Settings {
             volume: VolumePercent::new(42).unwrap(),
             theme: ThemeName::Crt,
+            visualizer: VisualizerMode::MirrorWave,
             previous_station: Some(station("demo", "https://example.com/a.mp3", "Demo")),
             favorites: Favorites::from_stations([station(
                 "fav",

@@ -105,12 +105,18 @@ MVP should include either:
 The late-cli implementation uses this kind of device/sample-rate handling and is
 still the right reference.
 
-### ICY metadata was only helper-tested
+### ICY metadata is implemented after the spike
 
-The spike includes and tests an ICY `StreamTitle` parser, but the live binary
-does not yet split interleaved ICY metadata from audio bytes. MVP still needs a
-proper stream reader that handles `icy-metaint` before feeding audio bytes to
-Symphonia.
+The original spike only helper-tested an ICY `StreamTitle` parser. MIK-011
+completed the production follow-up: `src/audio/icy.rs` now splits interleaved
+ICY metadata blocks from audio bytes, deduplicates unchanged titles, and exposes
+an `IcyReader` that feeds Symphonia audio-only bytes. `src/audio/decoder.rs`
+requests `Icy-MetaData: 1`, reads `icy-metaint`, and wraps streams only when
+metadata framing is present.
+
+This behavior is covered by pure synthetic-byte tests; live station metadata
+still belongs in manual verification because remote ICY support varies by
+station.
 
 ## Automated Checks
 

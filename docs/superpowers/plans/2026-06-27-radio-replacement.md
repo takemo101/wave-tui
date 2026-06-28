@@ -48,8 +48,9 @@ Plan implications:
 - Select a CPAL output config matching the stream sample rate when possible.
 - Add resampling, or emit a clear unsupported-rate playback failure, before
   broad Radio Browser rollout.
-- ICY title parsing is proven as a helper; full `icy-metaint` demuxing remains
-  a required implementation task.
+- ICY title parsing and full `icy-metaint` demuxing are implemented in
+  `src/audio/icy.rs` and wired through `src/audio/decoder.rs`; synthetic-byte
+  tests cover metadata stripping and title-change events.
 
 ## Design Deck Baseline
 
@@ -1114,6 +1115,11 @@ Expected: all tests pass and app compiles.
 
 ### Task 11: ICY metadata integration
 
+Status: implemented by MIK-011. `src/audio/icy.rs` provides the
+`icy-metaint` demux/read adapter, `src/audio/decoder.rs` requests and activates
+ICY framing when present, and app/UI surfaces change-only ICY titles for the
+current station.
+
 **Files:**
 
 - Modify: `src/audio/decoder.rs`
@@ -1128,7 +1134,7 @@ Expected: all tests pass and app compiles.
 - App stores `now_playing_title`.
 - UI displays title when present.
 
-- [ ] **Step 1: Request ICY metadata**
+- [x] **Step 1: Request ICY metadata**
 
 When opening HTTP streams, send header:
 
@@ -1138,11 +1144,11 @@ Icy-MetaData: 1
 
 Read `icy-metaint` response header when present.
 
-- [ ] **Step 2: Extract metadata blocks**
+- [x] **Step 2: Extract metadata blocks**
 
 For streams with `icy-metaint`, split audio bytes and metadata blocks before feeding audio bytes to Symphonia. Emit title changes through audio event channel.
 
-- [ ] **Step 3: App/UI handling**
+- [x] **Step 3: App/UI handling**
 
 On `AudioEvent::IcyTitle`, update `app.now_playing_title` if station id matches current station.
 

@@ -133,8 +133,10 @@ Implementation consequences:
 - Choose CPAL output configs that match stream sample rate when possible.
 - Add resampling, or a clear unsupported-rate failure path, before relying on
   broad Radio Browser playback.
-- ICY title parsing is helper-tested, but full `icy-metaint` stream splitting
-  still belongs in the main audio implementation.
+- ICY title parsing and full `icy-metaint` stream splitting are implemented in
+  the main audio path. `src/audio/icy.rs` strips metadata bytes before Symphonia
+  decoding and `src/audio/decoder.rs` requests/activates ICY framing when
+  available.
 
 ### Failed Stations
 

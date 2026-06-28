@@ -457,11 +457,59 @@ fn now_playing_lines<'a>(app: &App, theme: &Theme, compact: bool) -> Vec<Line<'a
         }
     }
 
-    lines.push(Line::styled(
-        format!("Volume {}%", app.settings().volume.get()),
-        Style::default().fg(theme.foreground),
+    let gauge_width = if compact {
+        VOLUME_GAUGE_WIDTH_COMPACT
+    } else {
+        VOLUME_GAUGE_WIDTH
+    };
+    lines.push(volume_gauge_line(
+        theme,
+        app.settings().volume.get(),
+        gauge_width,
     ));
     lines
+}
+
+/// Cells in the Now Playing volume gauge for the bordered (wide/medium) panes.
+const VOLUME_GAUGE_WIDTH: usize = 10;
+/// A shorter gauge for the compact pane, which trims metadata to stay legible.
+const VOLUME_GAUGE_WIDTH_COMPACT: usize = 6;
+
+/// Filled cell count for `volume` (0..=100) across a `width`-cell gauge.
+///
+/// Rounds to the nearest cell so mid values read proportionally, and clamps into
+/// `0..=width` so 0% is empty, 100% is full, and a zero-width gauge is safe.
+fn volume_filled_cells(volume: u8, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let filled = (volume as f32 / 100.0 * width as f32).round() as usize;
+    filled.min(width)
+}
+
+/// Build the themed Now Playing volume gauge: a muted label, a filled bar, an
+/// empty bar, and a highlighted percentage.
+///
+/// The "Pane Gauge" indicator (MIK-033) replaces the plain `Volume N%` text with
+/// a visual level bar. Every span draws its color/weight from the active
+/// [`Theme`] (muted label/empty, accent fill, bold-highlighted percentage), so
+/// this carries no hard-coded palette values. The fill uses the `playing`
+/// (output-level) color rather than the heading/focus accent, since the gauge
+/// represents playback level.
+fn volume_gauge_line<'a>(theme: &Theme, volume: u8, width: usize) -> Line<'a> {
+    let filled = volume_filled_cells(volume, width);
+    let empty = width - filled;
+    Line::from(vec![
+        Span::styled("Vol ", Style::default().fg(theme.muted)),
+        Span::styled("█".repeat(filled), Style::default().fg(theme.playing)),
+        Span::styled("░".repeat(empty), Style::default().fg(theme.muted)),
+        Span::styled(
+            format!(" {volume}%"),
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
 }
 
 /// The shared "Spectrum Stack": vertical FFT bars colored by the active theme.
@@ -2206,5 +2254,113 @@ mod tests {
         ] {
             let _ = render_buffer(&app, w, h);
         }
+    }
+
+    // --- Volume gauge (MIK-033) -----------------------------------------
+
+    use crate::model::VolumePercent;
+
+    #[test]
+    fn volume_filled_cells_reflects_percent_and_is_safe() {
+        // 0%, mid, and 100% map proportionally onto the gauge width.
+        assert_eq!(volume_filled_cells(0, 10), 0);
+        assert_eq!(volume_filled_cells(50, 10), 5);
+        assert_eq!(volume_filled_cells(60, 10), 6);
+        assert_eq!(volume_filled_cells(100, 10), 10);
+        // Rounds to the nearest cell rather than truncating.
+        assert_eq!(volume_filled_cells(55, 10), 6);
+        // Never overflows the width; zero width is safe.
+        assert_eq!(volume_filled_cells(100, 0), 0);
+        assert_eq!(volume_filled_cells(100, 6), 6);
+    }
+
+    #[test]
+    fn volume_gauge_line_is_theme_styled_with_filled_empty_and_percent() {
+        // The gauge is built from theme-aware spans: a muted label, a filled bar,
+        // an empty bar, and a highlighted percentage — at 0%, a mid value, 100%.
+        let theme = Theme::for_name(ThemeName::Neon);
+        for (vol, filled) in [(0u8, 0usize), (60, 6), (100, 10)] {
+            let line = volume_gauge_line(&theme, vol, 10);
+
+            // Muted label, sourced from the theme (no hard-coded palette).
+            assert!(
+                line.spans
+                    .iter()
+                    .any(|s| s.content.contains("Vol") && s.style.fg == Some(theme.muted)),
+                "missing muted volume label for {vol}%"
+            );
+
+            // Filled cells: count matches the percent and uses the theme playing
+            // (output-level) color rather than the heading/focus accent.
+            let filled_span = line.spans.iter().find(|s| s.content.starts_with('█'));
+            if filled == 0 {
+                assert!(filled_span.is_none(), "0% must draw no filled cells");
+            } else {
+                let fs = filled_span.expect("filled gauge span");
+                assert_eq!(fs.content.chars().count(), filled, "filled cell count");
+                assert_eq!(fs.style.fg, Some(theme.playing), "filled not theme-colored");
+            }
+
+            // Empty cells fill the remainder, colored by the theme muted tone.
+            let empty_span = line.spans.iter().find(|s| s.content.starts_with('░'));
+            if filled == 10 {
+                assert!(empty_span.is_none(), "100% must draw no empty cells");
+            } else {
+                let es = empty_span.expect("empty gauge span");
+                assert_eq!(es.content.chars().count(), 10 - filled, "empty cell count");
+                assert_eq!(es.style.fg, Some(theme.muted), "empty not theme-colored");
+            }
+
+            // The percentage stays visible and is highlighted (bold).
+            let pct = line
+                .spans
+                .iter()
+                .find(|s| s.content.contains(&format!("{vol}%")))
+                .expect("percentage span");
+            assert!(
+                pct.style.add_modifier.contains(Modifier::BOLD),
+                "percentage not highlighted for {vol}%"
+            );
+        }
+    }
+
+    #[test]
+    fn now_playing_renders_volume_as_a_gauge_in_every_tier() {
+        // Default volume is 60%: a full UI render shows the gauge glyphs and the
+        // percentage at every layout tier, not just the plain "Volume N%" text.
+        let app = base_app();
+        assert_eq!(app.settings().volume.get(), 60);
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                text.contains('█'),
+                "filled gauge missing at {w}x{h}: {text}"
+            );
+            assert!(text.contains('░'), "empty gauge missing at {w}x{h}: {text}");
+            assert!(
+                text.contains("60%"),
+                "volume percent missing at {w}x{h}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn volume_gauge_fill_tracks_0_and_100_percent_in_full_render() {
+        // The rendered gauge reflects volume edges: 0% is all empty cells (no
+        // filled glyph from the gauge, with no visualizer frame active), and 100%
+        // is all filled cells (no empty glyph). Volume actions/settings are
+        // unchanged; only rendering reads the value.
+        let mut app = base_app();
+        app.apply(Action::SetVolume(VolumePercent::new(0).unwrap()));
+        let text = buffer_text(&render_buffer(&app, 130, 32));
+        assert!(text.contains("0%"), "0% label missing: {text}");
+        assert!(text.contains('░'), "0% must draw an empty gauge: {text}");
+        assert!(!text.contains('█'), "0% must draw no filled cells: {text}");
+
+        app.apply(Action::SetVolume(VolumePercent::new(100).unwrap()));
+        let text = buffer_text(&render_buffer(&app, 130, 32));
+        assert!(text.contains("100%"), "100% label missing: {text}");
+        assert!(text.contains('█'), "100% must draw a filled gauge: {text}");
+        assert!(!text.contains('░'), "100% must draw no empty cells: {text}");
     }
 }

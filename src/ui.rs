@@ -23,7 +23,9 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap,
+    },
     Frame,
 };
 
@@ -106,6 +108,7 @@ fn render_medium(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
     render_now_playing(app, theme, cols[1], buf, false);
 
     render_footer(app, theme, rows[2], buf, false);
+    render_hidden_browse_modal(app, theme, area, buf);
 }
 
 /// Compact "Split Mini, reduced": a one-line search strip, a stacked station
@@ -125,6 +128,43 @@ fn render_compact(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
     render_station_list(app, theme, rows[1], buf, "Stations", true);
     render_now_playing(app, theme, rows[2], buf, true);
     render_footer(app, theme, rows[3], buf, true);
+    render_hidden_browse_modal(app, theme, area, buf);
+}
+
+/// Draw the Browse source picker as a modal in non-wide layouts.
+///
+/// Medium and Compact intentionally do not reserve permanent space for Browse,
+/// but the focus model still lets `Tab` land on it. Showing the same Browse
+/// renderer in an overlay keeps the focused control visible without stealing
+/// station/player space when Browse is not focused.
+fn render_hidden_browse_modal(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
+    if app.focus() != FocusPane::Sections || area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let rail_rows = ListSource::browse_rail().len() as u16;
+    let desired_width = 36;
+    let desired_height = rail_rows.saturating_add(2);
+    let width = if area.width <= desired_width {
+        area.width
+    } else {
+        desired_width.min(area.width.saturating_sub(4))
+    };
+    let height = if area.height <= desired_height {
+        area.height
+    } else {
+        desired_height.min(area.height.saturating_sub(2))
+    };
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+
+    Clear.render(modal, buf);
+    buf.set_style(modal, theme.base_style());
+    render_browse(app, theme, modal, buf);
 }
 
 // --- components ----------------------------------------------------------
@@ -1165,6 +1205,52 @@ mod tests {
         assert!(text.contains("Now Playing"));
         let top = app.visible().iter().next().unwrap().name.as_str();
         assert!(text.contains(top));
+    }
+
+    #[test]
+    fn medium_shows_browse_modal_when_hidden_browse_has_focus() {
+        assert_eq!(LayoutTier::from_size(100, 24), LayoutTier::Medium);
+        let mut app = base_app();
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        app.apply(Action::SetBrowseSelection(1));
+
+        let text = buffer_text(&render_buffer(&app, 100, 24));
+
+        assert!(
+            text.contains("Browse"),
+            "Browse modal title missing: {text}"
+        );
+        assert!(
+            text.contains("Favorites"),
+            "Browse modal should show source rows: {text}"
+        );
+        assert!(
+            text.contains('▶'),
+            "Browse modal should show the selected source cursor: {text}"
+        );
+    }
+
+    #[test]
+    fn compact_shows_browse_modal_when_hidden_browse_has_focus() {
+        assert_eq!(LayoutTier::from_size(70, 16), LayoutTier::Compact);
+        let mut app = base_app();
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        app.apply(Action::SetBrowseSelection(1));
+
+        let text = buffer_text(&render_buffer(&app, 70, 16));
+
+        assert!(
+            text.contains("Browse"),
+            "Browse modal title missing: {text}"
+        );
+        assert!(
+            text.contains("Favorites"),
+            "Browse modal should show source rows: {text}"
+        );
+        assert!(
+            text.contains('▶'),
+            "Browse modal should show the selected source cursor: {text}"
+        );
     }
 
     #[test]

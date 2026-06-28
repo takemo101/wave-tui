@@ -376,11 +376,13 @@ pub enum PlaybackState {
 
 /// One of the selectable visualizer renderers.
 ///
-/// `SpectrumStack` is the default and the only renderer wired today; the other
-/// modes are the planned five-mode Calm Suite (`docs/ui-design-decisions.md`)
-/// whose renderers land in later slices. Modes are stored as stable lowercase
-/// strings (`spectrum_stack`, `peak_dots`, …) so persisted settings stay stable;
-/// unknown names fall back to `SpectrumStack` at the settings boundary via
+/// `SpectrumStack` is the default. All five modes of the Calm Suite
+/// (`docs/ui-design-decisions.md`) are implemented and selectable via the `v`
+/// key: `SpectrumStack` and `PeakDots` are FFT-band driven, `WaveScope` and
+/// `MirrorWave` draw the time-domain waveform, and `AmbientPulse` is an
+/// RMS/band-driven ambient glow. Modes are stored as stable lowercase strings
+/// (`spectrum_stack`, `peak_dots`, …) so persisted settings stay stable; unknown
+/// names fall back to `SpectrumStack` at the settings boundary via
 /// [`VisualizerMode::parse_or_default`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum VisualizerMode {

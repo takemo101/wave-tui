@@ -12,7 +12,9 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 - **Native Rust playback** — MP3/AAC-centered HTTP streams play through a
   `reqwest` + `symphonia` + `cpal` pipeline. No external `ffplay`/`mpv` process.
 - **Real FFT visualizer** — the Spectrum Stack bars are driven by actual played
-  audio samples via `rustfft`, not a simulation.
+  audio samples via `rustfft`, not a simulation. Five calm modes are selectable
+  with `v` (see [Visualizer modes](#visualizer-modes)); all are real-audio-driven
+  and stretch to fill the visualizer pane.
 - **Auto-resume** — launching `wave-tui` replays your previous station; first
   launch (or a failed previous station) starts silently with curated
   recommendations.
@@ -79,7 +81,7 @@ search controls act on the focused pane.
 | `+` / `-`       | volume up / down                               |
 | `f`             | toggle favorite for the selected station       |
 | `t`             | cycle theme (Minimal → Neon → CRT)             |
-| `v`             | cycle visualizer mode                          |
+| `v`             | cycle visualizer mode (see Visualizer modes)   |
 | `/`             | focus search and type to search Radio Browser  |
 | `Esc`           | while searching: clear search and return to catalog |
 | `q` / `Esc`     | quit (`Esc` quits when not searching)          |
@@ -102,6 +104,25 @@ catalog or search results. Removing a favorite with `f` while the Favorites view
 is active drops it from the list immediately. An empty Favorites view shows an
 explicit hint to save a station with `f`. Saved favorites are retryable stream
 entries, not stations guaranteed to play while offline.
+
+### Visualizer modes
+
+The `v` key cycles a five-mode "Calm Suite" of visualizers, and the selected
+mode is persisted across restarts. Every mode is driven by real played audio and
+stretches its source data to fill the visualizer pane width; none turns the
+layout into a full-screen visualizer.
+
+| Mode            | Source                | Look                                            |
+| --------------- | --------------------- | ----------------------------------------------- |
+| `SpectrumStack` | FFT bands             | Vertical bars filling from the bottom (default) |
+| `PeakDots`      | FFT bands             | One peak dot per column                         |
+| `WaveScope`     | Waveform              | Oscilloscope trace around the center line       |
+| `MirrorWave`    | Waveform              | Symmetrical waveform mirrored above/below center|
+| `AmbientPulse`  | RMS + bands           | Low-noise centered glow that pulses with level  |
+
+The waveform modes treat both an empty and an all-zero waveform as a flat
+silence baseline, and `AmbientPulse` draws nothing for a silent frame, so a
+stopped or quiet stream stays calm rather than showing fake motion.
 
 ## Command-line options
 

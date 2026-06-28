@@ -707,6 +707,26 @@ fn browse_focused(app: &App) -> bool {
     app.focus() == FocusPane::Sections
 }
 
+/// Which list (if any) the focused pane navigates with list-navigation keys.
+///
+/// Only the Stations and Browse rail panes are navigable lists; the search strip
+/// and Now Playing are not, so list-navigation keys must do nothing there rather
+/// than leaking into the hidden station cursor.
+enum NavTarget {
+    Stations,
+    Browse,
+    None,
+}
+
+/// Resolve which list the current focus navigates.
+fn nav_target(app: &App) -> NavTarget {
+    match app.focus() {
+        FocusPane::Stations => NavTarget::Stations,
+        FocusPane::Sections => NavTarget::Browse,
+        FocusPane::Search | FocusPane::NowPlaying => NavTarget::None,
+    }
+}
+
 /// Translate a key event into app actions and audio/search side effects.
 fn handle_key(
     key: KeyEvent,
@@ -723,30 +743,31 @@ fn handle_key(
         KeyOutcome::Ignore => {}
         KeyOutcome::FocusNext => app.apply(Action::FocusNext),
         KeyOutcome::FocusPrevious => app.apply(Action::FocusPrevious),
-        // List-navigation keys act on the focused pane: while the Browse rail is
-        // focused they move the Browse source cursor; everywhere else they move
-        // the station-list selection. `map_key` stays focus-agnostic; the
-        // focus-aware split lives here in the controller.
-        KeyOutcome::SelectNext => app.apply(if browse_focused(app) {
-            Action::BrowseSelectNext
-        } else {
-            Action::SelectNext
-        }),
-        KeyOutcome::SelectPrevious => app.apply(if browse_focused(app) {
-            Action::BrowseSelectPrevious
-        } else {
-            Action::SelectPrevious
-        }),
-        KeyOutcome::SelectFirst => app.apply(if browse_focused(app) {
-            Action::BrowseSelectFirst
-        } else {
-            Action::SelectFirst
-        }),
-        KeyOutcome::SelectLast => app.apply(if browse_focused(app) {
-            Action::BrowseSelectLast
-        } else {
-            Action::SelectLast
-        }),
+        // List-navigation keys act only on the focused navigable list: the Browse
+        // source rail moves its source cursor, the station list moves its
+        // selection, and non-list panes (search strip, Now Playing) ignore them so
+        // navigation never leaks into the hidden station cursor. `map_key` stays
+        // focus-agnostic; the focus-aware split lives here in the controller.
+        KeyOutcome::SelectNext => match nav_target(app) {
+            NavTarget::Stations => app.apply(Action::SelectNext),
+            NavTarget::Browse => app.apply(Action::BrowseSelectNext),
+            NavTarget::None => {}
+        },
+        KeyOutcome::SelectPrevious => match nav_target(app) {
+            NavTarget::Stations => app.apply(Action::SelectPrevious),
+            NavTarget::Browse => app.apply(Action::BrowseSelectPrevious),
+            NavTarget::None => {}
+        },
+        KeyOutcome::SelectFirst => match nav_target(app) {
+            NavTarget::Stations => app.apply(Action::SelectFirst),
+            NavTarget::Browse => app.apply(Action::BrowseSelectFirst),
+            NavTarget::None => {}
+        },
+        KeyOutcome::SelectLast => match nav_target(app) {
+            NavTarget::Stations => app.apply(Action::SelectLast),
+            NavTarget::Browse => app.apply(Action::BrowseSelectLast),
+            NavTarget::None => {}
+        },
         KeyOutcome::Play => {
             if browse_focused(app) {
                 // Browse focused: Enter applies the selected source and hands
@@ -762,21 +783,26 @@ fn handle_key(
                 }
             }
         }
+        // `Space` is the Stations transport toggle. It only acts while the station
+        // list is focused; in other panes it must not move or toggle playback (in
+        // the search strip `map_key` already routes Space to query text).
         KeyOutcome::TogglePlayback => {
-            app.apply(Action::TogglePlayback);
-            match app.playback() {
-                PlaybackState::Connecting => {
-                    if let Some(station) = app.current_station().cloned() {
-                        let _ = audio.command_tx.send(AudioCommand::Play {
-                            station: Box::new(station),
-                            volume: app.settings().volume,
-                        });
+            if app.focus() == FocusPane::Stations {
+                app.apply(Action::TogglePlayback);
+                match app.playback() {
+                    PlaybackState::Connecting => {
+                        if let Some(station) = app.current_station().cloned() {
+                            let _ = audio.command_tx.send(AudioCommand::Play {
+                                station: Box::new(station),
+                                volume: app.settings().volume,
+                            });
+                        }
                     }
+                    PlaybackState::Stopped => {
+                        let _ = audio.command_tx.send(AudioCommand::Stop);
+                    }
+                    _ => {}
                 }
-                PlaybackState::Stopped => {
-                    let _ = audio.command_tx.send(AudioCommand::Stop);
-                }
-                _ => {}
             }
         }
         KeyOutcome::ToggleFavorite => app.apply(Action::ToggleFavorite),
@@ -1086,6 +1112,156 @@ mod tests {
         );
         assert_eq!(app.selected_index(), station_before);
         let _ = Category::Lofi; // Category is exercised by the reducer tests.
+    }
+
+    #[test]
+    fn search_focus_navigation_moves_neither_station_nor_browse_selection() {
+        // Up/Down/Home/End while the search strip is focused must not leak into
+        // the station list (or the Browse rail); search keeps its focus.
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        app.apply(Action::SetFocus(FocusPane::Search));
+        let station_before = app.selected_index();
+        let browse_before = app.browse_selected();
+
+        for code in [KeyCode::Down, KeyCode::Up, KeyCode::Home, KeyCode::End] {
+            handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+        }
+
+        assert_eq!(
+            app.selected_index(),
+            station_before,
+            "search focus must not move station selection"
+        );
+        assert_eq!(
+            app.browse_selected(),
+            browse_before,
+            "search focus must not move the Browse selection"
+        );
+        assert_eq!(
+            app.focus(),
+            FocusPane::Search,
+            "list-navigation keys keep search focus"
+        );
+    }
+
+    #[test]
+    fn now_playing_focus_navigation_does_not_move_station_selection() {
+        // j/k/arrows/End while Now Playing is focused must not move the station
+        // cursor; Now Playing is not a navigable list.
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        app.apply(Action::SetFocus(FocusPane::NowPlaying));
+        let before = app.selected_index();
+
+        for code in [KeyCode::Char('j'), KeyCode::Down, KeyCode::End] {
+            handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+        }
+
+        assert_eq!(
+            app.selected_index(),
+            before,
+            "Now Playing focus must not move station selection"
+        );
+    }
+
+    #[test]
+    fn now_playing_focus_space_does_not_toggle_playback() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        // Play a station so there is a current station and Connecting playback.
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+        let _ = cmd_rx.try_recv(); // drain the Play command from Enter.
+
+        app.apply(Action::SetFocus(FocusPane::NowPlaying));
+        handle_key(
+            key(KeyCode::Char(' ')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert_eq!(
+            app.playback(),
+            &PlaybackState::Connecting,
+            "Space outside Stations must not toggle playback"
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "no audio command should be sent for Space outside Stations"
+        );
+    }
+
+    #[test]
+    fn sections_focus_space_does_not_toggle_playback() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+        let _ = cmd_rx.try_recv(); // drain the Play command from Enter.
+
+        app.apply(Action::SetFocus(FocusPane::Sections));
+        handle_key(
+            key(KeyCode::Char(' ')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert_eq!(
+            app.playback(),
+            &PlaybackState::Connecting,
+            "Space while Browse is focused must not toggle playback"
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "no audio command should be sent for Space while Browse is focused"
+        );
+    }
+
+    #[test]
+    fn stations_focus_space_still_toggles_playback() {
+        // Guard the unchanged Stations behavior: Space stops the connecting/playing
+        // current station and issues the Stop command.
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+        let _ = cmd_rx.try_recv(); // drain the Play command from Enter.
+
+        handle_key(
+            key(KeyCode::Char(' ')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        match cmd_rx.try_recv() {
+            Ok(AudioCommand::Stop) => {}
+            other => panic!("expected a Stop command for Space in Stations, got {other:?}"),
+        }
     }
 
     #[test]

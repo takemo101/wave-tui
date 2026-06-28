@@ -79,7 +79,7 @@ search controls act on the focused pane.
 | `g` / `Home`    | jump to first station                          |
 | `G` / `End`     | jump to last station                           |
 | `Enter`         | play the selected station                      |
-| `Space`         | stop / play toggle for the current station     |
+| `Space`         | stop / play toggle while station list is focused |
 | `+` / `-`       | volume up / down                               |
 | `f`             | toggle favorite for the selected station       |
 | `t`             | cycle theme (Minimal → Neon → CRT → Solarized → Midnight → Sakura) |

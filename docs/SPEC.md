@@ -313,7 +313,7 @@ Use focus-based TUI navigation:
 - `j` / `k` or arrows: move within focused list/control
 - `Enter`: play/select focused station/action
 - `/`: search input
-- `Space`: Stop/Play toggle for the current station
+- `Space`: Stop/Play toggle for the current station while the station list is focused
 - `+` / `-`: volume up/down
 - `f`: toggle favorite
 - `t`: cycle theme
@@ -322,6 +322,8 @@ Use focus-based TUI navigation:
 
 Space semantics:
 
+- Only applies while the station/results list is focused; in Search, Browse, or
+  Now Playing focus it does not move the station cursor or toggle playback.
 - If playing: stop current station.
 - If stopped and a current station exists: reconnect/play that station.
 

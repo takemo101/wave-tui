@@ -106,6 +106,9 @@ pub enum Action {
     FocusNext,
     /// Move focus to the previous pane (`Shift+Tab`).
     FocusPrevious,
+    /// Move focus directly to a specific pane (e.g. `/` focuses the search
+    /// strip; `Esc` returns focus to the station list).
+    SetFocus(FocusPane),
     /// Move selection down within the visible station list (`j`/`Down`).
     SelectNext,
     /// Move selection up within the visible station list (`k`/`Up`).
@@ -197,6 +200,7 @@ impl App {
         match action {
             Action::FocusNext => self.focus = self.focus.next(),
             Action::FocusPrevious => self.focus = self.focus.previous(),
+            Action::SetFocus(pane) => self.focus = pane,
             Action::SelectNext => self.select_next(),
             Action::SelectPrevious => self.select_previous(),
             Action::SelectFirst => self.selected = 0,
@@ -591,8 +595,10 @@ mod tests {
 
     #[test]
     fn volume_steps_clamp_within_range() {
-        let mut settings = Settings::default();
-        settings.volume = VolumePercent::new(98).unwrap();
+        let settings = Settings {
+            volume: VolumePercent::new(98).unwrap(),
+            ..Settings::default()
+        };
         let mut app = App::new(settings, Catalog::curated());
         app.apply(Action::VolumeUp);
         assert_eq!(app.settings().volume.get(), 100, "clamps at the ceiling");
@@ -781,6 +787,16 @@ mod tests {
         assert!(app.is_offline());
         app.apply(Action::SetOffline(false));
         assert!(!app.is_offline());
+    }
+
+    #[test]
+    fn set_focus_targets_a_specific_pane() {
+        // `/` and Esc need to move focus to an exact pane, not just cycle.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SetFocus(FocusPane::Search));
+        assert_eq!(app.focus(), FocusPane::Search);
+        app.apply(Action::SetFocus(FocusPane::NowPlaying));
+        assert_eq!(app.focus(), FocusPane::NowPlaying);
     }
 
     #[test]

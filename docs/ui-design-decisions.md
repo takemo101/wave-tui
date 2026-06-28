@@ -91,9 +91,13 @@ default. The `t` key cycles them in this order:
 5. `Midnight`
 6. `Sakura`
 
-`Solarized`, `Midnight`, and `Sakura` start as placeholder palettes (`MIK-028`)
-and receive their distinct colors in `MIK-029`. The `t` key remains a simple
-one-way cycle; no picker is planned for six themes.
+`Solarized`, `Midnight`, and `Sakura` were introduced as named placeholder
+palettes (`MIK-028`) and now carry their own distinct colors (`MIK-029`):
+Solarized is a muted teal base with blue/cyan/yellow accents, Midnight a deep
+navy base with blue/violet accents, and Sakura a warm dark base with rose/pink
+accents — each readable on a dark terminal canvas with a meaningful low/mid/high
+spectrum split. The `t` key remains a simple one-way cycle; no picker is planned
+for six themes.
 
 ### Browse and Favorites Polish
 

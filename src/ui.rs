@@ -1279,6 +1279,32 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn added_theme_changes_rendered_output() {
+        // MIK-029: an added theme must actually drive rendering. Cycle to Sakura
+        // and prove its accent colors the buffer while the Minimal accent does
+        // not — so the palette is sourced from the theme, not hard-coded in ui.rs.
+        let mut sakura = base_app();
+        // Minimal -> Neon -> CRT -> Solarized -> Midnight -> Sakura
+        for _ in 0..5 {
+            sakura.apply(Action::CycleTheme);
+        }
+        assert_eq!(sakura.theme(), ThemeName::Sakura);
+
+        let minimal_buf = render_buffer(&base_app(), 130, 32);
+        let sakura_buf = render_buffer(&sakura, 130, 32);
+
+        let sakura_accent = Theme::for_name(ThemeName::Sakura).accent;
+        assert!(
+            has_fg(&sakura_buf, sakura_accent),
+            "sakura accent missing from sakura render"
+        );
+        assert!(
+            !has_fg(&minimal_buf, sakura_accent),
+            "sakura accent leaked into the minimal render"
+        );
+    }
+
     // --- Favorites view: empty state and rendering (MIK-022) ------------
 
     /// A station fixture for favorites tests; the id doubles as the display name

@@ -60,7 +60,8 @@ USAGE:
     wave-tui [OPTIONS] [SEARCH]
 
 OPTIONS:
-    --theme <name>                Theme for this run: minimal | neon | crt
+    --theme <name>                Theme for this run: minimal | neon | crt |
+                                  solarized | midnight | sakura
     --volume <0-100>              Startup volume override
     --no-auto-play                Start silently even if a previous station exists
     --audio-output-device <name>  CPAL output device name
@@ -117,7 +118,8 @@ impl std::fmt::Display for CliError {
             CliError::InvalidTheme(raw) => {
                 write!(
                     f,
-                    "invalid --theme {raw:?} (expected minimal, neon, or crt)"
+                    "invalid --theme {raw:?} \
+                     (expected minimal, neon, crt, solarized, midnight, or sakura)"
                 )
             }
         }
@@ -1144,6 +1146,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_accepts_every_stable_theme_name() {
+        let cases = [
+            ("minimal", ThemeName::Minimal),
+            ("neon", ThemeName::Neon),
+            ("crt", ThemeName::Crt),
+            ("solarized", ThemeName::Solarized),
+            ("midnight", ThemeName::Midnight),
+            ("sakura", ThemeName::Sakura),
+        ];
+        for (raw, expected) in cases {
+            let invocation = parse(&["--theme", raw]).unwrap();
+            assert_eq!(
+                invocation,
+                CliInvocation::Run(CliArgs {
+                    theme: Some(expected),
+                    ..CliArgs::default()
+                }),
+                "--theme {raw} should parse to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_theme_error_lists_every_supported_name() {
+        let message = CliError::InvalidTheme("aurora".to_string()).to_string();
+        for name in ["minimal", "neon", "crt", "solarized", "midnight", "sakura"] {
+            assert!(
+                message.contains(name),
+                "invalid-theme error {message:?} should mention {name}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_args_accepts_equals_form_for_values() {
         let invocation = parse(&["--theme=crt", "--volume=10", "--search=jazz radio"]).unwrap();
         assert_eq!(
@@ -1188,7 +1224,7 @@ mod tests {
             CliError::InvalidVolume(_)
         ));
         assert!(matches!(
-            parse(&["--theme", "solarized"]).unwrap_err(),
+            parse(&["--theme", "aurora"]).unwrap_err(),
             CliError::InvalidTheme(_)
         ));
         assert!(matches!(

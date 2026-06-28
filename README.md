@@ -27,7 +27,9 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
   provides them, falling back to station metadata otherwise.
 - **Three responsive layouts** — Wide "Search Console", plus Medium and Compact
   "Split Mini" tiers that keep both the station list and Now Playing visible.
-- **Three themes** — `Minimal` (calm default), `Neon`, and `CRT`.
+- **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
+  `Midnight`, and `Sakura`. The latter three are placeholder palettes for now
+  (distinct colors land in `MIK-029`).
 - **Resilient offline/error handling** — a failed online search shows a clear
   offline state in every layout tier without crashing, and you can still retry
   the previous station and built-in candidates. Favorited stations are saved
@@ -80,7 +82,7 @@ search controls act on the focused pane.
 | `Space`         | stop / play toggle for the current station     |
 | `+` / `-`       | volume up / down                               |
 | `f`             | toggle favorite for the selected station       |
-| `t`             | cycle theme (Minimal → Neon → CRT)             |
+| `t`             | cycle theme (Minimal → Neon → CRT → Solarized → Midnight → Sakura) |
 | `v`             | cycle visualizer mode (see Visualizer modes)   |
 | `/`             | focus search and type to search Radio Browser  |
 | `Esc`           | while searching: clear search and return to catalog |
@@ -130,7 +132,8 @@ stopped or quiet stream stays calm rather than showing fake motion.
 wave-tui [OPTIONS] [SEARCH]
 
 OPTIONS:
-    --theme <name>                Theme for this run: minimal | neon | crt
+    --theme <name>                Theme for this run: minimal | neon | crt |
+                                  solarized | midnight | sakura
     --volume <0-100>              Startup volume override
     --no-auto-play                Start silently even if a previous station exists
     --audio-output-device <name>  CPAL output device name

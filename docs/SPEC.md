@@ -350,8 +350,8 @@ Theme implementation notes:
 - Neon may use glow-like color contrast, but not terminal effects that hurt readability.
 - CRT may use green/amber accents, but scanline effects should be optional or subtle.
 
-Planned theme polish for `MIK-017` expands the built-in theme set to six stable
-lowercase persisted names:
+Theme polish for `MIK-017` expands the built-in theme set to six stable
+lowercase persisted names, cycled by `t` in this order:
 
 1. `minimal`
 2. `neon`
@@ -363,6 +363,9 @@ lowercase persisted names:
 `Minimal` remains the default and unknown persisted theme names still fall back
 to `minimal` at the settings boundary. The `t` key remains a simple one-way
 cycle through the documented order; no theme picker is planned for this set.
+
+`Solarized`, `Midnight`, and `Sakura` are added as names with placeholder
+palettes in `MIK-028`; their distinct colors are filled in by `MIK-029`.
 
 ### Visualizer Modes
 
@@ -479,7 +482,7 @@ MVP is successful when:
 8. Failed stations are temporarily disabled during the session.
 9. ICY metadata appears when available.
 10. Wide/medium/compact terminal sizes each have intentional layouts.
-11. Three themes are available and switchable.
+11. Six themes are available and switchable.
 12. `cargo test` covers core non-UI logic.
 13. `cargo check` passes without errors.
 
@@ -502,7 +505,7 @@ or interactive resize and is exercised via the manual checklist below, not CI.
 | 8 | Failed stations temporarily disabled for the session | Automated | `catalog::SessionStationHealth` + `app::on_failed` tests. |
 | 9 | ICY metadata appears when available | Automated (parse) + Manual | `audio::icy` synthetic-byte tests; live ICY is manual. |
 | 10 | Wide/medium/compact layouts are intentional, no overlap | Automated (render) + Manual | per-tier `ui` render tests; visual quality is manual. |
-| 11 | Three themes available and switchable | Automated | `theme` lookup/cycle + `ui` themed-render tests. |
+| 11 | Six themes available and switchable | Automated | `theme` lookup/cycle + `ui` themed-render tests. |
 | 12 | `cargo test` covers core non-UI logic | Automated | full suite green. |
 | 13 | `cargo check` passes | Automated | part of the verification commands. |
 

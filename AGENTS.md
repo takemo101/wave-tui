@@ -38,7 +38,7 @@ Stay inside the MVP unless the user explicitly expands scope:
 - previous station, volume, favorites, and theme persistence;
 - ICY/Shoutcast now-playing metadata when available;
 - three responsive layout tiers;
-- Minimal, Neon, and CRT themes.
+- Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes.
 
 Do not add these in MVP without an explicit design update:
 

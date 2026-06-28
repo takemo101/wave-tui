@@ -406,7 +406,7 @@ mod tests {
         let path = dir.path().join("settings.json");
         let raw = r#"{
             "volume": 75,
-            "theme": "solarized",
+            "theme": "aurora",
             "previous_station": null,
             "favorites": []
         }"#;
@@ -416,6 +416,30 @@ mod tests {
 
         assert_eq!(settings.volume, VolumePercent::new(75).unwrap());
         assert_eq!(settings.theme, ThemeName::Minimal);
+    }
+
+    #[test]
+    fn save_then_load_roundtrips_every_theme() {
+        // All six themes must survive a save/load cycle unchanged.
+        for theme in [
+            ThemeName::Minimal,
+            ThemeName::Neon,
+            ThemeName::Crt,
+            ThemeName::Solarized,
+            ThemeName::Midnight,
+            ThemeName::Sakura,
+        ] {
+            let dir = TempDir::new();
+            let path = dir.path().join("settings.json");
+            let settings = Settings {
+                theme,
+                ..Settings::default()
+            };
+            save_to(&path, &settings).unwrap();
+            let loaded = load_from(&path).unwrap();
+            assert_eq!(loaded.theme, theme);
+            assert_eq!(loaded, settings);
+        }
     }
 
     #[test]

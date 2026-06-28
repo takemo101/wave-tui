@@ -468,7 +468,7 @@ fn now_playing_lines<'a>(app: &App, theme: &Theme, compact: bool) -> Vec<Line<'a
 ///
 /// This single renderer is used by every layout tier. Bands map to columns and
 /// fill from the bottom up; each column's color comes from the theme's
-/// low/mid/high spectrum split via [`Theme::spectrum_color`].
+/// low→mid→high spectrum gradient via [`Theme::spectrum_color`].
 fn render_spectrum(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -491,8 +491,8 @@ fn render_spectrum(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
 /// column's FFT peak height instead of a filled bar.
 ///
 /// A distinct renderer from [`render_spectrum`]: it shares the full-pane-width
-/// [`spectrum_columns`] sampling and the theme's low/mid/high spectrum split, but
-/// draws only the peak cell of each column as a dot so the visualizer reads as a
+/// [`spectrum_columns`] sampling and the theme's low→mid→high spectrum gradient,
+/// but draws only the peak cell of each column as a dot so the visualizer reads as a
 /// quieter peak band. Columns whose magnitude rounds to zero (silent/empty
 /// frames) draw nothing. Pure function of the current [`VizFrame`]; it carries no
 /// animation or mode-specific state.
@@ -521,8 +521,8 @@ fn render_peak_dots(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
 ///
 /// A third FFT-band Spectrum-family renderer alongside [`render_spectrum`] and
 /// [`render_peak_dots`]. It shares the full-pane-width [`spectrum_columns`]
-/// sampling and the theme's low/mid/high spectrum split, but draws each column as
-/// a distinct silhouette: a bright cap glyph (`▀`) marks the peak and a light
+/// sampling and the theme's low→mid→high spectrum gradient, but draws each column
+/// as a distinct silhouette: a bright cap glyph (`▀`) marks the peak and a light
 /// dashed tail (`╎`) fills the body below it down to the floor. This reads
 /// quieter than the solid [`render_spectrum`] bars yet carries more presence than
 /// the single [`render_peak_dots`] dot, so the three FFT modes stay visibly
@@ -561,7 +561,7 @@ fn render_skyline_peaks(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) 
 /// One trace point per pane column, sampled from the full-width
 /// [`waveform_columns`] interpolation so the scope spans the whole pane. A
 /// sample of `0.0` sits on the vertical center, `+1.0` reaches the top, and
-/// `-1.0` the bottom; the point's color comes from the theme's spectrum split
+/// `-1.0` the bottom; the point's color comes from the theme's spectrum gradient
 /// keyed on the signal's amplitude so louder excursions read brighter. Empty and
 /// all-zero waveforms both render as a flat baseline (stable silence), per the
 /// MIK-024 reviewer note. Pure function of the current [`VizFrame`].
@@ -591,7 +591,7 @@ fn render_wave_scope(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
 /// below the vertical center, giving a calmer, balanced scope than the raw
 /// [`render_wave_scope`] trace. The center cell is always drawn so the baseline
 /// stays visible, and louder samples extend the symmetric bars further out.
-/// Color follows the theme's spectrum split keyed on amplitude. Empty and
+/// Color follows the theme's spectrum gradient keyed on amplitude. Empty and
 /// all-zero waveforms render as the flat center baseline (silence). Pure
 /// function of the current [`VizFrame`].
 fn render_mirror_wave(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
@@ -689,8 +689,8 @@ fn render_ambient_pulse(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) 
 ///
 /// `sample` is the interpolated signed amplitude in `-1.0..=1.0`, linearly
 /// interpolated between the two nearest waveform points; `position` is the
-/// column's normalized `0.0..=1.0` location, used for the theme color split. An
-/// empty waveform is treated as flat silence: every column samples `0.0`, so an
+/// column's normalized `0.0..=1.0` location, used for the theme color gradient.
+/// An empty waveform is treated as flat silence: every column samples `0.0`, so an
 /// empty and an all-zero waveform render identically (a flat baseline), per the
 /// MIK-024 reviewer note. Returns an empty vector only for zero width.
 fn waveform_columns(waveform: &[f32], width: usize) -> Vec<(f32, f32)> {
@@ -728,7 +728,7 @@ fn waveform_columns(waveform: &[f32], width: usize) -> Vec<(f32, f32)> {
 /// `magnitude` is the bar height in `0.0..=1.0`, linearly interpolated between
 /// the two nearest bands so columns stay smooth when the pane is wider than the
 /// band count. `position` is the column's normalized `0.0..=1.0` location, used
-/// by [`Theme::spectrum_color`] so the low/mid/high color split stretches across
+/// by [`Theme::spectrum_color`] so the low→mid→high gradient stretches across
 /// the whole pane rather than only the first `bands.len()` columns.
 ///
 /// Pure and deterministic; returns an empty vector for empty bands or zero
@@ -1168,6 +1168,40 @@ mod tests {
                 "spectrum colors not themed at {w}x{h}"
             );
         }
+    }
+
+    #[test]
+    fn spectrum_bars_use_interpolated_gradient_not_discrete_band_cutoffs() {
+        // MIK-032: the spectrum gradient means intermediate columns blend between
+        // the low/mid/high anchors. Prove at least one rendered bar cell carries a
+        // color that is none of the three discrete anchors — i.e. a real gradient,
+        // not the old hard low/mid/high cutoffs. All color knowledge still comes
+        // from the theme; ui.rs introduces no palette constants.
+        let mut app = base_app();
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![1.0_f32; 16],
+            1.0,
+            vec![1.0_f32; 16],
+        ))));
+        play_first(&mut app);
+
+        let theme = app.theme().theme();
+        let discrete = [theme.spectrum_low, theme.spectrum_mid, theme.spectrum_high];
+        let buf = render_buffer(&app, 130, 32);
+        let area = *buf.area();
+        let mut blended = false;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = buf.cell((x, y)).unwrap();
+                if cell.symbol() == "█" && !discrete.contains(&cell.fg) {
+                    blended = true;
+                }
+            }
+        }
+        assert!(
+            blended,
+            "spectrum used only the three discrete anchors, not a gradient"
+        );
     }
 
     #[test]

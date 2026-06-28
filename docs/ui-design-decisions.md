@@ -81,8 +81,8 @@ Initial themes:
 
 Themes should differ clearly enough that switching themes feels meaningful.
 
-Planned `MIK-017` polish expands the set to six themes while preserving Minimal
-as the default:
+`MIK-017` polish expands the set to six themes while preserving Minimal as the
+default. The `t` key cycles them in this order:
 
 1. `Minimal`
 2. `Neon`
@@ -91,7 +91,9 @@ as the default:
 5. `Midnight`
 6. `Sakura`
 
-The `t` key remains a simple one-way cycle; no picker is planned for six themes.
+`Solarized`, `Midnight`, and `Sakura` start as placeholder palettes (`MIK-028`)
+and receive their distinct colors in `MIK-029`. The `t` key remains a simple
+one-way cycle; no picker is planned for six themes.
 
 ### Browse and Favorites Polish
 

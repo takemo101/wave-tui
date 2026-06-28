@@ -837,15 +837,20 @@ mod tests {
     }
 
     #[test]
-    fn cycle_theme_advances_through_the_trio() {
+    fn cycle_theme_advances_through_the_six_themes() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         assert_eq!(app.theme(), ThemeName::Minimal);
-        app.apply(Action::CycleTheme);
-        assert_eq!(app.theme(), ThemeName::Neon);
-        app.apply(Action::CycleTheme);
-        assert_eq!(app.theme(), ThemeName::Crt);
-        app.apply(Action::CycleTheme);
-        assert_eq!(app.theme(), ThemeName::Minimal);
+        for expected in [
+            ThemeName::Neon,
+            ThemeName::Crt,
+            ThemeName::Solarized,
+            ThemeName::Midnight,
+            ThemeName::Sakura,
+            ThemeName::Minimal,
+        ] {
+            app.apply(Action::CycleTheme);
+            assert_eq!(app.theme(), expected);
+        }
     }
 
     #[test]

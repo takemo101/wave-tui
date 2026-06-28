@@ -201,7 +201,7 @@ Use pure tests or injected/fake dependencies for:
 
 - settings path and filesystem behavior;
 - Radio Browser responses;
-- catalog validation state;
+- catalog ranking and session station health;
 - search cache behavior;
 - station ranking/filtering;
 - favorite deduplication;

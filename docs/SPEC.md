@@ -170,7 +170,10 @@ Initial category direction:
 - Music: Lofi, Ambient, Jazz, Classical, Electronic, plus possibly a small Chill/Focus grouping
 - Spoken / News: Japanese and English news/talk candidates
 
-Station candidates should be validated asynchronously in the background.
+Station reachability is treated as a runtime concern in the MVP. Candidates are
+parsed into typed values up front, then broken or unsupported streams are marked
+as session-only failures after playback attempts; the app does not run a separate
+background catalog validation job.
 
 ### Search
 

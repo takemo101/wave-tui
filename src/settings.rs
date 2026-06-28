@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::model::{Station, VolumePercent};
 use crate::theme::ThemeName;
@@ -121,6 +121,7 @@ impl From<Favorites> for Vec<Station> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub volume: VolumePercent,
+    #[serde(default, deserialize_with = "deserialize_theme_or_default")]
     pub theme: ThemeName,
     #[serde(default)]
     pub previous_station: Option<Station>,
@@ -137,6 +138,14 @@ impl Default for Settings {
             favorites: Favorites::new(),
         }
     }
+}
+
+fn deserialize_theme_or_default<'de, D>(deserializer: D) -> Result<ThemeName, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    Ok(ThemeName::parse_or_default(&raw))
 }
 
 /// Resolve the platform config path for the settings file.
@@ -319,11 +328,21 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_unknown_theme_at_the_boundary() {
+    fn load_falls_back_unknown_theme_without_dropping_other_settings() {
         let dir = TempDir::new();
         let path = dir.path().join("settings.json");
-        std::fs::write(&path, r#"{"volume": 60, "theme": "solarized"}"#).unwrap();
-        assert!(load_from(&path).is_err());
+        let raw = r#"{
+            "volume": 75,
+            "theme": "solarized",
+            "previous_station": null,
+            "favorites": []
+        }"#;
+        std::fs::write(&path, raw).unwrap();
+
+        let settings = load_from(&path).unwrap();
+
+        assert_eq!(settings.volume, VolumePercent::new(75).unwrap());
+        assert_eq!(settings.theme, ThemeName::Minimal);
     }
 
     #[test]

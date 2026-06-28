@@ -47,7 +47,10 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(350);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Slower poll cadence when `--low-power` is set (audio is unaffected).
-const POLL_INTERVAL_LOW_POWER: Duration = Duration::from_millis(200);
+///
+/// Kept at or below `500ms - SEARCH_DEBOUNCE` so debounced search still fires
+/// inside the spec's 300–500ms responsiveness band even in low-power mode.
+const POLL_INTERVAL_LOW_POWER: Duration = Duration::from_millis(150);
 
 /// `--help` / usage text.
 const USAGE: &str = "\
@@ -1027,6 +1030,11 @@ mod tests {
     }
 
     // --- SearchDebounce --------------------------------------------------
+
+    #[test]
+    fn low_power_poll_keeps_search_fire_within_spec_ceiling() {
+        assert!(SEARCH_DEBOUNCE + POLL_INTERVAL_LOW_POWER <= Duration::from_millis(500));
+    }
 
     #[test]
     fn debounce_schedules_after_the_window_and_fires_once() {

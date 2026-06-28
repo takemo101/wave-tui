@@ -1178,13 +1178,17 @@ Expected: title appears when station provides metadata; no crash when it does no
 
 **Interfaces:**
 
-- Offline state is visible in UI and does not prevent retrying cached/favorite/built-in stations.
+- Offline state is visible in UI and does not prevent retrying cached previous,
+  visible favorite, or built-in stations.
 
 - [x] **Step 1: Search/network failures set offline state**
 
-If Radio Browser search or catalog validation fails due to network-like errors, dispatch `Action::SetOffline(true)`.
+If Radio Browser search fails due to network-like errors, dispatch
+`Action::SetOffline(true)`. Catalog reachability is not validated in a separate
+background job in the MVP; playback failures are handled by session-only station
+health.
 
-Clear offline state after a successful online search or validation.
+Clear offline state after a successful online search.
 
 Done: `cli::apply_search_response` maps `SearchError::Network` to
 `Action::SetOffline(true)` + `SearchStatus::Offline`, and a successful search

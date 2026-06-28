@@ -23,6 +23,11 @@ const DEFAULT_GAIN: f32 = 3.0;
 const MIN_BAND_HZ: f32 = 60.0;
 /// Highest band edge in Hz, capped well below Nyquist for a calmer spectrum.
 const MAX_BAND_HZ: f32 = 12_000.0;
+/// Number of low-resolution time-domain points in each frame's waveform.
+///
+/// Renderers resample these to their pane width, so a small fixed count keeps
+/// the waveform cheap while staying smooth enough for a scope display.
+pub(crate) const WAVEFORM_POINTS: usize = 64;
 
 /// Soft-knee compressor mapping `[0, inf)` magnitudes toward `[0, 1)`.
 fn soft_compress(x: f32) -> f32 {
@@ -43,6 +48,30 @@ pub(crate) fn normalize_value(x: f32, gain: f32) -> f32 {
     } else {
         soft_compress(amplified).clamp(0.0, 1.0)
     }
+}
+
+/// Downsample raw time-domain `samples` into exactly `points` normalized
+/// waveform values for scope-style rendering.
+///
+/// Each output point is the mean of one contiguous bucket of the input, which
+/// keeps the result bounded by the input magnitude and free of resampling
+/// spikes. Output is clamped to `-1.0..=1.0` so callers can draw it directly.
+/// Returns an empty vector for empty input or a zero point request.
+pub(crate) fn waveform_points(samples: &[f32], points: usize) -> Vec<f32> {
+    if points == 0 || samples.is_empty() {
+        return Vec::new();
+    }
+
+    (0..points)
+        .map(|i| {
+            let start = i * samples.len() / points;
+            let end = ((i + 1) * samples.len() / points).max(start + 1);
+            let end = end.min(samples.len());
+            let slice = &samples[start..end];
+            let avg = slice.iter().copied().sum::<f32>() / slice.len() as f32;
+            avg.clamp(-1.0, 1.0)
+        })
+        .collect()
 }
 
 /// Map `band_count` logarithmically spaced frequency bands to FFT bin ranges.
@@ -123,7 +152,11 @@ pub(crate) fn analyze(
     let sum_sq: f32 = frame.iter().map(|s| s * s).sum();
     let rms = (sum_sq / n_fft as f32).sqrt();
 
-    VizFrame::new(bands, rms)
+    // Derive the waveform from the raw (un-windowed) samples so the scope shows
+    // the actual signal shape rather than the FFT's tapered window.
+    let waveform = waveform_points(frame, WAVEFORM_POINTS);
+
+    VizFrame::new(bands, rms, waveform)
 }
 
 /// Append `sample` to `history`, keeping only the most recent `n_fft * 4`
@@ -255,6 +288,7 @@ mod tests {
         let frame = analyze(&[0.1, 0.2, 0.3], 44_100, 1024, 16);
         assert_eq!(frame.bands, vec![0.0; 16]);
         assert_eq!(frame.rms, 0.0);
+        assert!(frame.waveform.is_empty());
     }
 
     #[test]
@@ -263,6 +297,45 @@ mod tests {
         let frame = analyze(&vec![0.0; n_fft], 44_100, n_fft, 8);
         assert_eq!(frame.bands, vec![0.0; 8]);
         assert_eq!(frame.rms, 0.0);
+        // Silent audio yields a flat, zeroed waveform — stable silence.
+        assert_eq!(frame.waveform, vec![0.0; WAVEFORM_POINTS]);
+    }
+
+    #[test]
+    fn waveform_points_downsamples_and_stays_in_range() {
+        let samples = sine(440.0, 44_100, 1024);
+        let points = waveform_points(&samples, 64);
+        assert_eq!(points.len(), 64);
+        for p in &points {
+            assert!((-1.0..=1.0).contains(p), "waveform point out of range: {p}");
+        }
+        // A real tone must produce both positive and negative excursions.
+        assert!(points.iter().any(|p| *p > 0.0));
+        assert!(points.iter().any(|p| *p < 0.0));
+    }
+
+    #[test]
+    fn waveform_points_clamps_out_of_range_input() {
+        let points = waveform_points(&[-2.0, 2.0, -3.0, 3.0], 4);
+        assert_eq!(points, vec![-1.0, 1.0, -1.0, 1.0]);
+    }
+
+    #[test]
+    fn waveform_points_handles_degenerate_input() {
+        assert!(waveform_points(&[], 64).is_empty());
+        assert!(waveform_points(&[0.1, 0.2], 0).is_empty());
+    }
+
+    #[test]
+    fn analyze_emits_waveform_from_real_samples() {
+        let n_fft = 1024;
+        let samples = sine(440.0, 44_100, n_fft * 2);
+        let frame = analyze(&samples, 44_100, n_fft, 16);
+        assert_eq!(frame.waveform.len(), WAVEFORM_POINTS);
+        for p in &frame.waveform {
+            assert!((-1.0..=1.0).contains(p), "waveform point out of range: {p}");
+        }
+        assert!(frame.waveform.iter().any(|p| *p != 0.0));
     }
 
     #[test]

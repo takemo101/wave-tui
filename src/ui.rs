@@ -847,6 +847,7 @@ mod tests {
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
             vec![0.9_f32; 16],
             0.8,
+            vec![0.5_f32; 16],
         ))));
         play_first(&mut app);
         let buf = render_buffer(&app, 70, 16);
@@ -871,6 +872,7 @@ mod tests {
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
             vec![1.0_f32; 16],
             1.0,
+            vec![1.0_f32; 16],
         ))));
         play_first(&mut app);
 
@@ -1155,6 +1157,7 @@ mod tests {
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
             vec![0.5_f32; 16],
             0.5,
+            vec![0.5_f32; 16],
         ))));
         play_first(&mut app);
         for (w, h) in [

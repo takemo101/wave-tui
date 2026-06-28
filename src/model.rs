@@ -468,29 +468,44 @@ impl<'de> Deserialize<'de> for VisualizerMode {
     }
 }
 
-/// A single visualizer frame: normalized spectrum bands plus an RMS level.
+/// A single visualizer frame: normalized spectrum bands, an RMS level, and a
+/// low-resolution time-domain waveform.
 ///
-/// Bands and RMS are clamped to `0.0..=1.0` on construction so renderers never
-/// receive out-of-range magnitudes.
+/// Bands and RMS are magnitudes clamped to `0.0..=1.0` on construction. The
+/// `waveform` is a signed time-domain series clamped to `-1.0..=1.0`. All three
+/// are clamped on construction so renderers never receive out-of-range values.
+/// Renderers receive only these drawing-oriented values, never raw audio
+/// buffers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VizFrame {
     pub bands: Vec<f32>,
     pub rms: f32,
+    pub waveform: Vec<f32>,
 }
 
 impl VizFrame {
-    pub fn new(bands: impl IntoIterator<Item = f32>, rms: f32) -> Self {
+    pub fn new(
+        bands: impl IntoIterator<Item = f32>,
+        rms: f32,
+        waveform: impl IntoIterator<Item = f32>,
+    ) -> Self {
         Self {
             bands: bands.into_iter().map(|b| b.clamp(0.0, 1.0)).collect(),
             rms: rms.clamp(0.0, 1.0),
+            waveform: waveform.into_iter().map(|w| w.clamp(-1.0, 1.0)).collect(),
         }
     }
 
-    /// A silent frame with `band_count` zeroed bands.
+    /// A silent frame with `band_count` zeroed bands and no waveform points.
+    ///
+    /// An empty waveform is valid and renders as stable silence (a flat
+    /// baseline); waveform resolution is an analyzer concern, so the silent
+    /// default carries no points.
     pub fn silent(band_count: usize) -> Self {
         Self {
             bands: vec![0.0; band_count],
             rms: 0.0,
+            waveform: Vec::new(),
         }
     }
 }
@@ -690,10 +705,26 @@ mod tests {
 
     #[test]
     fn viz_frame_clamps_bands_and_rms() {
-        let frame = VizFrame::new([-1.0, 0.5, 2.0], 3.0);
+        let frame = VizFrame::new([-1.0, 0.5, 2.0], 3.0, []);
         assert_eq!(frame.bands, vec![0.0, 0.5, 1.0]);
         assert_eq!(frame.rms, 1.0);
         assert_eq!(VizFrame::silent(4).bands, vec![0.0; 4]);
+    }
+
+    #[test]
+    fn viz_frame_clamps_waveform_to_bipolar_range() {
+        // Waveform is a time-domain series, so it is signed and clamps to
+        // -1.0..=1.0 (unlike bands/RMS, which are magnitudes in 0.0..=1.0).
+        let frame = VizFrame::new([0.5], 0.5, [-2.0, -0.3, 0.0, 0.4, 2.0]);
+        assert_eq!(frame.waveform, vec![-1.0, -0.3, 0.0, 0.4, 1.0]);
+    }
+
+    #[test]
+    fn viz_frame_silent_has_valid_empty_waveform() {
+        let frame = VizFrame::silent(4);
+        assert_eq!(frame.bands, vec![0.0; 4]);
+        assert_eq!(frame.rms, 0.0);
+        assert!(frame.waveform.is_empty());
     }
 
     #[test]

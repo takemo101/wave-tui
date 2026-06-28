@@ -133,11 +133,11 @@ pub struct Theme {
     pub playing: Color,
     /// Error / offline / failed-stream signal color.
     pub error: Color,
-    /// Spectrum band color for the low third of the band range.
+    /// Spectrum gradient anchor at the low end of the band range (position 0.0).
     pub spectrum_low: Color,
-    /// Spectrum band color for the mid third of the band range.
+    /// Spectrum gradient anchor at the midpoint of the band range (position 0.5).
     pub spectrum_mid: Color,
-    /// Spectrum band color for the high third of the band range.
+    /// Spectrum gradient anchor at the high end of the band range (position 1.0).
     pub spectrum_high: Color,
 }
 
@@ -284,17 +284,38 @@ impl Theme {
 
     /// Map a normalized band position in `0.0..=1.0` to a spectrum color.
     ///
-    /// The low/mid/high split lets the shared `SpectrumStack` renderer color
-    /// bars by frequency band without knowing the concrete palette.
+    /// The three palette anchors form a smooth gradient: `0.0` resolves to
+    /// `spectrum_low`, `0.5` to `spectrum_mid`, and `1.0` to `spectrum_high`,
+    /// with positions in between linearly interpolated through the low→mid→high
+    /// ramp. The exact anchors are returned unchanged so themes that use named
+    /// terminal colors keep them at the endpoints; intermediate positions are
+    /// blended as concrete `Rgb` so the gradient is deterministic regardless of
+    /// whether the palette uses named or `Rgb` colors. This lets the shared
+    /// `SpectrumStack` renderer color bars across the band range without knowing
+    /// the concrete palette.
     pub fn spectrum_color(&self, position: f32) -> Color {
         let position = position.clamp(0.0, 1.0);
-        if position < 1.0 / 3.0 {
-            self.spectrum_low
-        } else if position < 2.0 / 3.0 {
-            self.spectrum_mid
-        } else {
-            self.spectrum_high
+        // Return the anchors unchanged so named colors survive at the endpoints.
+        if position == 0.0 {
+            return self.spectrum_low;
         }
+        if position == 0.5 {
+            return self.spectrum_mid;
+        }
+        if position == 1.0 {
+            return self.spectrum_high;
+        }
+        // Interpolate within the lower (low→mid) or upper (mid→high) half.
+        let (from, to, t) = if position < 0.5 {
+            (self.spectrum_low, self.spectrum_mid, position / 0.5)
+        } else {
+            (
+                self.spectrum_mid,
+                self.spectrum_high,
+                (position - 0.5) / 0.5,
+            )
+        };
+        lerp_color(from, to, t)
     }
 
     /// Base text style: foreground on the theme background.
@@ -322,6 +343,55 @@ impl Default for Theme {
     fn default() -> Self {
         Theme::for_name(ThemeName::default())
     }
+}
+
+/// Convert any terminal [`Color`] to a concrete RGB triple.
+///
+/// Spectrum interpolation must be deterministic even when a theme anchors its
+/// spectrum on named ANSI colors (e.g. `Neon`'s Cyan/Magenta/Yellow), so named
+/// colors map to fixed xterm-style RGB equivalents and `Rgb` passes through.
+/// `Reset`/`Indexed` never anchor a built-in spectrum palette; they fall back to
+/// a neutral mid-gray so the function stays total and deterministic.
+fn color_to_rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Black => (0, 0, 0),
+        Color::Red => (205, 0, 0),
+        Color::Green => (0, 205, 0),
+        Color::Yellow => (205, 205, 0),
+        Color::Blue => (0, 0, 238),
+        Color::Magenta => (205, 0, 205),
+        Color::Cyan => (0, 205, 205),
+        Color::Gray => (229, 229, 229),
+        Color::DarkGray => (127, 127, 127),
+        Color::LightRed => (255, 0, 0),
+        Color::LightGreen => (0, 255, 0),
+        Color::LightYellow => (255, 255, 0),
+        Color::LightBlue => (92, 92, 255),
+        Color::LightMagenta => (255, 0, 255),
+        Color::LightCyan => (0, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Reset | Color::Indexed(_) => (128, 128, 128),
+    }
+}
+
+/// Linearly interpolate a single 8-bit channel at `t` in `0.0..=1.0`.
+fn lerp_channel(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+/// Blend two terminal colors into a concrete `Rgb` color at `t` in `0.0..=1.0`,
+/// converting named colors to RGB first so the result is deterministic.
+fn lerp_color(from: Color, to: Color, t: f32) -> Color {
+    let (r0, g0, b0) = color_to_rgb(from);
+    let (r1, g1, b1) = color_to_rgb(to);
+    Color::Rgb(
+        lerp_channel(r0, r1, t),
+        lerp_channel(g0, g1, t),
+        lerp_channel(b0, b1, t),
+    )
 }
 
 #[cfg(test)]
@@ -462,6 +532,77 @@ mod tests {
         let theme = Theme::for_name(ThemeName::Minimal);
         assert_eq!(theme.spectrum_color(-1.0), theme.spectrum_low);
         assert_eq!(theme.spectrum_color(2.0), theme.spectrum_high);
+    }
+
+    #[test]
+    fn spectrum_color_endpoints_are_stable_for_every_theme() {
+        // The gradient must still pin its three anchors exactly: 0.0 == low,
+        // 0.5 == mid, 1.0 == high, for every built-in palette (named or Rgb).
+        for name in ALL_THEMES {
+            let theme = Theme::for_name(name);
+            assert_eq!(
+                theme.spectrum_color(0.0),
+                theme.spectrum_low,
+                "{name:?} low endpoint drifted"
+            );
+            assert_eq!(
+                theme.spectrum_color(0.5),
+                theme.spectrum_mid,
+                "{name:?} mid endpoint drifted"
+            );
+            assert_eq!(
+                theme.spectrum_color(1.0),
+                theme.spectrum_high,
+                "{name:?} high endpoint drifted"
+            );
+        }
+    }
+
+    #[test]
+    fn spectrum_color_is_a_smooth_gradient_not_three_discrete_bands() {
+        // A quarter position sits inside the low->mid segment and must be a real
+        // blend, distinct from all three discrete band colors (the old behavior
+        // collapsed it onto `spectrum_low`).
+        let theme = Theme::for_name(ThemeName::Midnight);
+        let c = theme.spectrum_color(0.25);
+        assert_ne!(c, theme.spectrum_low, "0.25 collapsed onto the low cutoff");
+        assert_ne!(c, theme.spectrum_mid);
+        assert_ne!(c, theme.spectrum_high);
+
+        // And its channels lie between the low and mid anchors.
+        let low = color_to_rgb(theme.spectrum_low);
+        let mid = color_to_rgb(theme.spectrum_mid);
+        let (r, g, b) = match c {
+            Color::Rgb(r, g, b) => (r, g, b),
+            other => panic!("expected interpolated Rgb, got {other:?}"),
+        };
+        for (val, a, z) in [(r, low.0, mid.0), (g, low.1, mid.1), (b, low.2, mid.2)] {
+            let (lo, hi) = (a.min(z), a.max(z));
+            assert!(
+                val >= lo && val <= hi,
+                "channel {val} not within {lo}..={hi}"
+            );
+        }
+    }
+
+    #[test]
+    fn spectrum_color_blends_named_colors_into_deterministic_rgb() {
+        // Neon's spectrum anchors are named terminal colors (Cyan/Magenta/Yellow).
+        // Intermediate positions must still produce a deterministic, concrete Rgb
+        // blend rather than snapping to a discrete named band.
+        let theme = Theme::for_name(ThemeName::Neon);
+        let first = theme.spectrum_color(0.25);
+        let second = theme.spectrum_color(0.25);
+        assert_eq!(
+            first, second,
+            "named-color interpolation must be deterministic"
+        );
+        assert!(
+            matches!(first, Color::Rgb(_, _, _)),
+            "named colors must blend to Rgb, got {first:?}"
+        );
+        assert_ne!(first, theme.spectrum_low);
+        assert_ne!(first, theme.spectrum_mid);
     }
 
     /// The three themes designed in MIK-029.

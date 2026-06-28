@@ -171,12 +171,12 @@ fn resolve_curated_url(base: &str, append_stream: bool) -> Result<StreamUrl, Dom
 /// Stream URLs are best-effort entries drawn from public radio directories and
 /// the stations' own players. They are *not* verified by this module's tests
 /// (which run without network); reachability is a runtime concern handled by the
-/// audio path and background validation, and individual endpoints may rotate or
-/// geo-restrict. Open direct MP3/AAC streams for Japanese hard-news are scarce
-/// (most are HLS or region-locked), so the Japanese candidates here are
-/// globally accessible community/talk stations anchored to real station
-/// homepages. Tests only assert that every row builds into a well-typed
-/// `Station`.
+/// audio path. Individual endpoints may rotate or geo-restrict, and failed
+/// playback attempts are recorded only in session health. Open direct MP3/AAC
+/// streams for Japanese hard-news are scarce (most are HLS or region-locked), so
+/// the Japanese candidates here are globally accessible community/talk stations
+/// anchored to real station homepages. Tests only assert that every row builds
+/// into a well-typed `Station`.
 const CURATED: &[Curated] = &[
     // ---- Music: Lofi ----
     Curated {

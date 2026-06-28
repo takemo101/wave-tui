@@ -1180,17 +1180,27 @@ Expected: title appears when station provides metadata; no crash when it does no
 
 - Offline state is visible in UI and does not prevent retrying cached/favorite/built-in stations.
 
-- [ ] **Step 1: Search/network failures set offline state**
+- [x] **Step 1: Search/network failures set offline state**
 
 If Radio Browser search or catalog validation fails due to network-like errors, dispatch `Action::SetOffline(true)`.
 
 Clear offline state after a successful online search or validation.
 
-- [ ] **Step 2: Render offline screen/banner**
+Done: `cli::apply_search_response` maps `SearchError::Network` to
+`Action::SetOffline(true)` + `SearchStatus::Offline`, and a successful search
+dispatches `Action::SetOffline(false)`.
+
+- [x] **Step 2: Render offline screen/banner**
 
 Wide/Medium/Compact should all show clear offline state. Do not hide previous/favorite/built-in retry options.
 
-- [ ] **Step 3: Update README**
+Done: the search strip and footer render the network signal and offline search
+status in every tier; the built-in catalog stays visible offline. Locked by
+`ui::offline_state_is_visible_in_every_tier`,
+`offline_search_status_is_visible_in_every_tier`, and
+`offline_still_shows_builtin_retry_candidates_in_every_tier`.
+
+- [x] **Step 3: Update README**
 
 Document:
 
@@ -1205,7 +1215,7 @@ Document:
 - troubleshooting for no audio output
 - implementation principles from `docs/implementation-guidelines.md`
 
-- [ ] **Step 4: Final automated verification**
+- [x] **Step 4: Final automated verification**
 
 Run:
 
@@ -1213,11 +1223,14 @@ Run:
 cargo fmt --check
 cargo test
 cargo check
+cargo clippy --all-targets -- -D warnings
 ```
 
-Expected: all pass.
+Expected: all pass. Done in the MIK-012 pass; the external-player/prototype
+marker guard (`tests/binary_entry_path.rs`) also passes.
 
-- [ ] **Step 5: Final manual verification checklist**
+- [ ] **Step 5: Final manual verification checklist** (remaining — needs a real
+  audio device and TTY; not run in the headless finalization environment)
 
 Verify manually:
 

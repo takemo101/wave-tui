@@ -8,6 +8,13 @@ The replacement should preserve the current project's spirit — a lightweight R
 
 ## Current State Analysis
 
+> **Note (post-replacement):** This section records the *pre-replacement*
+> baseline that motivated the redesign. The replacement described in the rest of
+> this document is now implemented (native playback, real FFT, online search,
+> persistence, themes, layouts, ICY, and offline handling). It is kept as
+> historical context; see "Success Criteria" below for the current verification
+> status.
+
 Current repository shape:
 
 - Rust binary crate: `wave-tui`
@@ -408,3 +415,50 @@ MVP is successful when:
 11. Three themes are available and switchable.
 12. `cargo test` covers core non-UI logic.
 13. `cargo check` passes without errors.
+
+### Success Criteria — Verification Status
+
+Status as of the MIK-012 finalization pass. "Automated" means covered by
+`cargo test` (pure app/UI/catalog/search/audio-helper tests, no network, audio,
+or real terminal). "Manual" means it requires real audio output, live streams,
+or interactive resize and is exercised via the manual checklist below, not CI.
+
+| # | Criterion | Status | Evidence / notes |
+| - | --------- | ------ | ---------------- |
+| 1 | Resume previous station on launch | Automated (logic) + Manual (end-to-end) | `cli::startup_play_command` tests; full resume needs a real run. |
+| 2 | First launch / failed previous starts silently with recommendations | Automated (logic) + Manual | `startup_is_silent_*` tests; catalog is the default visible list. |
+| 3 | MP3/AAC streams play via the native path | Manual | Verified by the `audio_spike` tool (`docs/audio-spike.md`); no automated audio. |
+| 4 | Visualizer reacts to real audio via FFT | Automated (helpers) + Manual | analyzer normalization tests; live reaction is manual. |
+| 5 | Online search updates while typing, debounced + cached | Automated | `cli::SearchDebounce` and `search::SearchCache` tests. |
+| 6 | Results ranked toward playable/popular | Automated | `catalog::station_score` / `search` ranking tests. |
+| 7 | Favorites, previous station, volume, theme persist | Automated | `settings` roundtrip + `cli::Persistence` policy tests. |
+| 8 | Failed stations temporarily disabled for the session | Automated | `catalog::SessionStationHealth` + `app::on_failed` tests. |
+| 9 | ICY metadata appears when available | Automated (parse) + Manual | `audio::icy` synthetic-byte tests; live ICY is manual. |
+| 10 | Wide/medium/compact layouts are intentional, no overlap | Automated (render) + Manual | per-tier `ui` render tests; visual quality is manual. |
+| 11 | Three themes available and switchable | Automated | `theme` lookup/cycle + `ui` themed-render tests. |
+| 12 | `cargo test` covers core non-UI logic | Automated | full suite green. |
+| 13 | `cargo check` passes | Automated | part of the verification commands. |
+
+Offline behavior (the "Offline / Network Failure" section): a failed online
+search sets an offline state and an explicit offline search status without
+crashing (`cli::apply_search_response`), the indicator renders in every layout
+tier, and built-in retry candidates stay visible
+(`ui::offline_state_is_visible_in_every_tier`,
+`offline_search_status_is_visible_in_every_tier`,
+`offline_still_shows_builtin_retry_candidates_in_every_tier`).
+
+#### Remaining gaps
+
+- **Manual-only criteria are unverified in this pass.** Items 1–4, 9, and 10
+  that depend on real audio, live streams, live ICY, or interactive resize were
+  not run here (no audio device / TTY in this environment). They remain on the
+  manual checklist in `MIK-012` / the implementation plan Task 12.
+- **No dedicated favorites browse view.** Favorites persist and the previous
+  station auto-resumes, and the built-in catalog stays available offline, so
+  "retry previous / built-in" is satisfied. However there is no in-app list that
+  shows only favorites; retrying a favorite that is not in the catalog or the
+  current results is not yet reachable by a keystroke. This is a known MVP gap,
+  not a regression, and is out of MIK-012's offline scope.
+- **Section/category shortcuts are display-only.** The Wide "Browse" pane lists
+  Music and Spoken/News categories but selecting one is not yet wired to filter
+  the visible list (only `Esc`/clear-search restores the full catalog).

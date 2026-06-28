@@ -774,12 +774,59 @@ mod tests {
         );
     }
 
+    /// Representative size for each layout tier (wide, medium, compact). Mirrors
+    /// the sizes used by the per-tier rendering tests above.
+    const TIER_SIZES: [(u16, u16); 3] = [(130, 32), (100, 24), (70, 16)];
+
     #[test]
-    fn offline_state_is_visible() {
+    fn offline_state_is_visible_in_every_tier() {
+        // Offline must be obvious at every pane size, not just the wide console:
+        // the network signal renders in the search strip / footer across tiers.
         let mut app = base_app();
         app.apply(Action::SetOffline(true));
-        let buf = render_buffer(&app, 130, 32);
-        assert!(buffer_text(&buf).contains("OFFLINE"));
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                text.contains("OFFLINE"),
+                "offline indicator missing at {w}x{h}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn offline_search_status_is_visible_in_every_tier() {
+        // A failed online search surfaces an explicit "offline" search status in
+        // addition to the network signal, at every tier.
+        let mut app = base_app();
+        app.apply(Action::SetOffline(true));
+        app.apply(Action::SetSearchStatus(SearchStatus::Offline));
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                text.to_lowercase().contains("offline"),
+                "offline search status missing at {w}x{h}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn offline_still_shows_builtin_retry_candidates_in_every_tier() {
+        // Going offline must not hide the built-in candidates the user can still
+        // retry: the curated catalog stays visible and non-empty across tiers.
+        let mut app = base_app();
+        app.apply(Action::SetOffline(true));
+        assert!(
+            !app.visible().is_empty(),
+            "offline must retain visible retry candidates"
+        );
+        let top = app.visible().iter().next().unwrap().name.as_str();
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                text.contains(top),
+                "built-in retry candidate {top:?} missing offline at {w}x{h}: {text}"
+            );
+        }
     }
 
     #[test]

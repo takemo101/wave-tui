@@ -28,10 +28,12 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 - **Three themes** — `Minimal` (calm default), `Neon`, and `CRT`.
 - **Resilient offline/error handling** — a failed online search shows a clear
   offline state in every layout tier without crashing, and you can still retry
-  the previous station and built-in candidates. Favorited stations remain
-  marked and retryable when they are present in the current catalog/search list;
-  a dedicated favorites-only browse view is not in the MVP yet. Stations that
-  fail to play are dimmed and temporarily disabled for the session.
+  the previous station and built-in candidates. Favorited stations are saved
+  across restarts and reachable from a dedicated Favorites view in the Browse
+  rail, even when they are absent from the current catalog or search results;
+  saved favorites are retryable stream entries, not stations guaranteed to play
+  offline. Stations that fail to play are dimmed and temporarily disabled for
+  the session.
 
 ## Quick start
 
@@ -85,6 +87,21 @@ search controls act on the focused pane.
 Search is online as you type, with a ~350ms debounce and a per-query cache;
 stale in-flight searches are ignored.
 
+### Browse and Favorites
+
+The Browse rail is a source picker: `All Stations`, `Favorites`, and each
+section and category. Focus it with `Tab`, move the cursor with `j`/`k` or the
+arrows, and press `Enter` to apply a source — that replaces the station list and
+hands focus back to it. The active source is marked with a filled dot, distinct
+from the Browse cursor.
+
+`Favorites` lists the stations you've saved with `f`, in the order you saved
+them, and stays reachable even when those stations are absent from the current
+catalog or search results. Removing a favorite with `f` while the Favorites view
+is active drops it from the list immediately. An empty Favorites view shows an
+explicit hint to save a station with `f`. Saved favorites are retryable stream
+entries, not stations guaranteed to play while offline.
+
 ## Command-line options
 
 ```text
@@ -121,10 +138,10 @@ marked, dimmed, and temporarily disabled for the session; selection moves to the
 next viable candidate. Retrying a station that later succeeds clears the mark.
 
 **Search shows "offline".** Radio Browser could not be reached. The previous
-station and built-in catalog candidates remain available to retry; favorited
-stations are retryable when they are present in the current visible list. There
-is no favorites-only browse view yet. The offline state clears after the next
-successful search.
+station, built-in catalog candidates, and saved favorites remain available to
+retry: open the Favorites view from the Browse rail to reach saved stations even
+while offline. Favorites are retryable stream entries, not stations guaranteed
+to play offline. The offline state clears after the next successful search.
 
 ## Native audio spike
 
@@ -187,6 +204,3 @@ Reference inspirations:
   direction
 - [`late.sh` / `late-cli`](https://github.com/mpiorowski/late-sh) for native
   audio + FFT architecture reference
-</content>
-
-</invoke>

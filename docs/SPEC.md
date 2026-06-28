@@ -526,12 +526,7 @@ tier, and built-in retry candidates stay visible
   that depend on real audio, live streams, live ICY, or interactive resize were
   not run here (no audio device / TTY in this environment). They remain on the
   manual checklist in `MIK-012` / the implementation plan Task 12.
-- **No dedicated favorites browse view.** Favorites persist and the previous
-  station auto-resumes, and the built-in catalog stays available offline, so
-  "retry previous / built-in" is satisfied. However there is no in-app list that
-  shows only favorites; retrying a favorite that is not in the catalog or the
-  current results is not yet reachable by a keystroke. This is a known MVP gap,
-  not a regression, and is out of MIK-012's offline scope.
-- **Section/category shortcuts are display-only.** The Wide "Browse" pane lists
-  Music and Spoken/News categories but selecting one is not yet wired to filter
-  the visible list (only `Esc`/clear-search restores the full catalog).
+- **Favorites and Browse filtering are now wired.** Earlier MIK-012 notes about
+  missing favorites/category browse behavior are resolved: the Browse pane has a
+  `Favorites` source for all saved favorites, and Music/Spoken section/category
+  entries apply their corresponding station filters.

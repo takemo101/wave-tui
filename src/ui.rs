@@ -1539,6 +1539,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn browse_rail_has_a_single_favorites_entry_labelled_favorites() {
+        // Scope: a single favorites Browse mode. The rail shows exactly one
+        // favorites row, plainly labelled `Favorites` — no `All Favorites` /
+        // `Current Favorites` split.
+        let app = base_app();
+        let text = buffer_text(&render_browse_buffer(&app, 24, 16));
+        assert!(text.contains("Favorites"), "Favorites row missing: {text}");
+        assert!(
+            !text.contains("All Favorites"),
+            "unexpected All Favorites label: {text}"
+        );
+        assert!(
+            !text.contains("Current Favorites"),
+            "unexpected Current Favorites label: {text}"
+        );
+        let favorite_rows = text.lines().filter(|l| l.contains("Favorites")).count();
+        assert_eq!(favorite_rows, 1, "exactly one favorites row: {text}");
+    }
+
     // --- Spectrum pane-width usage (MIK-025) ----------------------------
 
     #[test]

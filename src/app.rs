@@ -1411,6 +1411,26 @@ mod tests {
     }
 
     #[test]
+    fn browse_rail_has_exactly_one_favorites_entry_titled_favorites() {
+        // Scope: a single favorites Browse mode. The rail must contain exactly one
+        // favorites source, labelled plainly `Favorites` — no `All Favorites` or
+        // `Current Favorites` split.
+        let rail = ListSource::browse_rail();
+        let favorites: Vec<ListSource> = rail
+            .iter()
+            .copied()
+            .filter(|s| *s == ListSource::Favorites)
+            .collect();
+        assert_eq!(favorites, vec![ListSource::Favorites]);
+        assert_eq!(ListSource::Favorites.title(), "Favorites");
+        // No rail label uses the dropped two-mode wording.
+        for source in &rail {
+            assert_ne!(source.title(), "All Favorites");
+            assert_ne!(source.title(), "Current Favorites");
+        }
+    }
+
+    #[test]
     fn browse_rail_titles_come_from_catalog_state() {
         assert_eq!(ListSource::AllStations.title(), "All Stations");
         assert_eq!(ListSource::Favorites.title(), "Favorites");

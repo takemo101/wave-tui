@@ -34,7 +34,30 @@ use crate::layout::LayoutTier;
 use crate::model::{CodecKind, PlaybackState, Station};
 use crate::theme::Theme;
 
+mod splash;
 mod visualizer;
+
+pub(crate) use splash::{SplashKind, SplashTiming};
+
+/// Resolve splash timing for `kind`, picking the low-power budget when set.
+///
+/// A narrow wrapper so the CLI lifecycle can size the splash loop without
+/// importing the private `splash` submodule directly.
+pub(crate) fn splash_timing(kind: SplashKind, low_power: bool) -> SplashTiming {
+    if low_power {
+        splash::low_power_timing(kind)
+    } else {
+        splash::normal_timing(kind)
+    }
+}
+
+/// Render one splash frame for `kind` at `tick` into the whole `frame` area.
+///
+/// Deterministic, theme-driven, and independent of app state; used by the CLI
+/// startup/shutdown splash loop.
+pub(crate) fn render_splash(kind: SplashKind, theme: &Theme, tick: u16, frame: &mut Frame) {
+    splash::render_splash_into(kind, theme, tick, frame.area(), frame.buffer_mut());
+}
 
 /// Render the entire UI for the current terminal size.
 ///

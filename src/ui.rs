@@ -239,7 +239,7 @@ fn search_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
         )
     };
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled("/ ", theme.accent_style()),
         query_span,
         Span::raw("   "),
@@ -249,9 +249,21 @@ fn search_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
             format!("{} results", app.visible().len()),
             Style::default().fg(theme.foreground),
         ),
-        Span::raw("   "),
-        network_span(app, theme),
-    ])
+    ];
+
+    // When Browse is filtering the current search-result population, show the
+    // active filter context so the strip explains the narrowed list.
+    if let Some(label) = app.active_filter_label() {
+        spans.push(Span::raw("   "));
+        spans.push(Span::styled(
+            format!("filter: {label}"),
+            theme.accent_style(),
+        ));
+    }
+
+    spans.push(Span::raw("   "));
+    spans.push(network_span(app, theme));
+    Line::from(spans)
 }
 
 /// A search-status span (loading / cached / fresh / offline / error), themed.
@@ -748,13 +760,19 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
 /// are retryable stream entries, not stations guaranteed to play offline, so the
 /// empty state keeps guiding the user to save rather than implying offline
 /// availability. Other sources keep the offline-aware generic note.
-fn empty_list_note(app: &App) -> &'static str {
+fn empty_list_note(app: &App) -> String {
+    // A zero-match Browse filter over the current search population gets a
+    // specific note ("No Jazz results in current search") rather than silently
+    // implying the curated empty states below.
+    if let Some(note) = app.search_filter_empty_note() {
+        return note;
+    }
     if app.active_source() == ListSource::Favorites {
-        "No favorites yet — press f on a station to save it"
+        "No favorites yet — press f on a station to save it".to_string()
     } else if app.is_offline() {
-        "No stations — offline"
+        "No stations — offline".to_string()
     } else {
-        "No stations"
+        "No stations".to_string()
     }
 }
 
@@ -854,6 +872,7 @@ mod tests {
     use crate::audio::AudioEvent;
     use crate::catalog::{Catalog, Category};
     use crate::model::{VisualizerMode, VizFrame};
+    use crate::search::SearchResults;
     use crate::settings::Settings;
     use crate::theme::ThemeName;
 
@@ -1587,6 +1606,45 @@ mod tests {
         );
         let favorite_rows = text.lines().filter(|l| l.contains("Favorites")).count();
         assert_eq!(favorite_rows, 1, "exactly one favorites row: {text}");
+    }
+
+    // --- Browse-over-search filter context and empty state (MIK-047) ----
+
+    #[test]
+    fn search_strip_shows_active_search_filter_context() {
+        // With a search-result population and a genre filter active, the search
+        // strip surfaces the active filter context so Browse reads as filtering
+        // the current search results.
+        let mut jazz = fav_station("search-jazz");
+        jazz.tags = vec!["jazz".to_string()];
+        let mut app = base_app();
+        app.apply(Action::SearchResults(SearchResults::from_stations([jazz])));
+        app.apply(Action::ShowCategory(Category::Jazz));
+
+        let text = buffer_text(&render_buffer(&app, 130, 32));
+
+        assert!(
+            text.contains("filter: Jazz"),
+            "filter context missing: {text}"
+        );
+    }
+
+    #[test]
+    fn search_filter_zero_matches_shows_specific_empty_state() {
+        // A genre filter matching zero search results shows a specific empty
+        // state rather than silently falling back to curated stations.
+        let mut house = fav_station("search-house");
+        house.tags = vec!["house".to_string()];
+        let mut app = base_app();
+        app.apply(Action::SearchResults(SearchResults::from_stations([house])));
+        app.apply(Action::ShowCategory(Category::Jazz));
+
+        let text = buffer_text(&render_buffer(&app, 130, 32));
+
+        assert!(
+            text.contains("No Jazz results in current search"),
+            "specific empty state missing: {text}"
+        );
     }
 
     #[test]

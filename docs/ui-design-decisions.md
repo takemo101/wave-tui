@@ -17,6 +17,23 @@ Implications:
   playback state, selected row, errors, and audio-reactive bars.
 - The app can still support vivid modes through Neon and CRT themes.
 
+### Lifecycle Splash
+
+Startup and shutdown transitions should feel like a quiet polish layer, not a
+blocking loading screen.
+
+Implications:
+
+- Startup shows a short, skippable, left-to-right pixel-art `WAVE` logo reveal.
+- The startup label includes the package version (`wave-tui v...`) and the line
+  `settling into the signal`.
+- Startup omits the wave-glyph line; its motion is limited to the logo reveal so
+  it stays readable and calm.
+- Shutdown may show the farewell copy `thanks for listening` /
+  `see you next wave` with a small calm wave animation.
+- Splash rendering is theme-driven and separate from the audio visualizer. It
+  must not change playback, search, settings, layout tiers, or key mappings.
+
 ### Wide Layout: Search Console
 
 Wide terminals should prioritize online search and result evaluation.
@@ -146,7 +163,9 @@ A follow-up UI/UX design deck confirmed the concrete visual direction for
   suitable for long work sessions.
 
 These deck choices are the implementation contract for the polish issues unless
-superseded by a later design decision.
+superseded by a later design decision. Later splash polish (`MIK-037` through
+`MIK-039`) adds the quiet lifecycle splash described above while preserving the
+same Quiet Focus Pane constraints.
 
 ## Implementation Notes
 

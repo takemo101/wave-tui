@@ -7,17 +7,23 @@ and stay calm enough to keep open for hours while you work.
 It is a focused work-session BGM radio, not a music library or Spotify-like
 player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 
+Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tui/)
+
 ## Features
 
 - **Native Rust playback** — MP3/AAC-centered HTTP streams play through a
   `reqwest` + `symphonia` + `cpal` pipeline. No external `ffplay`/`mpv` process.
-- **Real FFT visualizer** — the Spectrum Stack's particle-filled analyzer is driven
-  by actual played audio samples via `rustfft`, not a simulation. Six calm modes are selectable
-  with `v` (see [Visualizer modes](#visualizer-modes)); all are real-audio-driven
-  and stretch to fill the visualizer pane.
+- **Real FFT visualizer** — the Spectrum Stack's particle-filled analyzer is
+  driven by actual played audio samples via `rustfft`, not a simulation. Six
+  calm modes are selectable with `v` (see [Visualizer modes](#visualizer-modes));
+  all are real-audio-driven and stretch to fill the visualizer pane.
 - **Auto-resume** — launching `wave-tui` replays your previous station; first
   launch (or a failed previous station) starts silently with curated
   recommendations.
+- **Quiet lifecycle splash** — startup shows a short, skippable pixel-art
+  `WAVE` logo reveal with the `wave-tui v...` version label and
+  `settling into the signal`; shutdown shows `thanks for listening` /
+  `see you next wave` with a small calm wave animation.
 - **Curated catalog + online search** — a small built-in Music and Spoken/News
   catalog, plus Radio Browser search-as-you-type with debounce and a result
   cache. Results are ranked toward likely-playable, popular stations.
@@ -41,7 +47,43 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 
 ## Quick start
 
-Build and run from source:
+### Install a prebuilt binary on macOS
+
+Install the latest GitHub Release to `~/.local/bin/wave-tui`:
+
+```bash
+INSTALL_URL=https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh
+curl -fsSL "$INSTALL_URL" | sh
+```
+
+Choose a different install directory:
+
+```bash
+INSTALL_URL=https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh
+curl -fsSL "$INSTALL_URL" | INSTALL_DIR=/usr/local/bin sh
+```
+
+Install a specific release tag:
+
+```bash
+INSTALL_URL=https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh
+curl -fsSL "$INSTALL_URL" | VERSION=v0.1.0 sh
+```
+
+The installer currently publishes macOS prebuilt assets:
+
+| OS | Architecture | Asset target |
+| --- | --- | --- |
+| macOS | Apple Silicon | `aarch64-apple-darwin` |
+| macOS | Intel | `x86_64-apple-darwin` |
+
+Linux users should install from source for now. `wave-tui` uses native audio
+output through `cpal`, so Linux binary packaging needs distribution-level audio
+library verification before prebuilt assets are advertised as supported.
+
+### Build and run from source
+
+Run directly from a clone:
 
 ```bash
 cargo run --release
@@ -54,40 +96,51 @@ just install
 wave-tui
 ```
 
-Install directly with Cargo:
+Install directly with Cargo from a clone:
 
 ```bash
 cargo install --path .
 wave-tui
 ```
 
-On first launch with no saved settings, the app starts silently and shows the
-curated catalog. Press `/` and start typing to search Radio Browser, or select a
-station and press `Enter` to play.
+Install directly from GitHub with Cargo:
+
+```bash
+cargo install --git https://github.com/takemo101/wave-tui
+wave-tui
+```
+
+On first launch with no saved settings, the app starts with a short skippable
+startup card: a pixel-art `WAVE` logo reveals left-to-right above the
+`wave-tui v...` version label and `settling into the signal`. The startup card
+uses no `~≈∿` wave line; that calmer wave animation is reserved for the shutdown
+farewell (`thanks for listening` / `see you next wave`). After the splash, the
+app starts silently and shows the curated catalog. Press `/` and start typing to
+search Radio Browser, or select a station and press `Enter` to play.
 
 ## Controls
 
 Navigation uses focus-based panes. `Tab`/`Shift+Tab` move focus; the list and
 search controls act on the focused pane.
 
-| Key             | Action                                         |
-| --------------- | ---------------------------------------------- |
-| `Tab`           | focus next pane                                |
-| `Shift+Tab`     | focus previous pane                            |
-| `j` / `↓`       | select next station                            |
-| `k` / `↑`       | select previous station                        |
-| `g` / `Home`    | jump to first station                          |
-| `G` / `End`     | jump to last station                           |
-| `Enter`         | play the selected station                      |
-| `Space`         | stop / play toggle while station list is focused |
-| `+` / `-`       | volume up / down                               |
-| `f`             | toggle favorite for the selected station       |
-| `t`             | cycle theme (Minimal → Neon → CRT → Solarized → Midnight → Sakura) |
-| `v`             | cycle visualizer mode (see Visualizer modes)   |
-| `/`             | focus search and type to search Radio Browser  |
-| `Esc`           | while searching: clear search and return to catalog |
-| `q` / `Esc`     | quit (`Esc` quits when not searching)          |
-| `Ctrl+C`        | quit from any mode                              |
+| Key         | Action                       |
+| ----------- | ---------------------------- |
+| `Tab`       | focus next pane              |
+| `Shift+Tab` | focus previous pane          |
+| `j` / `↓`   | select next station          |
+| `k` / `↑`   | select previous station      |
+| `g` / `Home`| jump to first station        |
+| `G` / `End` | jump to last station         |
+| `Enter`     | play selected station        |
+| `Space`     | stop / play toggle           |
+| `+` / `-`   | volume up / down             |
+| `f`         | toggle favorite              |
+| `t`         | cycle theme                  |
+| `v`         | cycle visualizer mode        |
+| `/`         | search Radio Browser         |
+| `Esc`       | clear search / return        |
+| `q` / `Esc` | quit when not searching      |
+| `Ctrl+C`    | quit from any mode           |
 
 Search is online as you type, with a ~350ms debounce and a per-query cache;
 stale in-flight searches are ignored.
@@ -114,14 +167,14 @@ mode is persisted across restarts. Every mode is driven by real played audio and
 stretches its source data to fill the visualizer pane width; none turns the
 layout into a full-screen visualizer.
 
-| Mode            | Source                | Look                                            |
-| --------------- | --------------------- | ----------------------------------------------- |
-| `SpectrumStack` | FFT bands             | Particle-filled analyzer columns from the bottom (default) |
-| `PeakDots`      | FFT bands             | One peak dot per column                         |
-| `SkylinePeaks`  | FFT bands             | Bright peak cap over a subtle dashed tail       |
-| `WaveScope`     | Waveform              | Oscilloscope trace around the center line       |
-| `MirrorWave`    | Waveform              | Symmetrical waveform mirrored above/below center|
-| `AmbientPulse`  | RMS + bands           | Low-noise centered glow that pulses with level  |
+| Mode            | Source      | Look                      |
+| --------------- | ----------- | ------------------------- |
+| `SpectrumStack` | FFT bands   | Particle analyzer columns |
+| `PeakDots`      | FFT bands   | One peak dot per column   |
+| `SkylinePeaks`  | FFT bands   | Peak cap and dashed tail  |
+| `WaveScope`     | Waveform    | Oscilloscope trace        |
+| `MirrorWave`    | Waveform    | Mirrored waveform         |
+| `AmbientPulse`  | RMS + bands | Low-noise centered glow   |
 
 The waveform modes treat both an empty and an all-zero waveform as a flat
 silence baseline, and `AmbientPulse` draws nothing for a silent frame, so a
@@ -150,7 +203,36 @@ ARGS:
 `--theme` and `--volume` are per-run overrides. A `--volume` override is not
 written back to disk unless you change the volume with `+`/`-` during the run.
 
+## Uninstall
+
+If you installed with `install.sh`, remove the installed binary:
+
+```bash
+rm -f ~/.local/bin/wave-tui
+```
+
+If you used a custom `INSTALL_DIR`, delete the binary from that directory instead:
+
+```bash
+rm -f /usr/local/bin/wave-tui
+```
+
+If you installed from a repository clone with `just install`, use the same
+`INSTALL_DIR` with `just uninstall`:
+
+```bash
+just uninstall
+# or
+INSTALL_DIR=/usr/local/bin just uninstall
+```
+
 ## Troubleshooting
+
+**Linux source builds.** Linux users should currently build from source. Depending
+on your distribution and audio stack, native `cpal` output may require system
+audio libraries or development packages to be present before `cargo build` can
+link successfully. Prebuilt Linux assets will be documented only after CI builds
+and real-device audio playback are verified on representative distributions.
 
 **No audio output.** Confirm your default output device works, then try naming a
 device explicitly with `--audio-output-device <name>`. Playback prefers an
@@ -192,6 +274,13 @@ for findings and caveats.
 ## Documentation map
 
 - [`AGENTS.md`](AGENTS.md) — workflow guidance for AI coding agents
+- [`docs/index.html`](docs/index.html) — GitHub Pages landing and setup guide
+- [`install.sh`](install.sh) — GitHub Releases installer for supported
+  prebuilt binaries
+- [`.github/workflows/pages.yml`](.github/workflows/pages.yml) — GitHub Pages
+  deployment workflow
+- [`.github/workflows/release.yml`](.github/workflows/release.yml) — tagged
+  release asset workflow
 - [`docs/SPEC.md`](docs/SPEC.md) — product specification and MVP scope
 - [`docs/implementation-guidelines.md`](docs/implementation-guidelines.md) —
   implementation principles adapted from okite-ai skills

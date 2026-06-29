@@ -1,7 +1,7 @@
 //! Quiet startup/shutdown splash rendering.
 //!
 //! This focused submodule owns the splash's pixel-art logo, message layout,
-//! deterministic wave-frame animation, and timing configuration. It is a pure
+//! deterministic startup-logo reveal/shutdown wave animation, and timing configuration. It is a pure
 //! lifecycle transition: it reads only a [`Theme`] and a tick, never app/audio
 //! state, and never registers a [`crate::model::VisualizerMode`]. All colors
 //! come from the active theme; no ad hoc palette literals live here.
@@ -33,6 +33,8 @@ const LOGO_V: [&str; 5] = ["█   █", "█   █", "█   █", " █ █ ", "
 const LOGO_E: [&str; 5] = ["█████", "█    ", "████ ", "█    ", "█████"];
 /// Spaces between adjacent letter cells; widens the mark for legibility.
 const LOGO_GAP: &str = "   ";
+/// Startup logo reveal duration in splash ticks; later ticks render the full logo.
+const STARTUP_LOGO_REVEAL_TICKS: u16 = 8;
 
 const STARTUP_LABEL: &str = concat!("wave-tui v", env!("CARGO_PKG_VERSION"));
 const STARTUP_MESSAGE: &str = "settling into the signal";
@@ -68,6 +70,21 @@ fn logo_rows() -> [String; 5] {
         );
     }
     rows
+}
+
+/// Reveal the logo from left to right while preserving each row's total width.
+fn revealed_logo_rows(tick: u16) -> [String; 5] {
+    let rows = logo_rows();
+    let width = rows[0].chars().count();
+    let reveal_columns = ((tick as usize + 1) * width).div_ceil(STARTUP_LOGO_REVEAL_TICKS as usize);
+    let reveal_columns = reveal_columns.min(width);
+
+    rows.map(|row| {
+        row.chars()
+            .enumerate()
+            .map(|(column, ch)| if column < reveal_columns { ch } else { ' ' })
+            .collect()
+    })
 }
 
 /// Normal-mode timing: ~1.1s startup, ~0.7s shutdown at a calm ~11fps cadence.
@@ -126,10 +143,10 @@ pub(super) fn render_splash_into(
     let splash_width = area.width.min(splash_width);
     let splash_area = centered_rect(area, splash_width, splash_height);
 
-    // Only the shutdown farewell carries the animated wave line; the startup
-    // splash is a calm, static logo card (still timed and skippable).
+    // Only the shutdown farewell carries the animated wave line; startup animates
+    // the logo reveal itself while keeping the card timed and skippable.
     let lines = match kind {
-        SplashKind::Startup => startup_lines(theme),
+        SplashKind::Startup => startup_lines(theme, tick),
         SplashKind::Shutdown => shutdown_lines(theme, wave_line(splash_area.width, tick)),
     };
 
@@ -151,14 +168,14 @@ const STARTUP_LINE_COUNT: u16 = 12;
 /// Total shutdown lines (title + blank spacers + message + wave).
 const SHUTDOWN_LINE_COUNT: u16 = 7;
 
-fn startup_lines(theme: &Theme) -> Vec<Line<'static>> {
+fn startup_lines(theme: &Theme, tick: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(STARTUP_LINE_COUNT as usize);
     let logo_style = Style::default()
         .fg(theme.accent)
         .add_modifier(Modifier::BOLD);
 
     lines.push(Line::from(""));
-    for row in logo_rows() {
+    for row in revealed_logo_rows(tick) {
         lines.push(Line::from(Span::styled(row, logo_style)));
     }
     lines.push(Line::from(""));
@@ -172,8 +189,7 @@ fn startup_lines(theme: &Theme) -> Vec<Line<'static>> {
         STARTUP_MESSAGE,
         Style::default().fg(theme.foreground),
     )));
-    // Trailing blank: breathing room below the message (startup stays static, no
-    // wave line).
+    // Trailing blank: breathing room below the message (startup has no wave line).
     lines.push(Line::from(""));
     debug_assert_eq!(lines.len(), STARTUP_LINE_COUNT as usize);
     lines
@@ -288,7 +304,7 @@ mod tests {
 
     #[test]
     fn startup_splash_contains_logo_label_and_message() {
-        let out = render_to_string(SplashKind::Startup, 0);
+        let out = render_to_string(SplashKind::Startup, STARTUP_LOGO_REVEAL_TICKS - 1);
         // Distinctive middle rows of the assembled WAVE mark.
         assert!(out.contains("█ █ █"), "W center band should render");
         assert!(out.contains("█████"), "A/E full bands should render");
@@ -323,7 +339,7 @@ mod tests {
     #[test]
     fn startup_splash_renders_no_wave_glyph_line() {
         // The animated wave line was removed from startup; it must not appear on
-        // any frame, so the startup card stays a calm, static logo.
+        // any frame, so the startup animation stays focused on the logo reveal.
         for tick in 0..6 {
             let out = render_to_string(SplashKind::Startup, tick);
             for glyph in WAVE_GLYPHS {
@@ -336,11 +352,35 @@ mod tests {
     }
 
     #[test]
-    fn startup_splash_is_static_across_ticks() {
-        // With no wave line, startup is identical every frame (still timed/skippable).
+    fn startup_logo_reveals_left_to_right_across_ticks() {
+        // Startup animates the logo itself, not a wave line: later ticks reveal
+        // more of the fixed-width WAVE mark while keeping the text stable.
         let first = render_to_string(SplashKind::Startup, 0);
         let second = render_to_string(SplashKind::Startup, 1);
-        assert_eq!(first, second, "startup splash should not animate");
+        let finished = render_to_string(SplashKind::Startup, 7);
+        assert_ne!(
+            first, second,
+            "startup logo should animate between early ticks"
+        );
+        assert!(
+            first.matches('█').count() < second.matches('█').count(),
+            "tick 1 should reveal more logo blocks than tick 0"
+        );
+        assert!(
+            second.matches('█').count() < finished.matches('█').count(),
+            "final reveal tick should show more logo blocks than early ticks"
+        );
+    }
+
+    #[test]
+    fn late_startup_tick_renders_complete_logo() {
+        let out = render_to_string(SplashKind::Startup, 7);
+        for row in logo_rows() {
+            assert!(
+                out.contains(row.trim_end()),
+                "late startup tick should contain complete logo row {row:?}"
+            );
+        }
     }
 
     #[test]
@@ -370,7 +410,7 @@ mod tests {
         // The startup card must keep one blank line below `settling into the
         // signal` for breathing room (and no wave line in its place).
         let theme = ThemeName::Minimal.theme();
-        let lines = startup_lines(&theme);
+        let lines = startup_lines(&theme, STARTUP_LOGO_REVEAL_TICKS - 1);
         let n = lines.len();
         assert!(
             lines[n - 1].width() == 0,

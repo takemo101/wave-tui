@@ -47,7 +47,11 @@
         font-family: var(--sans);
         color: var(--text);
         background:
-          radial-gradient(circle at 12% -8%, rgba(34, 211, 238, 0.08), transparent 32rem),
+          radial-gradient(
+            circle at 12% -8%,
+            rgba(34, 211, 238, 0.08),
+            transparent 32rem
+          ),
           linear-gradient(180deg, #020617 0%, #050a14 54%, #020617 100%);
         line-height: 1.65;
         -webkit-font-smoothing: antialiased;
@@ -274,24 +278,92 @@
         color: var(--muted);
       }
 
-      .tui-screen {
-        margin: 1rem 0 0;
-        padding: 0;
-        border: 0;
-        color: #cbd5e1;
-        background: transparent;
-        font-family: var(--mono);
-        font-size: clamp(0.62rem, 0.86vw, 0.74rem);
-        line-height: 1.42;
-        white-space: pre;
+      .tui-mock {
+        margin-top: 1rem;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 14px;
+        overflow: hidden;
+        background: rgba(8, 13, 27, 0.72);
       }
 
-      .tui-accent {
+      .tui-panes {
+        display: grid;
+        grid-template-columns: 0.78fr 1.08fr 0.92fr;
+        min-height: 136px;
+      }
+
+      .tui-pane {
+        min-width: 0;
+        padding: 0.78rem;
+        border-right: 1px solid rgba(148, 163, 184, 0.14);
+      }
+
+      .tui-pane:last-child {
+        border-right: 0;
+      }
+
+      .tui-pane-title {
+        margin-bottom: 0.58rem;
+        color: var(--dim);
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+      }
+
+      .tui-row {
+        overflow: hidden;
+        color: #cbd5e1;
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        line-height: 1.75;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tui-row.active {
+        color: var(--text-bright);
+      }
+
+      .tui-row .dot {
         color: var(--cyan);
       }
 
-      .tui-muted {
-        color: var(--dim);
+      .tui-now strong {
+        display: block;
+        overflow: hidden;
+        color: var(--text-bright);
+        font-size: 0.95rem;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tui-now span {
+        display: block;
+        margin-top: 0.25rem;
+        overflow: hidden;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .static-spectrum {
+        display: flex;
+        align-items: end;
+        gap: 5px;
+        height: 54px;
+        padding: 0.8rem 0.78rem 0.88rem;
+        border-top: 1px solid rgba(148, 163, 184, 0.14);
+      }
+
+      .static-spectrum i {
+        display: block;
+        width: 100%;
+        min-width: 5px;
+        border-radius: 5px 5px 2px 2px;
+        background: linear-gradient(180deg, #67e8f9, #38bdf8 58%, #64748b);
+        opacity: 0.86;
       }
 
       section {
@@ -332,7 +404,11 @@
 
       .feature-card {
         padding: 1.25rem;
-        background: linear-gradient(180deg, rgba(15, 23, 42, 0.9), rgba(15, 23, 42, 0.62));
+        background: linear-gradient(
+          180deg,
+          rgba(15, 23, 42, 0.9),
+          rgba(15, 23, 42, 0.62)
+        );
       }
 
       .feature-icon {
@@ -532,7 +608,9 @@
       <section class="container hero">
         <div>
           <span class="eyebrow">quiet terminal radio for work sessions</span>
-          <h1>Quiet <span class="gradient-text">radio</span> for your terminal.</h1>
+          <h1>
+            Quiet <span class="gradient-text">radio</span> for your terminal.
+          </h1>
           <p class="hero-copy">
             wave-tui is a small Rust TUI internet radio player for work-session
             background music: native playback, real FFT visuals, favorites,
@@ -540,8 +618,12 @@
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" href="#install">Install wave-tui</a>
-            <a class="btn" href="https://github.com/takemo101/wave-tui/releases">Releases</a>
-            <a class="btn" href="https://github.com/takemo101/wave-tui">Source</a>
+            <a class="btn" href="https://github.com/takemo101/wave-tui/releases"
+              >Releases</a
+            >
+            <a class="btn" href="https://github.com/takemo101/wave-tui"
+              >Source</a
+            >
           </div>
         </div>
 
@@ -552,16 +634,53 @@
               <span>minimal</span>
             </div>
             <div class="terminal-body">
-              <div><span class="prompt">$</span> <span class="command">wave-tui --theme minimal</span></div>
-              <div class="status-line">calm background radio · real audio visualizer</div>
-              <pre class="tui-screen" aria-label="wave-tui terminal preview"><span class="tui-muted">┌ Browse ───────┬ Stations ──────────┬ Now Playing ───┐</span>
-│ ● All         │  SomaFM Groove     │ Minimal FM      │
-│   Favorites   │  Radio Paradise    │ vol 54%         │
-│   Music       │  KEXP              │ focus mix       │
-│   Spoken      │  NTS Radio         │                 │
-<span class="tui-muted">├───────────────┴────────────────────┴────────────────┤</span>
-│ <span class="tui-accent">▁▃▂▅▆▃▇▅▂▆▃▅</span>  SpectrumStack · real samples       │
-<span class="tui-muted">└─────────────────────────────────────────────────────┘</span></pre>
+              <div>
+                <span class="prompt">$</span>
+                <span class="command">wave-tui --theme minimal</span>
+              </div>
+              <div class="status-line">
+                calm background radio · real audio visualizer
+              </div>
+              <div class="tui-mock" aria-label="wave-tui terminal preview">
+                <div class="tui-panes">
+                  <div class="tui-pane">
+                    <div class="tui-pane-title">Browse</div>
+                    <div class="tui-row active">
+                      <span class="dot">●</span> All
+                    </div>
+                    <div class="tui-row">Favorites</div>
+                    <div class="tui-row">Music</div>
+                    <div class="tui-row">Spoken / News</div>
+                  </div>
+                  <div class="tui-pane">
+                    <div class="tui-pane-title">Stations</div>
+                    <div class="tui-row active">SomaFM Groove Salad</div>
+                    <div class="tui-row">Radio Paradise</div>
+                    <div class="tui-row">KEXP</div>
+                    <div class="tui-row">NTS Radio</div>
+                  </div>
+                  <div class="tui-pane tui-now">
+                    <div class="tui-pane-title">Now Playing</div>
+                    <strong>Minimal FM</strong>
+                    <span>vol 54%</span>
+                    <span>focus mix</span>
+                  </div>
+                </div>
+                <div class="static-spectrum" aria-label="Static SpectrumStack preview">
+                  <i style="height: 24%"></i>
+                  <i style="height: 42%"></i>
+                  <i style="height: 34%"></i>
+                  <i style="height: 62%"></i>
+                  <i style="height: 76%"></i>
+                  <i style="height: 48%"></i>
+                  <i style="height: 82%"></i>
+                  <i style="height: 56%"></i>
+                  <i style="height: 38%"></i>
+                  <i style="height: 68%"></i>
+                  <i style="height: 45%"></i>
+                  <i style="height: 72%"></i>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -572,34 +691,50 @@
           <div class="section-kicker">Features</div>
           <h2>A focused radio player, not a music platform.</h2>
           <p class="section-copy">
-            Everything is tuned for low-friction background audio while you work.
+            Everything is tuned for low-friction background audio while you
+            work.
           </p>
         </div>
         <div class="features">
           <article class="feature-card">
             <div class="feature-icon">♪</div>
             <h3>Native Rust playback</h3>
-            <p>MP3/AAC-centered HTTP streams play through reqwest, Symphonia, and CPAL.</p>
+            <p>
+              MP3/AAC-centered HTTP streams play through reqwest, Symphonia, and
+              CPAL.
+            </p>
           </article>
           <article class="feature-card">
             <div class="feature-icon">▥</div>
             <h3>Real FFT visualizer</h3>
-            <p>The Spectrum Stack and sibling modes react to actual played samples.</p>
+            <p>
+              The Spectrum Stack and sibling modes react to actual played
+              samples.
+            </p>
           </article>
           <article class="feature-card">
             <div class="feature-icon">⌕</div>
             <h3>Online station search</h3>
-            <p>Search Radio Browser as you type, with caching and resilient offline states.</p>
+            <p>
+              Search Radio Browser as you type, with caching and resilient
+              offline states.
+            </p>
           </article>
           <article class="feature-card">
             <div class="feature-icon">★</div>
             <h3>Favorites & persistence</h3>
-            <p>Previous station, volume, favorites, visualizer mode, and theme are saved.</p>
+            <p>
+              Previous station, volume, favorites, visualizer mode, and theme
+              are saved.
+            </p>
           </article>
           <article class="feature-card">
             <div class="feature-icon">◐</div>
             <h3>Calm themes</h3>
-            <p>Minimal, Neon, CRT, Solarized, Midnight, and Sakura fit different moods.</p>
+            <p>
+              Minimal, Neon, CRT, Solarized, Midnight, and Sakura fit different
+              moods.
+            </p>
           </article>
           <article class="feature-card">
             <div class="feature-icon">𝄞</div>
@@ -617,7 +752,10 @@
         <div class="install-grid">
           <article class="panel">
             <h3>macOS prebuilt binary</h3>
-            <p>Install the latest GitHub Release to <code>~/.local/bin/wave-tui</code>.</p>
+            <p>
+              Install the latest GitHub Release to
+              <code>~/.local/bin/wave-tui</code>.
+            </p>
             <pre><code>curl -fsSL https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh | sh</code></pre>
             <p>Install a specific tag or custom directory:</p>
             <pre><code>curl -fsSL https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh | VERSION=v0.1.0 sh
@@ -631,12 +769,24 @@ cargo install --path .
 cargo install --git https://github.com/takemo101/wave-tui</code></pre>
             <table class="mini-table">
               <thead>
-                <tr><th>Platform</th><th>Status</th></tr>
+                <tr>
+                  <th>Platform</th>
+                  <th>Status</th>
+                </tr>
               </thead>
               <tbody>
-                <tr><td>macOS Apple Silicon</td><td><code>aarch64-apple-darwin</code></td></tr>
-                <tr><td>macOS Intel</td><td><code>x86_64-apple-darwin</code></td></tr>
-                <tr><td>Linux</td><td>source build while audio packaging is verified</td></tr>
+                <tr>
+                  <td>macOS Apple Silicon</td>
+                  <td><code>aarch64-apple-darwin</code></td>
+                </tr>
+                <tr>
+                  <td>macOS Intel</td>
+                  <td><code>x86_64-apple-darwin</code></td>
+                </tr>
+                <tr>
+                  <td>Linux</td>
+                  <td>source build while audio packaging is verified</td>
+                </tr>
               </tbody>
             </table>
           </article>
@@ -652,22 +802,33 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
           <article class="step-card">
             <div class="step-num">01</div>
             <h3>Launch</h3>
-            <p>Run <code>wave-tui</code>. It auto-resumes the previous station when possible.</p>
+            <p>
+              Run <code>wave-tui</code>. It auto-resumes the previous station
+              when possible.
+            </p>
           </article>
           <article class="step-card">
             <div class="step-num">02</div>
             <h3>Search</h3>
-            <p>Press <span class="kbd">/</span> and type to search Radio Browser.</p>
+            <p>
+              Press <span class="kbd">/</span> and type to search Radio Browser.
+            </p>
           </article>
           <article class="step-card">
             <div class="step-num">03</div>
             <h3>Play & save</h3>
-            <p>Select a station, press Enter, and press <span class="kbd">f</span> to favorite.</p>
+            <p>
+              Select a station, press Enter, and press
+              <span class="kbd">f</span> to favorite.
+            </p>
           </article>
           <article class="step-card">
             <div class="step-num">04</div>
             <h3>Set the mood</h3>
-            <p>Cycle themes with <span class="kbd">t</span> and visualizers with <span class="kbd">v</span>.</p>
+            <p>
+              Cycle themes with <span class="kbd">t</span> and visualizers with
+              <span class="kbd">v</span>.
+            </p>
           </article>
         </div>
       </section>
@@ -680,19 +841,52 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
         <div class="panel controls">
           <table>
             <thead>
-              <tr><th>Key</th><th>Action</th></tr>
+              <tr>
+                <th>Key</th>
+                <th>Action</th>
+              </tr>
             </thead>
             <tbody>
-              <tr><td><span class="kbd">Tab</span></td><td>Focus next pane</td></tr>
-              <tr><td><span class="kbd">j</span> / <span class="kbd">↓</span></td><td>Select next station</td></tr>
-              <tr><td><span class="kbd">k</span> / <span class="kbd">↑</span></td><td>Select previous station</td></tr>
-              <tr><td><span class="kbd">Enter</span></td><td>Play the selected station</td></tr>
-              <tr><td><span class="kbd">Space</span></td><td>Stop / play toggle while the station list is focused</td></tr>
-              <tr><td><span class="kbd">+</span> / <span class="kbd">-</span></td><td>Volume up / down</td></tr>
-              <tr><td><span class="kbd">f</span></td><td>Toggle favorite</td></tr>
-              <tr><td><span class="kbd">t</span></td><td>Cycle theme</td></tr>
-              <tr><td><span class="kbd">v</span></td><td>Cycle visualizer mode</td></tr>
-              <tr><td><span class="kbd">q</span></td><td>Quit</td></tr>
+              <tr>
+                <td><span class="kbd">Tab</span></td>
+                <td>Focus next pane</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">j</span> / <span class="kbd">↓</span></td>
+                <td>Select next station</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">k</span> / <span class="kbd">↑</span></td>
+                <td>Select previous station</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">Enter</span></td>
+                <td>Play the selected station</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">Space</span></td>
+                <td>Stop / play toggle while the station list is focused</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">+</span> / <span class="kbd">-</span></td>
+                <td>Volume up / down</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">f</span></td>
+                <td>Toggle favorite</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">t</span></td>
+                <td>Cycle theme</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">v</span></td>
+                <td>Cycle visualizer mode</td>
+              </tr>
+              <tr>
+                <td><span class="kbd">q</span></td>
+                <td>Quit</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -706,19 +900,31 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
         <div class="trouble-grid">
           <article class="panel">
             <h3>No audio output</h3>
-            <p>Check your default output device or pass <code>--audio-output-device</code>.</p>
+            <p>
+              Check your default output device or pass
+              <code>--audio-output-device</code>.
+            </p>
           </article>
           <article class="panel">
             <h3>A station will not play</h3>
-            <p>Streams can be offline, geo-restricted, or use an unsupported codec.</p>
+            <p>
+              Streams can be offline, geo-restricted, or use an unsupported
+              codec.
+            </p>
           </article>
           <article class="panel">
             <h3>Linux source builds</h3>
-            <p>Native CPAL output may need distribution audio libraries or dev packages.</p>
+            <p>
+              Native CPAL output may need distribution audio libraries or dev
+              packages.
+            </p>
           </article>
           <article class="panel">
             <h3>Search shows offline</h3>
-            <p>Radio Browser could not be reached. Favorites and curated stations remain available.</p>
+            <p>
+              Radio Browser could not be reached. Favorites and curated stations
+              remain available.
+            </p>
           </article>
         </div>
       </section>
@@ -732,13 +938,22 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
           <a class="link-card" href="https://github.com/takemo101/wave-tui">
             <strong>GitHub repository</strong><span>↗</span>
           </a>
-          <a class="link-card" href="https://github.com/takemo101/wave-tui/releases">
+          <a
+            class="link-card"
+            href="https://github.com/takemo101/wave-tui/releases"
+          >
             <strong>Releases</strong><span>↗</span>
           </a>
-          <a class="link-card" href="https://github.com/takemo101/wave-tui#readme">
+          <a
+            class="link-card"
+            href="https://github.com/takemo101/wave-tui#readme"
+          >
             <strong>README</strong><span>↗</span>
           </a>
-          <a class="link-card" href="https://github.com/takemo101/wave-tui/blob/main/docs/SPEC.md">
+          <a
+            class="link-card"
+            href="https://github.com/takemo101/wave-tui/blob/main/docs/SPEC.md"
+          >
             <strong>Product spec</strong><span>↗</span>
           </a>
         </div>
@@ -746,7 +961,10 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
     </main>
 
     <footer class="container">
-      <p>wave-tui is a focused work-session BGM radio, not a general music platform.</p>
+      <p>
+        wave-tui is a focused work-session BGM radio, not a general music
+        platform.
+      </p>
     </footer>
   </body>
 </html>

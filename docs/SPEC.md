@@ -63,6 +63,7 @@ Desired visual qualities:
 - crisp status bars and panel borders
 - responsive layouts that look intentional at different pane sizes
 - real spectrum/level-meter visualizer from playback audio
+- a short, skippable lifecycle splash that feels polished without delaying work
 - themes that range from restrained focus mode to high-contrast neon/CRT
 
 Design deck decision:
@@ -94,6 +95,15 @@ handling.
 - On normal launch, automatically replay the previous station.
 - On first launch, or if the previous station cannot be played, start silently and show recommended stations.
 - Startup should not block on validating every candidate station.
+- After entering the terminal alternate screen, show a short skippable startup
+  splash before the main UI: a pixel-art `WAVE` logo reveals left-to-right,
+  followed by the `wave-tui v{package version}` label and
+  `settling into the signal`.
+- The startup splash omits the wave-glyph line; the startup motion is limited
+  to the logo reveal. The shutdown splash may use a small calm wave animation
+  with the farewell copy `thanks for listening` / `see you next wave`.
+- The splash is presentational only. It must not change auto-play decisions,
+  station selection, settings persistence, search startup, or playback state.
 
 ### Playback Engine
 
@@ -488,8 +498,10 @@ MVP is successful when:
 9. ICY metadata appears when available.
 10. Wide/medium/compact terminal sizes each have intentional layouts.
 11. Six themes are available and switchable.
-12. `cargo test` covers core non-UI logic.
-13. `cargo check` passes without errors.
+12. Startup/shutdown lifecycle splash is short, skippable, theme-driven, and does
+    not alter playback/search/app state behavior.
+13. `cargo test` covers core non-UI logic.
+14. `cargo check` passes without errors.
 
 ### Success Criteria — Verification Status
 
@@ -511,8 +523,9 @@ or interactive resize and is exercised via the manual checklist below, not CI.
 | 9 | ICY metadata appears when available | Automated (parse) + Manual | `audio::icy` synthetic-byte tests; live ICY is manual. |
 | 10 | Wide/medium/compact layouts are intentional, no overlap | Automated (render) + Manual | per-tier `ui` render tests; visual quality is manual. |
 | 11 | Six themes available and switchable | Automated | `theme` lookup/cycle + `ui` themed-render tests. |
-| 12 | `cargo test` covers core non-UI logic | Automated | full suite green. |
-| 13 | `cargo check` passes | Automated | part of the verification commands. |
+| 12 | Lifecycle splash is short, skippable, theme-driven, and behavior-neutral | Automated (render/timing) + Manual | `ui::splash` render/timing tests cover logo reveal, no startup wave glyphs, version label, spacing, and shutdown wave; real terminal visual polish is manual. |
+| 13 | `cargo test` covers core non-UI logic | Automated | full suite green. |
+| 14 | `cargo check` passes | Automated | part of the verification commands. |
 
 Offline behavior (the "Offline / Network Failure" section): a failed online
 search sets an offline state and an explicit offline search status without

@@ -1099,14 +1099,15 @@ mod tests {
         let (audio, _cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         // A non-search source is active, then a search lands (as a response would
-        // deliver it), so the previous source is remembered.
+        // deliver it), so the active Browse source is preserved over the search
+        // population.
         app.apply(Action::ShowSection(Section::Music));
         app.apply(Action::SetFocus(FocusPane::Search));
         app.apply(Action::SearchResults(SearchResults::empty()));
-        assert_eq!(app.active_source(), ListSource::Search);
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
 
         // Esc while the search strip is focused clears search end-to-end and
-        // restores the previous non-search source, handing focus to Stations.
+        // keeps the Browse source, handing focus to Stations.
         handle_key(
             key(KeyCode::Esc),
             &mut app,

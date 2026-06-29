@@ -234,6 +234,21 @@ source, replaces the station list, resets station selection safely, and moves
 focus to Stations. While Stations is focused, the same keys keep their current
 station-list behavior.
 
+When a successful Radio Browser search result population exists, Browse `All
+Stations`, sections, and categories filter that current search result set rather
+than the curated catalog: `All Stations` shows all current results, and section
+and category sources filter the full result population (always from the full
+population, not the already-filtered visible list). Category membership for
+Radio Browser stations is inferred from a small, conservative tag/name alias
+dictionary. When no search population exists, Browse keeps its curated fallback:
+`All Stations` shows the curated catalog and category sources show curated
+category stations. Browse rail labels stay stable in both modes; the
+search/status strip carries the active filter context (for example
+`filter: Jazz`). If a genre filter matches zero stations in the current search
+results, the Results pane shows a specific empty state such as `No Jazz results
+in current search` instead of silently falling back to curated stations.
+`Favorites` is never a search filter — it always shows persisted favorites.
+
 Favorites-only view is built from persisted `Settings::favorites`, so saved
 favorite stations are reachable even when absent from the current catalog/search
 view. Removing a favorite while the Favorites source is active immediately
@@ -243,7 +258,10 @@ falling back to All Stations.
 
 Search is also a `ListSource`, but it remembers the previous non-search source.
 Clearing search with `Esc` restores that previous source (for example Favorites
-or Lofi), with All Stations as the default previous source.
+or Lofi), with All Stations as the default previous source. Clearing search also
+drops the search result population so the preserved Browse source rebuilds from
+the curated catalog. A failed or offline search keeps the last successful search
+population available for filtering while the offline/error state is shown.
 
 ### Offline / Network Failure
 
@@ -548,4 +566,6 @@ tier, and built-in retry candidates stay visible
 - **Favorites and Browse filtering are now wired.** Earlier MIK-012 notes about
   missing favorites/category browse behavior are resolved: the Browse pane has a
   `Favorites` source for all saved favorites, and Music/Spoken section/category
-  entries apply their corresponding station filters.
+  entries apply their corresponding station filters. When a successful search
+  result population exists, those section/category sources filter the current
+  search results; otherwise they fall back to the curated catalog.

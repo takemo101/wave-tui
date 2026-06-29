@@ -144,6 +144,19 @@ Implications:
 - Clearing Search restores the previous non-search source rather than always
   forcing All Stations.
 
+Browse sources act as filters over the current Radio Browser search results when
+a successful search result population exists; otherwise they fall back to curated
+catalog sources. `All Stations` shows all current results, while section and
+category sources filter the full result population (category membership inferred
+from a conservative tag/name alias dictionary). Browse rail labels stay stable —
+`All Stations` is never renamed to "Search Results" — and the search/status strip
+carries the active filter context (for example `filter: Jazz`). A genre filter
+with zero matches in the current search shows a specific empty state such as
+`No Jazz results in current search` rather than silently reverting to curated
+stations. Clearing search preserves the active Browse source but rebuilds it from
+the curated catalog. `Favorites` is never a search filter; it always shows saved
+favorites.
+
 ### UX Design Deck Confirmation
 
 A follow-up UI/UX design deck confirmed the concrete visual direction for

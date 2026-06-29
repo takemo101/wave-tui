@@ -153,6 +153,15 @@ arrows, and press `Enter` to apply a source — that replaces the station list a
 hands focus back to it. The active source is marked with a filled dot, distinct
 from the Browse cursor.
 
+When you have search results, Browse sources filter those results: `All
+Stations` shows every result, and a section or category narrows them to matching
+stations (the search strip shows the active filter, e.g. `filter: Jazz`). With no
+search results, the same sources fall back to the curated catalog. Clearing
+search keeps your Browse selection but rebuilds it from the curated catalog. A
+genre with no matches in the current search shows a note like `No Jazz results in
+current search`. `Favorites` is never filtered by search — it always lists your
+saved stations.
+
 `Favorites` lists the stations you've saved with `f`, in the order you saved
 them, and stays reachable even when those stations are absent from the current
 catalog or search results. Removing a favorite with `f` while the Favorites view

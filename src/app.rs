@@ -14,7 +14,10 @@
 //! reducer pure and testable without a terminal, audio device, or network.
 
 use crate::audio::AudioEvent;
-use crate::catalog::{Catalog, Category, Section, SessionStationHealth, Stations};
+use crate::catalog::{
+    station_matches_category, station_matches_section, Catalog, Category, Section,
+    SessionStationHealth, Stations,
+};
 use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
@@ -240,6 +243,7 @@ pub struct App {
     catalog: Catalog,
     settings: Settings,
     health: SessionStationHealth,
+    search_population: Option<Stations>,
     visible: Stations,
     selected: usize,
     source: ListSource,
@@ -269,6 +273,7 @@ impl App {
             catalog,
             settings,
             health: SessionStationHealth::new(),
+            search_population: None,
             visible,
             selected: 0,
             source: ListSource::AllStations,
@@ -370,27 +375,58 @@ impl App {
 
     // --- list source -----------------------------------------------------
 
-    /// Apply a non-search source: record it as active and rebuild the visible
-    /// list, resetting/clamping selection safely.
+    /// Apply a source: record it as active and rebuild the visible list from the
+    /// current population, resetting/clamping selection safely.
     ///
-    /// `AllStations`, `Section`, and `Category` build from the catalog;
-    /// `Favorites` builds from persisted [`Settings::favorites`] so saved
-    /// stations stay reachable even when absent from the catalog/search view.
-    /// `Search` is never routed through here (it arrives via
-    /// [`Self::apply_search_results`]); applying it only clamps selection so the
-    /// bounds invariant holds.
+    /// When a successful search population exists, `AllStations`, `Section`, and
+    /// `Category` act as filters over that population. Without one, they keep the
+    /// curated catalog fallback. `Favorites` is always rebuilt from persisted
+    /// [`Settings::favorites`] and never scoped to search results.
     fn show_source(&mut self, source: ListSource) {
         self.source = source;
+        let stations = self.source_stations(source);
+        self.replace_visible(stations);
+    }
+
+    /// Build the station list for a source from either the search population or
+    /// curated fallback, depending on what the source represents.
+    fn source_stations(&self, source: ListSource) -> Stations {
         match source {
-            ListSource::AllStations => self.replace_visible(self.catalog.stations().ranked()),
-            ListSource::Section(section) => {
-                self.replace_visible(self.catalog.section_stations(section))
-            }
-            ListSource::Category(category) => {
-                self.replace_visible(self.catalog.category_stations(category))
-            }
-            ListSource::Favorites => self.replace_visible(self.favorite_stations()),
-            ListSource::Search => self.clamp_selection(),
+            ListSource::AllStations | ListSource::Search => self
+                .search_population
+                .clone()
+                .unwrap_or_else(|| self.catalog.stations().ranked()),
+            ListSource::Section(section) => self.section_source_stations(section),
+            ListSource::Category(category) => self.category_source_stations(category),
+            ListSource::Favorites => self.favorite_stations(),
+        }
+    }
+
+    /// Build a section source from the current search population when present,
+    /// otherwise from the curated catalog.
+    fn section_source_stations(&self, section: Section) -> Stations {
+        if let Some(population) = &self.search_population {
+            population
+                .iter()
+                .filter(|station| station_matches_section(station, section))
+                .cloned()
+                .collect()
+        } else {
+            self.catalog.section_stations(section)
+        }
+    }
+
+    /// Build a category source from the current search population when present,
+    /// otherwise from the curated catalog.
+    fn category_source_stations(&self, category: Category) -> Stations {
+        if let Some(population) = &self.search_population {
+            population
+                .iter()
+                .filter(|station| station_matches_category(station, category))
+                .cloned()
+                .collect()
+        } else {
+            self.catalog.category_stations(category)
         }
     }
 
@@ -402,20 +438,21 @@ impl App {
         self.settings.favorites.iter().cloned().collect()
     }
 
-    /// Restore the previous non-search source when search is cleared.
+    /// Clear the successful search population and rebuild the active Browse
+    /// source from curated data while preserving the selected Browse source.
     ///
-    /// `previous_source` is only ever set to a non-search source (see
-    /// [`Self::apply_search_results`]), so restoring it always lands on a real
-    /// catalog/favorites source rather than search results.
-    ///
-    /// Restoration only happens when the Search source is actually active.
-    /// Focusing the search strip with `/` does not enter the Search source until
-    /// results arrive, so clearing before any results land must leave the current
-    /// source untouched rather than revert to a stale `previous_source`.
+    /// If an older Search source is active, fall back to the remembered previous
+    /// non-search source. Focusing the search strip with `/` does not enter the
+    /// Search source, so clearing before any results land keeps the current
+    /// source untouched.
     fn clear_search(&mut self) {
-        if self.source.is_search() {
-            self.show_source(self.previous_source);
-        }
+        self.search_population = None;
+        let source = if self.source.is_search() {
+            self.previous_source
+        } else {
+            self.source
+        };
+        self.show_source(source);
     }
 
     // --- browse rail ------------------------------------------------------
@@ -588,22 +625,23 @@ impl App {
         }
     }
 
-    /// Replace the visible list with search results and reset selection.
+    /// Store a successful search population and rebuild the active Browse source
+    /// from it, preserving the active filter instead of switching to an anonymous
+    /// search-only source.
     ///
-    /// Entering the search source remembers the previous non-search source so
-    /// clearing search can restore it. Successive searches (e.g. one per
-    /// keystroke) must not overwrite that memory with `Search`, so it is only
-    /// captured on the transition into search.
-    ///
-    /// Receiving results means the network round-trip succeeded, so the offline
-    /// flag is cleared.
+    /// Older `Search` state is still handled defensively by restoring the
+    /// remembered previous non-search source before rebuilding. Receiving results
+    /// means the network round-trip succeeded, so the offline flag is cleared.
     fn apply_search_results(&mut self, results: SearchResults) {
-        if !self.source.is_search() {
-            self.previous_source = self.source;
-        }
-        self.source = ListSource::Search;
-        self.replace_visible(results.into_vec().into_iter().collect());
+        let stations: Stations = results.into_vec().into_iter().collect();
+        self.search_population = Some(stations);
         self.offline = false;
+        let source = if self.source.is_search() {
+            self.previous_source
+        } else {
+            self.source
+        };
+        self.show_source(source);
     }
 
     // --- queries (read-only, for UI/controller) -------------------------
@@ -672,6 +710,42 @@ impl App {
     /// The current search status shown in the search strip.
     pub fn search_status(&self) -> &SearchStatus {
         &self.search_status
+    }
+
+    /// Whether the app has a successful search result population available as
+    /// the Browse filtering source.
+    pub fn has_search_population(&self) -> bool {
+        self.search_population.is_some()
+    }
+
+    /// Label for the active Browse source when it is filtering search results.
+    pub fn active_filter_label(&self) -> Option<&'static str> {
+        if !self.has_search_population() {
+            return None;
+        }
+        match self.source {
+            ListSource::AllStations | ListSource::Section(_) | ListSource::Category(_) => {
+                Some(self.source.title())
+            }
+            ListSource::Favorites | ListSource::Search => None,
+        }
+    }
+
+    /// Specific empty-state copy for a zero-match Browse filter over search
+    /// results. `AllStations` and `Favorites` keep their existing generic states.
+    pub fn search_filter_empty_note(&self) -> Option<String> {
+        if !self.has_search_population() || !self.visible.is_empty() {
+            return None;
+        }
+        match self.source {
+            ListSource::Section(section) => {
+                Some(format!("No {} results in current search", section.title()))
+            }
+            ListSource::Category(category) => {
+                Some(format!("No {} results in current search", category.title()))
+            }
+            ListSource::AllStations | ListSource::Favorites | ListSource::Search => None,
+        }
     }
 
     /// The active theme name.
@@ -1219,15 +1293,15 @@ mod tests {
     }
 
     #[test]
-    fn searching_sets_search_source_and_remembers_previous() {
+    fn search_results_preserve_active_browse_source() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(Action::ShowSection(Section::Music));
         assert_eq!(app.active_source(), ListSource::Section(Section::Music));
 
-        app.apply(Action::SearchResults(SearchResults::from_stations([
-            station("x", "https://example.com/x.mp3"),
-        ])));
-        assert_eq!(app.active_source(), ListSource::Search);
+        let mut x = station("x", "https://example.com/x.mp3");
+        x.tags = vec!["jazz".to_string()];
+        app.apply(Action::SearchResults(SearchResults::from_stations([x])));
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
         assert_eq!(visible_ids(&app), vec!["x"]);
     }
 
@@ -1236,10 +1310,10 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(Action::ShowSection(Section::Music));
 
-        app.apply(Action::SearchResults(SearchResults::from_stations([
-            station("x", "https://example.com/x.mp3"),
-        ])));
-        assert_eq!(app.active_source(), ListSource::Search);
+        let mut x = station("x", "https://example.com/x.mp3");
+        x.tags = vec!["jazz".to_string()];
+        app.apply(Action::SearchResults(SearchResults::from_stations([x])));
+        assert_eq!(app.active_source(), ListSource::Section(Section::Music));
 
         app.apply(Action::ClearSearch);
         assert_eq!(app.active_source(), ListSource::Section(Section::Music));
@@ -1298,6 +1372,135 @@ mod tests {
 
         app.apply(Action::ClearSearch);
         assert_eq!(app.active_source(), ListSource::Category(Category::Jazz));
+    }
+
+    #[test]
+    fn browse_all_stations_uses_search_population_when_available() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            station("search-a", "https://example.com/search-a.mp3"),
+            station("search-b", "https://example.com/search-b.mp3"),
+        ])));
+
+        assert_eq!(app.active_source(), ListSource::AllStations);
+        assert_eq!(visible_ids(&app), vec!["search-a", "search-b"]);
+
+        app.apply(Action::ShowCatalog);
+        assert_eq!(visible_ids(&app), vec!["search-a", "search-b"]);
+    }
+
+    #[test]
+    fn browse_category_filters_full_search_population_not_current_visible() {
+        let mut jazz = station("jazz", "https://example.com/jazz.mp3");
+        jazz.tags = vec!["jazz".to_string()];
+        let mut house = station("house", "https://example.com/house.mp3");
+        house.tags = vec!["house".to_string()];
+
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            jazz.clone(),
+            house.clone(),
+        ])));
+
+        app.apply(Action::ShowCategory(Category::Jazz));
+        assert_eq!(visible_ids(&app), vec!["jazz"]);
+
+        app.apply(Action::ShowCategory(Category::Electronic));
+        assert_eq!(visible_ids(&app), vec!["house"]);
+    }
+
+    #[test]
+    fn new_search_results_preserve_active_browse_filter() {
+        let mut first_jazz = station("first-jazz", "https://example.com/first-jazz.mp3");
+        first_jazz.tags = vec!["jazz".to_string()];
+        let mut first_house = station("first-house", "https://example.com/first-house.mp3");
+        first_house.tags = vec!["house".to_string()];
+
+        let mut second_jazz = station("second-jazz", "https://example.com/second-jazz.mp3");
+        second_jazz.tags = vec!["smooth jazz".to_string()];
+        let mut second_house = station("second-house", "https://example.com/second-house.mp3");
+        second_house.tags = vec!["techno".to_string()];
+
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            first_jazz,
+            first_house,
+        ])));
+        app.apply(Action::ShowCategory(Category::Jazz));
+
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            second_jazz,
+            second_house,
+        ])));
+
+        assert_eq!(app.active_source(), ListSource::Category(Category::Jazz));
+        assert_eq!(visible_ids(&app), vec!["second-jazz"]);
+    }
+
+    #[test]
+    fn clearing_search_preserves_browse_source_and_rebuilds_from_curated() {
+        let mut search_jazz = station("search-jazz", "https://example.com/search-jazz.mp3");
+        search_jazz.tags = vec!["jazz".to_string()];
+
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            search_jazz,
+        ])));
+        app.apply(Action::ShowCategory(Category::Jazz));
+        assert_eq!(visible_ids(&app), vec!["search-jazz"]);
+
+        app.apply(Action::ClearSearch);
+
+        let curated_jazz = app
+            .catalog
+            .category_stations(Category::Jazz)
+            .iter()
+            .map(|station| station.id.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(app.active_source(), ListSource::Category(Category::Jazz));
+        assert_eq!(visible_ids(&app), curated_jazz);
+    }
+
+    #[test]
+    fn favorites_source_ignores_search_population() {
+        let favorite = station("fav-only", "https://example.com/fav-only.mp3");
+        let settings = Settings {
+            favorites: Favorites::from_stations([favorite.clone()]),
+            ..Settings::default()
+        };
+        let mut app = App::new(settings, Catalog::curated());
+
+        let mut search_jazz = station("search-jazz", "https://example.com/search-jazz.mp3");
+        search_jazz.tags = vec!["jazz".to_string()];
+        app.apply(Action::SearchResults(SearchResults::from_stations([
+            search_jazz,
+        ])));
+        apply_favorites_source(&mut app);
+
+        assert_eq!(app.active_source(), ListSource::Favorites);
+        assert_eq!(visible_ids(&app), vec!["fav-only"]);
+    }
+
+    #[test]
+    fn search_filter_display_helpers_describe_active_search_filter_empty_state() {
+        let mut house = station("house", "https://example.com/house.mp3");
+        house.tags = vec!["house".to_string()];
+
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        assert!(!app.has_search_population());
+        assert_eq!(app.active_filter_label(), None);
+        assert_eq!(app.search_filter_empty_note(), None);
+
+        app.apply(Action::SearchResults(SearchResults::from_stations([house])));
+        assert!(app.has_search_population());
+        assert_eq!(app.active_filter_label(), Some("All Stations"));
+
+        app.apply(Action::ShowCategory(Category::Jazz));
+        assert_eq!(app.active_filter_label(), Some("Jazz"));
+        assert_eq!(
+            app.search_filter_empty_note(),
+            Some("No Jazz results in current search".to_string())
+        );
     }
 
     #[test]
@@ -1582,7 +1785,7 @@ mod tests {
         app.apply(Action::SearchResults(SearchResults::from_stations([
             station("x", "https://example.com/x.mp3"),
         ])));
-        assert_eq!(app.active_source(), ListSource::Search);
+        assert_eq!(app.active_source(), ListSource::Favorites);
 
         app.apply(Action::ClearSearch);
         assert_eq!(app.active_source(), ListSource::Favorites);

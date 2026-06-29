@@ -43,6 +43,8 @@ Implications:
 - Search input, loading/cache state, result count, and offline/error state should
   be prominent.
 - Ranked station results should occupy the largest region.
+- Results should use a responsive table-like presentation on wide panes when
+  width allows, then collapse metadata before falling back to compact list rows.
 - Music and Spoken/News categories should remain visible as shortcuts.
 - Now Playing and the FFT visualizer should remain visible while searching.
 
@@ -149,7 +151,9 @@ A follow-up UI/UX design deck confirmed the concrete visual direction for
 
 - **Wide shell: Quiet Source Rail** — keep Browse as a quiet left rail, ranked
   Results as the central workspace, and Now Playing/visualizer on the right.
-  This preserves the Search Console direction while making Browse actionable.
+  Results may render as a station-comparison table at wide widths, collapsing
+  metadata as space narrows. This preserves the Search Console direction while
+  making Browse actionable.
 - **Browse/Favorites: Source Picker + Focus Handoff** — Browse is a source
   picker; applying a source with `Enter` moves focus to Stations so the next
   action can be station selection or playback. Favorites uses the same source

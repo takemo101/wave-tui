@@ -12,14 +12,21 @@ Add a quiet startup and shutdown splash to `wave-tui`: a short centered logo/mes
 
 ### Startup Splash
 
-When the app enters the alternate screen, show a short centered splash before the main UI appears:
+When the app enters the alternate screen, show a short centered splash before the main UI appears. The startup logo should read as pixel art rather than plain text: a legible five-row `WAVE` mark rendered with terminal block glyphs, followed by the small `wave-tui` label and message. The logo is built from fixed-width letter cells so every row shares one display width and the centered block stays column-aligned; the renderer must not rely on per-line centering of ragged rows. Keep generous vertical spacing (blank lines) between the logo, label, and message, and one blank line below the message, so the splash never feels cramped. The startup splash is a calm, static logo card: it does not render the animated wave line (that animation belongs to the shutdown farewell).
 
 ```text
+█   █    ███    █   █   █████
+█   █   █   █   █   █   █
+█ █ █   █████   █   █   ████
+██ ██   █   █    █ █    █
+█   █   █   █     █     █████
+
 wave-tui
+
 settling into the signal
 ```
 
-Below the message, render a small horizontal wave animation for about 1.0 to 1.2 seconds. Any key press should skip the remaining splash and continue into the normal UI.
+Hold the static logo card for about 1.0 to 1.2 seconds. Any key press should skip the remaining splash and continue into the normal UI.
 
 ### Shutdown Splash
 
@@ -40,7 +47,8 @@ Low-power mode should keep the same visual language but reduce work: fewer frame
 
 - Use the active theme for colors.
 - Keep palette knowledge centralized in existing theme data; do not hard-code ad hoc `Color::*` palettes in the splash renderer.
-- Use simple wave glyphs rather than heavy blocks.
+- Use terminal block glyphs only for the compact pixel-art startup logo.
+- Use simple wave glyphs for the animated wave line rather than heavy bars.
 - Keep animation non-audio-reactive; it is a lifecycle transition, not a playback visualizer.
 - Do not add a new `VisualizerMode`.
 
@@ -91,9 +99,13 @@ Do not change:
 
 Prefer pure rendering tests for `src/ui/splash.rs`:
 
-- startup splash contains `wave-tui` and `settling into the signal`;
+- startup splash contains the pixel-art `WAVE` logo, `wave-tui`, and `settling into the signal`;
+- the logo rows share one left edge in the rendered buffer (no staggered/per-line-centered alignment) and form a contiguous block;
+- blank rows separate the logo, label, and message so the splash is not cramped;
+- the startup splash renders no wave glyphs and is identical across ticks (static logo card);
+- the startup splash keeps a blank line below `settling into the signal` for bottom breathing room;
 - shutdown splash contains `thanks for listening` and `see you next wave`;
-- wave frames vary by tick while staying within the target area;
+- shutdown wave frames vary by tick while staying within the target area;
 - renderer uses theme-provided styles and does not depend on app state;
 - low-power timing configuration is shorter or lower-frame than normal timing.
 

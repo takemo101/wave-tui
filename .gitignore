@@ -5,6 +5,9 @@
 .mcp.json
 .claude/
 .pi/
+.omc/
+.superpowers/
+.mikan/
 
 # asem runtime state (token-bearing files; never commit)
 .asem/sessions/

@@ -39,7 +39,7 @@
       }
 
       html {
-        scroll-behavior: smooth;
+        scroll-behavior: auto;
       }
 
       body {
@@ -47,9 +47,8 @@
         font-family: var(--sans);
         color: var(--text);
         background:
-          radial-gradient(circle at 10% -10%, rgba(34, 211, 238, 0.16), transparent 34rem),
-          radial-gradient(circle at 90% 0%, rgba(251, 113, 133, 0.12), transparent 30rem),
-          linear-gradient(180deg, #020617 0%, #050a14 48%, #020617 100%);
+          radial-gradient(circle at 12% -8%, rgba(34, 211, 238, 0.08), transparent 32rem),
+          linear-gradient(180deg, #020617 0%, #050a14 54%, #020617 100%);
         line-height: 1.65;
         -webkit-font-smoothing: antialiased;
       }
@@ -68,7 +67,7 @@
         inset: 0;
         z-index: -1;
         pointer-events: none;
-        opacity: 0.28;
+        opacity: 0.16;
         background-image:
           linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
           linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
@@ -138,10 +137,10 @@
 
       .hero {
         display: grid;
-        grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
-        gap: clamp(2rem, 5vw, 4rem);
+        grid-template-columns: minmax(0, 1.12fr) minmax(320px, 0.88fr);
+        gap: clamp(2rem, 5vw, 3.4rem);
         align-items: center;
-        padding: 6.2rem 0 4rem;
+        padding: 5.2rem 0 3.4rem;
       }
 
       .eyebrow {
@@ -167,15 +166,12 @@
 
       h1 {
         margin-top: 1.2rem;
-        font-size: clamp(3rem, 7.5vw, 6.8rem);
-        letter-spacing: -0.075em;
+        font-size: clamp(2.8rem, 6vw, 5.4rem);
+        letter-spacing: -0.065em;
       }
 
       .gradient-text {
-        background: linear-gradient(135deg, var(--cyan), var(--indigo), var(--rose));
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
+        color: var(--cyan);
       }
 
       .hero-copy {
@@ -220,8 +216,8 @@
       .btn-primary {
         border-color: transparent;
         color: #04111f;
-        background: linear-gradient(135deg, var(--cyan), var(--green));
-        box-shadow: 0 14px 38px rgba(34, 211, 238, 0.18);
+        background: linear-gradient(135deg, #7dd3fc, #a7f3d0);
+        box-shadow: 0 10px 28px rgba(34, 211, 238, 0.12);
       }
 
       .hero-card,
@@ -229,34 +225,23 @@
       .feature-card,
       .step-card {
         border: 1px solid var(--border);
-        border-radius: 24px;
+        border-radius: 18px;
         background: var(--panel);
-        box-shadow: var(--shadow);
+        box-shadow: 0 18px 46px rgba(0, 0, 0, 0.28);
       }
 
       .hero-card {
         position: relative;
         overflow: hidden;
-        padding: 1rem;
-      }
-
-      .hero-card::before {
-        content: "";
-        position: absolute;
-        inset: -35% -20% auto auto;
-        width: 280px;
-        height: 280px;
-        border-radius: 50%;
-        background: rgba(34, 211, 238, 0.14);
-        filter: blur(34px);
+        padding: 0.8rem;
       }
 
       .terminal {
         position: relative;
         overflow: hidden;
         border: 1px solid rgba(148, 163, 184, 0.2);
-        border-radius: 18px;
-        background: rgba(2, 6, 23, 0.82);
+        border-radius: 14px;
+        background: rgba(2, 6, 23, 0.86);
       }
 
       .terminal-top {
@@ -270,33 +255,10 @@
         font-size: 0.78rem;
       }
 
-      .dots {
-        display: flex;
-        gap: 0.42rem;
-      }
-
-      .dots span {
-        width: 10px;
-        height: 10px;
-        border-radius: 999px;
-      }
-
-      .dots span:nth-child(1) {
-        background: #fb7185;
-      }
-
-      .dots span:nth-child(2) {
-        background: #fde68a;
-      }
-
-      .dots span:nth-child(3) {
-        background: #86efac;
-      }
-
       .terminal-body {
-        padding: 1.2rem;
+        padding: 1rem;
         font-family: var(--mono);
-        font-size: 0.88rem;
+        font-size: 0.86rem;
       }
 
       .prompt {
@@ -308,62 +270,28 @@
       }
 
       .status-line {
-        margin-top: 1rem;
+        margin-top: 0.85rem;
         color: var(--muted);
       }
 
-      .now-playing {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 1rem;
-        align-items: center;
-        margin-top: 1rem;
-        padding: 0.9rem;
-        border: 1px solid rgba(34, 211, 238, 0.18);
-        border-radius: 14px;
-        background: rgba(15, 23, 42, 0.72);
+      .tui-screen {
+        margin: 1rem 0 0;
+        padding: 0;
+        border: 0;
+        color: #cbd5e1;
+        background: transparent;
+        font-family: var(--mono);
+        font-size: clamp(0.62rem, 0.86vw, 0.74rem);
+        line-height: 1.42;
+        white-space: pre;
       }
 
-      .now-playing strong {
-        display: block;
-        color: var(--text-bright);
+      .tui-accent {
+        color: var(--cyan);
       }
 
-      .now-playing span {
-        color: var(--muted);
-        font-size: 0.82rem;
-      }
-
-      .spectrum {
-        display: flex;
-        align-items: end;
-        gap: 5px;
-        height: 92px;
-        margin-top: 1.2rem;
-        padding: 0 0.15rem;
-      }
-
-      .spectrum i {
-        width: 100%;
-        min-width: 5px;
-        border-radius: 999px 999px 4px 4px;
-        background: linear-gradient(180deg, var(--cyan), var(--indigo) 62%, var(--rose));
-        box-shadow: 0 0 18px rgba(34, 211, 238, 0.16);
-        animation: pulse 2.6s ease-in-out infinite;
-        animation-delay: calc(var(--i) * -0.13s);
-      }
-
-      @keyframes pulse {
-        0%,
-        100% {
-          transform: scaleY(0.88);
-          opacity: 0.7;
-        }
-
-        50% {
-          transform: scaleY(1.08);
-          opacity: 1;
-        }
+      .tui-muted {
+        color: var(--dim);
       }
 
       section {
@@ -578,10 +506,6 @@
         html {
           scroll-behavior: auto;
         }
-
-        .spectrum i {
-          animation: none;
-        }
       }
     </style>
   </head>
@@ -608,9 +532,9 @@
       <section class="container hero">
         <div>
           <span class="eyebrow">quiet terminal radio for work sessions</span>
-          <h1>Stay focused with <span class="gradient-text">radio</span> in your terminal.</h1>
+          <h1>Quiet <span class="gradient-text">radio</span> for your terminal.</h1>
           <p class="hero-copy">
-            `wave-tui` is a small Rust TUI internet radio player for work-session
+            wave-tui is a small Rust TUI internet radio player for work-session
             background music: native playback, real FFT visuals, favorites,
             themes, and Radio Browser search in one calm terminal pane.
           </p>
@@ -624,33 +548,20 @@
         <div class="hero-card" aria-label="Terminal preview">
           <div class="terminal">
             <div class="terminal-top">
-              <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
-              <span>~/radio · wave-tui</span>
+              <span>wave-tui preview</span>
+              <span>minimal</span>
             </div>
             <div class="terminal-body">
               <div><span class="prompt">$</span> <span class="command">wave-tui --theme minimal</span></div>
-              <div class="status-line">Search Console · Radio Browser · Playing</div>
-              <div class="now-playing">
-                <div>
-                  <strong>Dance Wave!</strong>
-                  <span>StreamTitle: late-night focus mix</span>
-                </div>
-                <span class="kbd">vol 54%</span>
-              </div>
-              <div class="spectrum" aria-hidden="true">
-                <i style="--i: 1; height: 24%"></i>
-                <i style="--i: 2; height: 52%"></i>
-                <i style="--i: 3; height: 38%"></i>
-                <i style="--i: 4; height: 78%"></i>
-                <i style="--i: 5; height: 64%"></i>
-                <i style="--i: 6; height: 44%"></i>
-                <i style="--i: 7; height: 88%"></i>
-                <i style="--i: 8; height: 58%"></i>
-                <i style="--i: 9; height: 35%"></i>
-                <i style="--i: 10; height: 72%"></i>
-                <i style="--i: 11; height: 48%"></i>
-                <i style="--i: 12; height: 82%"></i>
-              </div>
+              <div class="status-line">calm background radio · real audio visualizer</div>
+              <pre class="tui-screen" aria-label="wave-tui terminal preview"><span class="tui-muted">┌ Browse ───────┬ Stations ──────────┬ Now Playing ───┐</span>
+│ ● All         │  SomaFM Groove     │ Minimal FM      │
+│   Favorites   │  Radio Paradise    │ vol 54%         │
+│   Music       │  KEXP              │ focus mix       │
+│   Spoken      │  NTS Radio         │                 │
+<span class="tui-muted">├───────────────┴────────────────────┴────────────────┤</span>
+│ <span class="tui-accent">▁▃▂▅▆▃▇▅▂▆▃▅</span>  SpectrumStack · real samples       │
+<span class="tui-muted">└─────────────────────────────────────────────────────┘</span></pre>
             </div>
           </div>
         </div>

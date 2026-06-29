@@ -12,7 +12,7 @@ Add a quiet startup and shutdown splash to `wave-tui`: a short centered logo/mes
 
 ### Startup Splash
 
-When the app enters the alternate screen, show a short centered splash before the main UI appears. The startup logo should read as pixel art rather than plain text: a legible five-row `WAVE` mark rendered with terminal block glyphs, followed by the small `wave-tui v{package version}` label and message. The label uses Cargo package metadata at compile time (for example, `wave-tui v0.1.0`) so the version is not duplicated manually. The logo is built from fixed-width letter cells so every row shares one display width and the centered block stays column-aligned; the renderer must not rely on per-line centering of ragged rows. Keep generous vertical spacing (blank lines) between the logo, label, and message, and one blank line below the message, so the splash never feels cramped. The startup splash is a calm, static logo card: it does not render the animated wave line (that animation belongs to the shutdown farewell).
+When the app enters the alternate screen, show a short centered splash before the main UI appears. The startup logo should read as pixel art rather than plain text: a legible five-row `WAVE` mark rendered with terminal block glyphs, followed by the small `wave-tui v{package version}` label and message. The label uses Cargo package metadata at compile time (for example, `wave-tui v0.1.0`) so the version is not duplicated manually. The logo is built from fixed-width letter cells so every row shares one display width and the centered block stays column-aligned; the renderer must not rely on per-line centering of ragged rows. Keep generous vertical spacing (blank lines) between the logo, label, and message, and one blank line below the message, so the splash never feels cramped. The startup splash animates only the logo with a short left-to-right reveal; it does not render the animated wave line (that animation belongs to the shutdown farewell).
 
 ```text
 █   █    ███    █   █   █████
@@ -26,7 +26,7 @@ wave-tui v0.1.0
 settling into the signal
 ```
 
-Hold the static logo card for about 1.0 to 1.2 seconds. Any key press should skip the remaining splash and continue into the normal UI.
+Run the logo reveal over about 1.0 to 1.2 seconds. Any key press should skip the remaining splash and continue into the normal UI.
 
 ### Shutdown Splash
 
@@ -102,7 +102,7 @@ Prefer pure rendering tests for `src/ui/splash.rs`:
 - startup splash contains the pixel-art `WAVE` logo, the versioned `wave-tui v{package version}` label, and `settling into the signal`;
 - the logo rows share one left edge in the rendered buffer (no staggered/per-line-centered alignment) and form a contiguous block;
 - blank rows separate the logo, label, and message so the splash is not cramped;
-- the startup splash renders no wave glyphs and is identical across ticks (static logo card);
+- the startup logo reveals from left to right across ticks, while startup still renders no wave glyphs;
 - the startup splash keeps a blank line below `settling into the signal` for bottom breathing room;
 - shutdown splash contains `thanks for listening` and `see you next wave`;
 - shutdown wave frames vary by tick while staying within the target area;

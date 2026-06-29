@@ -24,7 +24,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap,
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, StatefulWidget,
+        Table, TableState, Widget, Wrap,
     },
     Frame,
 };
@@ -375,20 +376,150 @@ fn render_station_list(
         return;
     }
 
-    let items: Vec<ListItem> = app
+    let table_allowed = title == "Results" && !compact;
+    match station_list_presentation(area.width, table_allowed) {
+        StationListPresentation::FullTable => {
+            render_station_table(app, theme, area, buf, block, StationTableDensity::Full);
+        }
+        StationListPresentation::CompactTable => {
+            render_station_table(app, theme, area, buf, block, StationTableDensity::Compact);
+        }
+        StationListPresentation::List => {
+            let items: Vec<ListItem> = app
+                .visible()
+                .iter()
+                .map(|station| station_item(app, theme, station, compact))
+                .collect();
+
+            let list = List::new(items)
+                .block(block)
+                .highlight_symbol("▶ ")
+                .highlight_style(theme.selection_style());
+
+            let mut state = ListState::default();
+            state.select(Some(app.selected_index()));
+            StatefulWidget::render(list, area, buf, &mut state);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StationListPresentation {
+    FullTable,
+    CompactTable,
+    List,
+}
+
+fn station_list_presentation(width: u16, table_allowed: bool) -> StationListPresentation {
+    if !table_allowed || width < 48 {
+        StationListPresentation::List
+    } else if width < 68 {
+        StationListPresentation::CompactTable
+    } else {
+        StationListPresentation::FullTable
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StationTableDensity {
+    Full,
+    Compact,
+}
+
+fn render_station_table(
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    buf: &mut Buffer,
+    block: Block,
+    density: StationTableDensity,
+) {
+    let header_style = Style::default()
+        .fg(theme.muted)
+        .add_modifier(Modifier::BOLD);
+    let header = match density {
+        StationTableDensity::Full => Row::new(vec!["", "Station", "Codec", "Rate", "Locale"]),
+        StationTableDensity::Compact => Row::new(vec!["", "Station", "Meta"]),
+    }
+    .style(header_style);
+
+    let rows = app
         .visible()
         .iter()
-        .map(|station| station_item(app, theme, station, compact))
-        .collect();
+        .enumerate()
+        .map(|(index, station)| station_table_row(app, theme, station, index, density));
 
-    let list = List::new(items)
+    let widths: Vec<Constraint> = match density {
+        StationTableDensity::Full => vec![
+            Constraint::Length(3),
+            Constraint::Min(18),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Min(8),
+        ],
+        StationTableDensity::Compact => vec![
+            Constraint::Length(3),
+            Constraint::Min(18),
+            Constraint::Length(16),
+        ],
+    };
+
+    let table = Table::new(rows, widths)
+        .header(header)
         .block(block)
-        .highlight_symbol("▶ ")
-        .highlight_style(theme.selection_style());
+        .row_highlight_style(theme.selection_style());
 
-    let mut state = ListState::default();
+    let mut state = TableState::default();
     state.select(Some(app.selected_index()));
-    StatefulWidget::render(list, area, buf, &mut state);
+    StatefulWidget::render(table, area, buf, &mut state);
+}
+
+fn station_table_row<'a>(
+    app: &App,
+    theme: &Theme,
+    station: &Station,
+    index: usize,
+    density: StationTableDensity,
+) -> Row<'a> {
+    let favorite = app.is_favorite(station);
+    let selected = index == app.selected_index();
+    let failed = app.is_failed(&station.id);
+
+    let marker = match (selected, favorite) {
+        (true, true) => "▶★",
+        (true, false) => "▶ ",
+        (false, true) => " ★",
+        (false, false) => "  ",
+    };
+    let station_name = if failed {
+        format!("{} ✗", station.name.as_str())
+    } else {
+        station.name.as_str().to_string()
+    };
+    let name_style = if failed {
+        Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::CROSSED_OUT)
+    } else {
+        Style::default().fg(theme.foreground)
+    };
+
+    match density {
+        StationTableDensity::Full => Row::new(vec![
+            Cell::from(marker.to_string()).style(Style::default().fg(theme.accent)),
+            Cell::from(station_name).style(name_style),
+            Cell::from(codec_label(&station.codec).to_string())
+                .style(Style::default().fg(theme.muted)),
+            Cell::from(station_bitrate(station)).style(Style::default().fg(theme.muted)),
+            Cell::from(station_location(station).unwrap_or_else(|| "—".to_string()))
+                .style(Style::default().fg(theme.muted)),
+        ]),
+        StationTableDensity::Compact => Row::new(vec![
+            Cell::from(marker.to_string()).style(Style::default().fg(theme.accent)),
+            Cell::from(station_name).style(name_style),
+            Cell::from(station_table_meta(station)).style(Style::default().fg(theme.muted)),
+        ]),
+    }
 }
 
 /// Build one station row: favorite star, name (dimmed if failed), failed mark,
@@ -682,6 +813,20 @@ fn station_meta(station: &Station) -> String {
     }
 }
 
+fn station_bitrate(station: &Station) -> String {
+    station
+        .bitrate
+        .map(|bitrate| format!("{}k", bitrate.get()))
+        .unwrap_or_else(|| "—".to_string())
+}
+
+fn station_table_meta(station: &Station) -> String {
+    match station_location(station) {
+        Some(location) => format!("{} · {}", station_meta(station), location),
+        None => station_meta(station),
+    }
+}
+
 /// Country/language metadata line, when present.
 fn station_location(station: &Station) -> Option<String> {
     match (&station.country, &station.language) {
@@ -782,9 +927,119 @@ mod tests {
         buf
     }
 
+    /// Render only the Results/Stations pane into a standalone buffer so width
+    /// breakpoints can be asserted without depending on full-layout columns.
+    fn render_station_list_buffer(app: &App, width: u16, height: u16, compact: bool) -> Buffer {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        let theme = app.theme().theme();
+        render_station_list(app, &theme, area, &mut buf, "Results", compact);
+        buf
+    }
+
     /// The buffer line (relative row) that contains `needle`, if any.
     fn line_with(text: &str, needle: &str) -> Option<usize> {
         text.lines().position(|line| line.contains(needle))
+    }
+
+    #[test]
+    fn wide_results_use_full_table_when_pane_is_wide_enough() {
+        let app = base_app();
+        let text = buffer_text(&render_station_list_buffer(&app, 76, 12, false));
+
+        assert!(text.contains("Station"), "station header missing: {text}");
+        assert!(text.contains("Codec"), "codec header missing: {text}");
+        assert!(text.contains("Rate"), "rate header missing: {text}");
+        assert!(text.contains("Locale"), "locale header missing: {text}");
+        assert!(
+            text.contains("Chillhop Radio"),
+            "station row missing: {text}"
+        );
+        assert!(text.contains("mp3"), "codec cell missing: {text}");
+        assert!(text.contains("320k"), "bitrate cell missing: {text}");
+        assert!(text.contains("Germany"), "locale cell missing: {text}");
+    }
+
+    #[test]
+    fn wide_results_collapse_to_compact_table_at_intermediate_width() {
+        let app = base_app();
+        let text = buffer_text(&render_station_list_buffer(&app, 56, 12, false));
+
+        assert!(text.contains("Station"), "station header missing: {text}");
+        assert!(text.contains("Meta"), "meta header missing: {text}");
+        assert!(
+            text.contains("Chillhop Radio"),
+            "station row missing: {text}"
+        );
+        assert!(text.contains("mp3 · 320k"), "compact meta missing: {text}");
+        assert!(
+            !text.contains("Codec"),
+            "full codec header should collapse: {text}"
+        );
+        assert!(
+            !text.contains("Locale"),
+            "full locale header should collapse: {text}"
+        );
+    }
+
+    #[test]
+    fn narrow_results_fall_back_to_current_list_row() {
+        let app = base_app();
+        let text = buffer_text(&render_station_list_buffer(&app, 42, 12, false));
+
+        assert!(
+            text.contains("Chillhop Radio"),
+            "station row missing: {text}"
+        );
+        assert!(text.contains("mp3 · 320k"), "list metadata missing: {text}");
+        assert!(
+            !text.contains("Station"),
+            "narrow fallback should not render header: {text}"
+        );
+        assert!(
+            !text.contains("Meta"),
+            "narrow fallback should not render header: {text}"
+        );
+    }
+
+    #[test]
+    fn results_table_preserves_selection_favorite_and_failed_markers() {
+        let mut app = base_app();
+        app.apply(Action::ToggleFavorite);
+        let other = app.visible().as_slice()[1].id.clone();
+        app.apply(Action::Audio(AudioEvent::Failed {
+            station: other,
+            message: "x".to_string(),
+        }));
+
+        let text = buffer_text(&render_station_list_buffer(&app, 76, 12, false));
+
+        assert!(text.contains('★'), "favorite marker missing: {text}");
+        assert!(text.contains('✗'), "failed marker missing: {text}");
+        assert!(text.contains('▶'), "selection marker missing: {text}");
+    }
+
+    #[test]
+    fn medium_and_compact_station_lists_keep_plain_rows() {
+        let app = base_app();
+        let medium = buffer_text(&render_buffer(&app, 100, 24));
+        let compact = buffer_text(&render_buffer(&app, 70, 16));
+
+        assert!(medium.contains("Stations"));
+        assert!(medium.contains("Chillhop Radio"));
+        assert!(
+            !medium.contains("Codec"),
+            "medium should keep compact list rows: {medium}"
+        );
+        assert!(
+            !medium.contains("Meta"),
+            "medium should keep compact list rows: {medium}"
+        );
+        assert!(compact.contains("Chillhop Radio"));
+        assert!(
+            !compact.contains("Meta"),
+            "compact should keep compact list rows: {compact}"
+        );
     }
 
     #[test]

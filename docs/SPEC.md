@@ -281,12 +281,16 @@ Recommended structure:
 
 - top: search input/status strip with debounce/cache/loading state
 - main-left/center: online search results and station list as the largest region
+  - when width allows, Results render as a table-like station comparison list
+    with station, codec, bitrate, and locale columns
+  - as the pane narrows, metadata collapses before falling back to compact list rows
 - side: section/category shortcuts for Music and Spoken/News
 - right: Now Playing, Spectrum Stack visualizer, transport/status
 - footer: key hints and network/offline state
 
-Wide mode should feel like a fast radio discovery console: type, see ranked
-results, play/favorite, and keep the current stream visible.
+Wide mode should feel like a fast radio discovery console: type, scan ranked
+results in a responsive table when space allows, play/favorite, and keep the
+current stream visible.
 
 #### Medium: Split Mini
 

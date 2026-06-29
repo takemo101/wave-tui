@@ -452,6 +452,50 @@
         line-height: 1.55;
       }
 
+      .command-block {
+        position: relative;
+        margin-top: 1rem;
+      }
+
+      .command-block pre {
+        margin: 0;
+        padding-right: 5.2rem;
+      }
+
+      .copy-command {
+        position: absolute;
+        top: 0.7rem;
+        right: 0.7rem;
+        z-index: 1;
+        border: 1px solid rgba(34, 211, 238, 0.3);
+        border-radius: 999px;
+        color: var(--text-bright);
+        background: rgba(15, 23, 42, 0.86);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        font-weight: 800;
+        padding: 0.38rem 0.62rem;
+        transition:
+          border-color 0.2s ease,
+          color 0.2s ease,
+          transform 0.2s ease;
+      }
+
+      .copy-command:hover,
+      .copy-command:focus-visible {
+        border-color: rgba(34, 211, 238, 0.75);
+        color: var(--cyan);
+        outline: none;
+        transform: translateY(-1px);
+      }
+
+      .copy-command.copied {
+        border-color: rgba(52, 211, 153, 0.78);
+        color: var(--green);
+      }
+
       code {
         font-family: var(--mono);
       }
@@ -759,17 +803,47 @@
               Install the latest GitHub Release to
               <code>~/.local/bin/wave-tui</code>.
             </p>
-            <pre><code>curl -fsSL https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh | sh</code></pre>
+            <div class="command-block" data-copy-command>
+              <button
+                class="copy-command"
+                type="button"
+                data-copy-button
+                aria-label="Copy latest install command"
+              >
+                Copy
+              </button>
+              <pre><code>curl -fsSL https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh | sh</code></pre>
+            </div>
             <p>Install a specific tag or custom directory:</p>
-            <pre><code>curl -fsSL https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh | VERSION=v0.1.0 sh
+            <div class="command-block" data-copy-command>
+              <button
+                class="copy-command"
+                type="button"
+                data-copy-button
+                aria-label="Copy custom install commands"
+              >
+                Copy
+              </button>
+              <pre><code>curl -fsSL https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh | VERSION=v0.1.0 sh
 curl -fsSL https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh | INSTALL_DIR=/usr/local/bin sh</code></pre>
+            </div>
           </article>
           <article class="panel">
             <h3>Build from source</h3>
             <p>Use Cargo directly from a clone or from GitHub.</p>
-            <pre><code>cargo run --release
+            <div class="command-block" data-copy-command>
+              <button
+                class="copy-command"
+                type="button"
+                data-copy-button
+                aria-label="Copy Cargo install commands"
+              >
+                Copy
+              </button>
+              <pre><code>cargo run --release
 cargo install --path .
 cargo install --git https://github.com/takemo101/wave-tui</code></pre>
+            </div>
             <table class="mini-table">
               <thead>
                 <tr>
@@ -969,5 +1043,55 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
         platform.
       </p>
     </footer>
+
+    <script>
+      (() => {
+        const copyWithFallback = (text) => {
+          const textarea = document.createElement("textarea");
+          textarea.value = text;
+          textarea.setAttribute("readonly", "");
+          textarea.style.position = "fixed";
+          textarea.style.top = "-9999px";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          textarea.remove();
+        };
+
+        const copyText = async (text) => {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return;
+          }
+          copyWithFallback(text);
+        };
+
+        document.querySelectorAll("[data-copy-command]").forEach((block) => {
+          const button = block.querySelector("[data-copy-button]");
+          const code = block.querySelector("code");
+          if (!button || !code) {
+            return;
+          }
+
+          button.addEventListener("click", async () => {
+            const originalLabel = "Copy";
+            try {
+              await copyText(code.textContent.trim());
+              button.textContent = "Copied";
+              button.classList.add("copied");
+              window.setTimeout(() => {
+                button.textContent = originalLabel;
+                button.classList.remove("copied");
+              }, 1600);
+            } catch (_error) {
+              button.textContent = "Copy failed";
+              window.setTimeout(() => {
+                button.textContent = originalLabel;
+              }, 1600);
+            }
+          });
+        });
+      })();
+    </script>
   </body>
 </html>

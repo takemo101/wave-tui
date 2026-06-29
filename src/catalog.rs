@@ -446,6 +446,67 @@ pub fn station_score(station: &Station) -> u32 {
     codec + bitrate + votes + clicks
 }
 
+/// Whether a Radio Browser [`Station`] plausibly belongs to a [`Section`].
+///
+/// A station matches a section when it matches any of that section's
+/// categories, so section membership composes directly from
+/// [`station_matches_category`].
+pub fn station_matches_section(station: &Station, section: Section) -> bool {
+    section
+        .categories()
+        .iter()
+        .any(|&category| station_matches_category(station, category))
+}
+
+/// Whether a Radio Browser [`Station`] plausibly belongs to a [`Category`].
+///
+/// Matching is intentionally conservative. It looks at the station's `tags`
+/// first (the primary genre signal) and falls back to the station `name`.
+/// `country` and `language` are deliberately ignored as genre signals.
+/// Text is normalized (case, whitespace, `_`, and `-`) so common Radio Browser
+/// tag variations such as `deep-house` or `Smooth_Jazz` still match the
+/// conservative alias set in [`category_aliases`].
+pub fn station_matches_category(station: &Station, category: Category) -> bool {
+    let aliases = category_aliases(category);
+    station.tags.iter().any(|tag| matches_alias(tag, aliases))
+        || matches_alias(station.name.as_str(), aliases)
+}
+
+/// The conservative alias set for a category, drawn from the Browse search
+/// filter design. Kept small on purpose; expand later based on observed misses.
+fn category_aliases(category: Category) -> &'static [&'static str] {
+    match category {
+        Category::Lofi => &["lofi", "chillhop", "beats"],
+        Category::Ambient => &["ambient", "drone", "space", "atmospheric"],
+        Category::Jazz => &["jazz", "smooth jazz"],
+        Category::Classical => &["classical", "baroque", "orchestral"],
+        Category::Electronic => &["electronic", "house", "techno", "downtempo", "deep-house"],
+        Category::News => &["news", "public radio", "world news"],
+        Category::Talk => &["talk", "spoken", "community"],
+    }
+}
+
+/// Whether `value` contains any of `aliases` after normalization.
+fn matches_alias(value: &str, aliases: &[&str]) -> bool {
+    let normalized = normalize_alias_text(value);
+    aliases
+        .iter()
+        .map(|alias| normalize_alias_text(alias))
+        .any(|alias| normalized.contains(&alias))
+}
+
+/// Normalize text for alias comparison: lowercase, treat `_`/`-` as spaces, and
+/// collapse runs of whitespace to single spaces. This lets `deep-house`,
+/// `deep_house`, and `Deep  House` all compare equal.
+fn normalize_alias_text(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The built-in catalog: curated stations grouped by category.
 #[derive(Debug, Clone)]
 pub struct Catalog {
@@ -757,5 +818,30 @@ mod tests {
         // Recovering restores the station to the available set.
         health.recover(&StationId::new("drop").unwrap());
         assert_eq!(stations.without_failed(&health).len(), 2);
+    }
+
+    #[test]
+    fn station_matches_category_from_tags_and_name_aliases() {
+        let mut tagged = station("tagged", CodecKind::Mp3, Some(128), Some(10));
+        tagged.tags = vec!["smooth jazz".to_string(), "night".to_string()];
+        tagged.name = StationName::new("Late Night Radio").unwrap();
+        assert!(station_matches_category(&tagged, Category::Jazz));
+
+        let mut named = station("named", CodecKind::Mp3, Some(128), Some(10));
+        named.tags = vec!["music".to_string()];
+        named.name = StationName::new("Deep House Session").unwrap();
+        assert!(station_matches_category(&named, Category::Electronic));
+    }
+
+    #[test]
+    fn station_category_matching_is_conservative_and_sections_compose_categories() {
+        let mut station = station("talk", CodecKind::Mp3, Some(128), Some(10));
+        station.tags = vec!["community".to_string(), "spoken".to_string()];
+        station.name = StationName::new("Neighborhood Voice").unwrap();
+
+        assert!(station_matches_category(&station, Category::Talk));
+        assert!(station_matches_section(&station, Section::SpokenNews));
+        assert!(!station_matches_category(&station, Category::Jazz));
+        assert!(!station_matches_section(&station, Section::Music));
     }
 }

@@ -34,7 +34,7 @@ const LOGO_E: [&str; 5] = ["█████", "█    ", "████ ", "█  
 /// Spaces between adjacent letter cells; widens the mark for legibility.
 const LOGO_GAP: &str = "   ";
 
-const STARTUP_LABEL: &str = "wave-tui";
+const STARTUP_LABEL: &str = concat!("wave-tui v", env!("CARGO_PKG_VERSION"));
 const STARTUP_MESSAGE: &str = "settling into the signal";
 const SHUTDOWN_TITLE: &str = "thanks for listening";
 const SHUTDOWN_MESSAGE: &str = "see you next wave";
@@ -292,7 +292,7 @@ mod tests {
         // Distinctive middle rows of the assembled WAVE mark.
         assert!(out.contains("█ █ █"), "W center band should render");
         assert!(out.contains("█████"), "A/E full bands should render");
-        assert!(out.contains("wave-tui"));
+        assert!(out.contains(concat!("wave-tui v", env!("CARGO_PKG_VERSION"))));
         assert!(out.contains("settling into the signal"));
     }
 
@@ -350,7 +350,7 @@ mod tests {
             .last()
             .map(|(y, _)| *y)
             .expect("logo should render");
-        let label_row = row_of_text(&grid, "wave-tui").expect("label should render");
+        let label_row = row_of_text(&grid, STARTUP_LABEL).expect("label should render");
         let message_row =
             row_of_text(&grid, "settling into the signal").expect("message should render");
         assert!(

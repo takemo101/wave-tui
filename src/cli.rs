@@ -201,6 +201,11 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyOutcome {
     Quit,
+    /// `Esc` in navigation mode: quit the normal UI, or back out of Signal View
+    /// when that mode is active.
+    ExitOrBack,
+    /// `z`: toggle the Signal View display mode.
+    ToggleSignalView,
     FocusNext,
     FocusPrevious,
     SelectNext,
@@ -270,7 +275,9 @@ pub fn map_key(key: KeyEvent, searching: bool) -> KeyOutcome {
         }
     } else {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => KeyOutcome::Quit,
+            KeyCode::Char('q') => KeyOutcome::Quit,
+            KeyCode::Esc => KeyOutcome::ExitOrBack,
+            KeyCode::Char('z') => KeyOutcome::ToggleSignalView,
             KeyCode::Char('j') => KeyOutcome::SelectNext,
             KeyCode::Char('k') => KeyOutcome::SelectPrevious,
             KeyCode::Char('g') => KeyOutcome::SelectFirst,
@@ -797,11 +804,21 @@ fn handle_key(
     debounce: &mut SearchDebounce,
     persistence: &mut Persistence,
 ) -> Flow {
+    // Signal View gates input to a small allowed subset. Route it first, before
+    // the normal focus-aware handling, so discovery/navigation keys are ignored
+    // silently while the mode is active. Keys are mapped as navigation (the
+    // search strip is hidden) so allowed controls work regardless of the
+    // background focus that is preserved underneath Signal View.
+    if app.is_signal_view() {
+        return handle_signal_view_key(map_key(key, false), app, audio, persistence);
+    }
+
     let searching = app.focus() == FocusPane::Search;
     let before = app.settings().clone();
 
     match map_key(key, searching) {
-        KeyOutcome::Quit => return Flow::Quit,
+        KeyOutcome::Quit | KeyOutcome::ExitOrBack => return Flow::Quit,
+        KeyOutcome::ToggleSignalView => app.apply(Action::ToggleSignalView),
         KeyOutcome::Ignore => {}
         KeyOutcome::FocusNext => app.apply(Action::FocusNext),
         KeyOutcome::FocusPrevious => app.apply(Action::FocusPrevious),
@@ -902,6 +919,84 @@ fn handle_key(
             app.apply(Action::ClearSearch);
             app.apply(Action::SetFocus(FocusPane::Stations));
         }
+    }
+
+    if app.settings() != &before {
+        persistence.save(app);
+    }
+    Flow::Continue
+}
+
+/// Route a key while Signal View is active.
+///
+/// Only the spec's allowed subset acts: `z`/`Esc` leave the mode, `q` quits,
+/// `Space` toggles playback, `+`/`-` adjust volume, `v`/`t` cycle visualizer and
+/// theme, and `f` favorites the *current* station (not the hidden station-list
+/// selection). Every other key — search, focus movement, station navigation, and
+/// station selection — is ignored silently. Background search/list state is left
+/// untouched.
+fn handle_signal_view_key(
+    outcome: KeyOutcome,
+    app: &mut App,
+    audio: &AudioHandle,
+    persistence: &mut Persistence,
+) -> Flow {
+    let before = app.settings().clone();
+    match outcome {
+        KeyOutcome::Quit => return Flow::Quit,
+        KeyOutcome::ExitOrBack | KeyOutcome::ToggleSignalView => {
+            app.apply(Action::LeaveSignalView);
+        }
+        KeyOutcome::TogglePlayback => {
+            app.apply(Action::TogglePlayback);
+            match app.playback() {
+                PlaybackState::Connecting => {
+                    if let Some(station) = app.current_station().cloned() {
+                        let _ = audio.command_tx.send(AudioCommand::Play {
+                            station: Box::new(station),
+                            volume: app.settings().volume,
+                        });
+                    }
+                }
+                PlaybackState::Stopped => {
+                    let _ = audio.command_tx.send(AudioCommand::Stop);
+                }
+                _ => {}
+            }
+        }
+        // In Signal View `f` targets the current station shown on screen, not the
+        // hidden station-list selection.
+        KeyOutcome::ToggleFavorite => app.apply(Action::ToggleCurrentFavorite),
+        KeyOutcome::CycleTheme => app.apply(Action::CycleTheme),
+        KeyOutcome::CycleVisualizerMode => app.apply(Action::CycleVisualizerMode),
+        KeyOutcome::VolumeUp => {
+            app.apply(Action::VolumeUp);
+            persistence.mark_user_changed_volume();
+            let _ = audio
+                .command_tx
+                .send(AudioCommand::SetVolume(app.settings().volume));
+        }
+        KeyOutcome::VolumeDown => {
+            app.apply(Action::VolumeDown);
+            persistence.mark_user_changed_volume();
+            let _ = audio
+                .command_tx
+                .send(AudioCommand::SetVolume(app.settings().volume));
+        }
+        // Disabled keys are silent no-ops: search, focus movement, station
+        // navigation, and station selection do nothing while Signal View is active.
+        KeyOutcome::Ignore
+        | KeyOutcome::FocusNext
+        | KeyOutcome::FocusPrevious
+        | KeyOutcome::SelectNext
+        | KeyOutcome::SelectPrevious
+        | KeyOutcome::SelectFirst
+        | KeyOutcome::SelectLast
+        | KeyOutcome::Play
+        | KeyOutcome::BeginSearch
+        | KeyOutcome::SearchChar(_)
+        | KeyOutcome::SearchBackspace
+        | KeyOutcome::ClearSearch => {}
     }
 
     if app.settings() != &before {
@@ -1345,6 +1440,275 @@ mod tests {
         assert_eq!(app.settings().visualizer, VisualizerMode::PeakDots);
     }
 
+    // --- Signal View key gating ------------------------------------------
+
+    #[test]
+    fn map_key_maps_z_to_signal_view_toggle_in_navigation_mode() {
+        assert_eq!(
+            map_key(key(KeyCode::Char('z')), false),
+            KeyOutcome::ToggleSignalView
+        );
+        // While the search strip is focused, `z` is ordinary query text.
+        assert_eq!(
+            map_key(key(KeyCode::Char('z')), true),
+            KeyOutcome::SearchChar('z')
+        );
+    }
+
+    #[test]
+    fn signal_view_z_enters_from_normal_and_exits_when_active() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        assert!(!app.is_signal_view());
+
+        let flow = handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(flow, Flow::Continue);
+        assert!(
+            app.is_signal_view(),
+            "z enters Signal View from normal mode"
+        );
+
+        let flow = handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(flow, Flow::Continue);
+        assert!(!app.is_signal_view(), "z exits Signal View while active");
+    }
+
+    #[test]
+    fn signal_view_escape_returns_to_normal_instead_of_quitting() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_signal_view());
+
+        let flow = handle_key(
+            key(KeyCode::Esc),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(
+            flow,
+            Flow::Continue,
+            "Esc must not quit while in Signal View"
+        );
+        assert!(!app.is_signal_view(), "Esc leaves Signal View");
+    }
+
+    #[test]
+    fn signal_view_q_still_quits() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_signal_view());
+
+        let flow = handle_key(
+            key(KeyCode::Char('q')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(flow, Flow::Quit, "q quits even while in Signal View");
+    }
+
+    #[test]
+    fn signal_view_ignores_search_and_navigation_keys_silently() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        let selected_before = app.selected_index();
+        let browse_before = app.browse_selected();
+        let focus_before = app.focus();
+        let source_before = app.active_source();
+        let playback_before = app.playback().clone();
+
+        for code in [
+            KeyCode::Char('/'),
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::Enter,
+        ] {
+            let flow = handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+            assert_eq!(flow, Flow::Continue, "{code:?} must be a silent no-op");
+        }
+
+        assert!(
+            app.is_signal_view(),
+            "disabled keys do not leave Signal View"
+        );
+        assert_eq!(app.selected_index(), selected_before);
+        assert_eq!(app.browse_selected(), browse_before);
+        assert_eq!(app.focus(), focus_before);
+        assert_eq!(app.active_source(), source_before);
+        assert_eq!(app.playback(), &playback_before);
+        assert!(app.search_query().is_empty());
+    }
+
+    #[test]
+    fn signal_view_allows_playback_volume_theme_and_visualizer_keys() {
+        use crate::model::VisualizerMode;
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+
+        // Play a station so Signal View has a current station and Connecting state.
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+        let _ = cmd_rx.try_recv(); // drain the Play command from Enter.
+
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        // Space toggles playback for the current station while Signal View is active.
+        handle_key(
+            key(KeyCode::Char(' ')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        match cmd_rx.try_recv() {
+            Ok(AudioCommand::Stop) => {}
+            other => panic!("expected a Stop command for Space in Signal View, got {other:?}"),
+        }
+
+        // `v` cycles the visualizer mode.
+        assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
+        handle_key(
+            key(KeyCode::Char('v')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.visualizer_mode(), VisualizerMode::PeakDots);
+
+        // `t` cycles the theme.
+        let theme_before = app.settings().theme;
+        handle_key(
+            key(KeyCode::Char('t')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_ne!(app.settings().theme, theme_before, "t cycles theme");
+
+        // `+` raises volume and emits a SetVolume command.
+        handle_key(
+            key(KeyCode::Char('+')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        match cmd_rx.try_recv() {
+            Ok(AudioCommand::SetVolume(_)) => {}
+            other => panic!("expected a SetVolume command for + in Signal View, got {other:?}"),
+        }
+
+        assert!(
+            app.is_signal_view(),
+            "allowed keys do not leave Signal View"
+        );
+    }
+
+    #[test]
+    fn signal_view_f_favorites_current_station_not_hidden_selection() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+
+        // Play the first station, then move the hidden selection away from it.
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        handle_key(
+            key(KeyCode::Char('j')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let current = app.current_station().cloned().expect("current station");
+        let hidden = app.selected_station().cloned().expect("selected station");
+        assert_ne!(current.id, hidden.id, "current and selection must differ");
+
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        handle_key(
+            key(KeyCode::Char('f')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert!(app.is_favorite(&current), "f favorites the current station");
+        assert!(
+            !app.is_favorite(&hidden),
+            "f must not favorite the hidden station-list selection"
+        );
+        assert!(app.current_station_is_favorite());
+    }
+
     // --- parse_args ------------------------------------------------------
 
     fn parse(args: &[&str]) -> Result<CliInvocation, CliError> {
@@ -1525,7 +1889,13 @@ mod tests {
             KeyOutcome::BeginSearch
         );
         assert_eq!(map_key(key(KeyCode::Char('q')), false), KeyOutcome::Quit);
-        assert_eq!(map_key(key(KeyCode::Esc), false), KeyOutcome::Quit);
+        // `Esc` in navigation mode is "exit or back": it quits the normal UI but
+        // backs out of Signal View when that mode is active.
+        assert_eq!(map_key(key(KeyCode::Esc), false), KeyOutcome::ExitOrBack);
+        assert_eq!(
+            map_key(key(KeyCode::Char('z')), false),
+            KeyOutcome::ToggleSignalView
+        );
     }
 
     #[test]

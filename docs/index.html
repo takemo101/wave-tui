@@ -435,11 +435,17 @@
         gap: 1rem;
       }
 
+      .install-grid > * {
+        min-width: 0;
+      }
+
       .panel {
+        min-width: 0;
         padding: 1.25rem;
       }
 
       pre {
+        max-width: 100%;
         overflow-x: auto;
         margin: 1rem 0 0;
         padding: 1rem;
@@ -454,6 +460,7 @@
 
       .command-block {
         position: relative;
+        min-width: 0;
         margin-top: 1rem;
       }
 
@@ -501,10 +508,12 @@
       }
 
       .mini-table {
+        display: block;
         width: 100%;
+        max-width: 100%;
         border-collapse: collapse;
         margin-top: 1rem;
-        overflow: hidden;
+        overflow-x: auto;
         border-radius: 16px;
       }
 

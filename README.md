@@ -203,12 +203,14 @@ the screen. Press `z` or `Esc` to return to the normal UI; `q` still quits.
 
 While Signal View is active, only `Space` (play/stop), `+`/`-` (volume), `v`
 (visualizer mode), `t` (theme), and `f` (favorite) stay active — `f` favorites
-the station shown on screen. Discovery, navigation, and focus keys are ignored.
-Signal View is a temporary view: it is not saved across launches and has no
-command-line flag. With no current station it shows a short
+the station shown on screen. A favorited current station uses the same `★` marker
+as the station list; non-favorites show no marker. Discovery, navigation, and
+focus keys are ignored. Signal View is a temporary view: it is not saved across
+launches and has no command-line flag. With no current station it shows a short
 `Select a station, then press z` prompt, and it stays put across stopped,
 connecting, playing, and failed states instead of dropping you back to the
-normal UI.
+normal UI. The title area includes a thin, near-full-width volume bar with the
+active visualizer mode label.
 
 ## Command-line options
 

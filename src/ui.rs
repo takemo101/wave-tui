@@ -20,7 +20,7 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -80,6 +80,13 @@ fn render_into(app: &App, area: Rect, buf: &mut Buffer) {
     let theme = app.theme().theme();
     // Paint the themed canvas first so empty cells carry the background.
     buf.set_style(area, theme.base_style());
+
+    // Signal View bypasses the normal Wide/Medium/Compact composition entirely:
+    // it is an opt-in full-area visual-player surface, not a layout tier.
+    if app.is_signal_view() {
+        render_signal_view(app, &theme, area, buf);
+        return;
+    }
 
     match LayoutTier::from_size(area.width, area.height) {
         LayoutTier::Wide => render_wide(app, &theme, area, buf),
@@ -191,6 +198,222 @@ fn render_hidden_browse_modal(app: &App, theme: &Theme, area: Rect, buf: &mut Bu
     Clear.render(modal, buf);
     buf.set_style(modal, theme.base_style());
     render_browse(app, theme, modal, buf);
+}
+
+// --- Signal View (Quiet Signal) -----------------------------------------
+
+/// Render the opt-in **Quiet Signal** visual-player surface for the current
+/// station.
+///
+/// This bypasses the normal layout tiers: a thin mode/status label, a centered
+/// title block (constrained to two lines), the largest flexible region for the
+/// shared visualizer, and a subdued key-hint footer. Lower-priority rows (label,
+/// hint) are dropped first on small terminals so the title and visualizer keep
+/// the Center Stage composition rather than falling back to the compact UI.
+/// Rendering stays read-only and reuses [`visualizer::render_visualizer`] over a
+/// large `Rect`; it introduces no Signal View-specific visualizer.
+fn render_signal_view(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    // Reserve the optional metadata label and footer hint only when there is
+    // vertical room; the visualizer always takes the largest flexible region.
+    let show_label = area.height >= 9;
+    let show_hint = area.height >= 4;
+    let title_h = if area.height >= 12 {
+        5
+    } else if area.height >= 7 {
+        3
+    } else {
+        2
+    };
+
+    let mut constraints = Vec::new();
+    if show_label {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(title_h));
+    constraints.push(Constraint::Min(1));
+    if show_hint {
+        constraints.push(Constraint::Length(1));
+    }
+
+    let rows = Layout::vertical(constraints).split(area);
+    let mut next = 0;
+    if show_label {
+        render_signal_view_label(app, theme, rows[next], buf);
+        next += 1;
+    }
+    render_signal_view_title(app, theme, rows[next], buf);
+    next += 1;
+    visualizer::render_visualizer(theme, app, rows[next], buf);
+    next += 1;
+    if show_hint {
+        render_signal_view_hint(theme, rows[next], buf);
+    }
+}
+
+/// The thin `Signal View · <status>` mode label, centered and accented.
+fn render_signal_view_label(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let status = signal_view_status_label(app.playback());
+    Paragraph::new(Line::from(vec![
+        Span::styled("Signal View", theme.accent_style()),
+        Span::styled(format!(" · {status}"), Style::default().fg(theme.muted)),
+    ]))
+    .alignment(Alignment::Center)
+    .style(theme.base_style())
+    .render(area, buf);
+}
+
+/// Centered title block: an optional station + favorite metadata line, the
+/// primary title (at most two lines), and an optional low-priority
+/// volume/visualizer line. Lower-priority rows are only added when the block has
+/// vertical room, so a short title area still shows the title itself.
+fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Station name + subtle favorite marker, above the title, when a current
+    // station exists and the block is tall enough to spare the row.
+    if let Some(station) = app.current_station() {
+        if area.height >= 3 {
+            let favorite = if app.current_station_is_favorite() {
+                "♥"
+            } else {
+                "♡"
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    station.name.as_str().to_string(),
+                    Style::default().fg(theme.muted),
+                ),
+                Span::styled(format!(" {favorite}"), Style::default().fg(theme.playing)),
+            ]));
+        }
+    }
+
+    // Primary title, constrained to at most two lines so a long ICY title or
+    // station name can never push the visualizer or hint out of view.
+    for line in title_lines(&signal_view_primary_title(app), area.width) {
+        lines.push(Line::from(Span::styled(
+            line,
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    // Lowest-priority metadata: volume and the selected visualizer mode. Dropped
+    // first when the title block is short.
+    if app.current_station().is_some() && area.height >= 4 {
+        lines.push(Line::styled(
+            format!(
+                "vol {}% · {}",
+                app.settings().volume.get(),
+                app.visualizer_mode().as_str()
+            ),
+            Style::default().fg(theme.muted),
+        ));
+    }
+
+    Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .style(theme.base_style())
+        .render(area, buf);
+}
+
+/// The subdued, low-contrast key-hint footer.
+fn render_signal_view_hint(theme: &Theme, area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    Paragraph::new("z/Esc back · Space play · v visual · +/- volume · q quit")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(theme.muted).bg(theme.background))
+        .render(area, buf);
+}
+
+/// Primary title priority: ICY now-playing title, then current station name,
+/// then the idle prompt when there is no current station.
+fn signal_view_primary_title(app: &App) -> String {
+    if let Some(title) = app.now_playing_title() {
+        title.to_string()
+    } else if let Some(station) = app.current_station() {
+        station.name.as_str().to_string()
+    } else {
+        "Select a station, then press z".to_string()
+    }
+}
+
+/// Compact playback-status label for the Signal View mode line.
+fn signal_view_status_label(state: &PlaybackState) -> &'static str {
+    match state {
+        PlaybackState::Stopped => "stopped",
+        PlaybackState::Connecting => "connecting",
+        PlaybackState::Playing => "playing",
+        PlaybackState::Failed(_) => "failed",
+    }
+}
+
+/// Greedily wrap `text` into lines no wider than `width` characters, hard-
+/// splitting any single word longer than the full width. A pure helper shared by
+/// [`title_lines`].
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for raw in text.split_whitespace() {
+        let mut word = raw.to_string();
+        // Break a word that cannot fit on one line into width-sized chunks.
+        while word.chars().count() > width {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            let head: String = word.chars().take(width).collect();
+            lines.push(head);
+            word = word.chars().skip(width).collect();
+        }
+        if word.is_empty() {
+            continue;
+        }
+        if line.is_empty() {
+            line = word;
+        } else if line.chars().count() + 1 + word.chars().count() <= width {
+            line.push(' ');
+            line.push_str(&word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line = word;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Constrain `text` to at most two centered lines that each fit `width`,
+/// ellipsizing any overflow. Keeping the title to two lines is what prevents a
+/// long ICY title from breaking the Signal View layout.
+fn title_lines(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(1) as usize;
+    let mut wrapped = wrap_words(text, width);
+    if wrapped.len() <= 2 {
+        return wrapped;
+    }
+    wrapped.truncate(2);
+    // Make room for the ellipsis on the trailing line, then mark the overflow.
+    let second = &mut wrapped[1];
+    if second.chars().count() >= width {
+        *second = second.chars().take(width.saturating_sub(1)).collect();
+    }
+    second.push('…');
+    wrapped
 }
 
 // --- components ----------------------------------------------------------
@@ -1854,5 +2077,180 @@ mod tests {
         assert!(text.contains("100%"), "100% label missing: {text}");
         assert!(text.contains('█'), "100% must draw a filled gauge: {text}");
         assert!(!text.contains('░'), "100% must draw no empty cells: {text}");
+    }
+
+    // --- Signal View: Quiet Signal render surface (MIK-052) -------------
+
+    /// Count visualizer particle cells (`·∙•`) in a rendered buffer. The dust
+    /// grains are unique to the Spectrum Stack, so their count is a stable proxy
+    /// for how much area the visualizer was given.
+    fn count_particle_cells(buf: &Buffer) -> usize {
+        let area = *buf.area();
+        let mut count = 0;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if matches!(buf.cell((x, y)).unwrap().symbol(), "·" | "∙" | "•") {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn signal_view_hides_discovery_ui_and_shows_idle_copy_without_current_station() {
+        // With no current station, `z` still opens Signal View: it hides the
+        // Search/Browse/Stations discovery UI and shows the quiet idle prompt plus
+        // the subdued back/quit key hint.
+        let mut app = base_app();
+        app.apply(Action::ToggleSignalView);
+        assert!(app.current_station().is_none());
+
+        let text = buffer_text(&render_buffer(&app, 100, 30));
+
+        assert!(text.contains("Signal View"), "mode label missing: {text}");
+        assert!(
+            text.contains("Select a station, then press z"),
+            "idle prompt missing: {text}"
+        );
+        assert!(text.contains("z/Esc back"), "key hint missing: {text}");
+        assert!(!text.contains("Browse"), "discovery Browse leaked: {text}");
+        assert!(
+            !text.contains("Results"),
+            "discovery Results leaked: {text}"
+        );
+        assert!(!text.contains("Search"), "discovery Search leaked: {text}");
+    }
+
+    #[test]
+    fn signal_view_prefers_icy_title_over_station_name() {
+        // The primary title prefers the ICY/Shoutcast now-playing title over the
+        // current station name.
+        let mut app = base_app();
+        let id = app.selected_station().unwrap().id.clone();
+        play_first(&mut app);
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station: id,
+            title: "Midnight Drive — Soft Neon Mix".to_string(),
+        }));
+        app.apply(Action::ToggleSignalView);
+
+        let text = buffer_text(&render_buffer(&app, 120, 34));
+
+        assert!(
+            text.contains("Midnight Drive"),
+            "ICY title not preferred as primary title: {text}"
+        );
+    }
+
+    #[test]
+    fn signal_view_shows_current_station_favorite_marker() {
+        // The favorite state of the current station is shown with a small ♥/♡.
+        let mut app = base_app();
+        app.apply(Action::PlaySelected);
+        app.apply(Action::ToggleCurrentFavorite);
+        app.apply(Action::ToggleSignalView);
+        assert!(app.current_station_is_favorite());
+
+        let text = buffer_text(&render_buffer(&app, 100, 30));
+
+        assert!(text.contains('♥'), "favorite marker missing: {text}");
+    }
+
+    #[test]
+    fn signal_view_gives_visualizer_the_largest_flexible_region() {
+        // A tall Signal View pane allocates a substantial visualizer region,
+        // clearly larger than the capped normal Now Playing visualizer.
+        let frame = VizFrame::new(vec![1.0_f32; 16], 1.0, vec![0.0; 32]);
+
+        let mut signal = base_app();
+        signal.apply(Action::PlaySelected);
+        signal.apply(Action::Audio(AudioEvent::Viz(frame.clone())));
+        signal.apply(Action::ToggleSignalView);
+        let signal_buf = render_buffer(&signal, 120, 40);
+
+        let mut normal = base_app();
+        normal.apply(Action::PlaySelected);
+        normal.apply(Action::Audio(AudioEvent::Viz(frame)));
+        let normal_buf = render_buffer(&normal, 120, 40);
+
+        let text = buffer_text(&signal_buf);
+        assert!(text.contains("z/Esc back"), "key hint missing: {text}");
+
+        let signal_cells = count_particle_cells(&signal_buf);
+        let normal_cells = count_particle_cells(&normal_buf);
+        assert!(
+            signal_cells > 300,
+            "Signal View visualizer region too small: {signal_cells} cells"
+        );
+        assert!(
+            signal_cells > normal_cells,
+            "Signal View visualizer ({signal_cells}) not larger than normal Now Playing ({normal_cells})"
+        );
+    }
+
+    #[test]
+    fn signal_view_tiny_and_small_terminals_do_not_panic() {
+        // Tiny/small terminals must stay bounded and never panic; they keep the
+        // Center Stage concept instead of falling back to the normal compact UI.
+        let mut app = base_app();
+        app.apply(Action::PlaySelected);
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.5_f32; 16],
+            0.5,
+            vec![0.5_f32; 16],
+        ))));
+        app.apply(Action::ToggleSignalView);
+        for (w, h) in [(0, 0), (1, 1), (2, 3), (6, 4), (12, 5), (20, 8), (40, 10)] {
+            let buf = render_buffer(&app, w, h);
+            assert_eq!(*buf.area(), Rect::new(0, 0, w, h));
+        }
+    }
+
+    #[test]
+    fn signal_view_long_title_is_constrained_to_two_lines() {
+        // A very long title must never grow past two lines; overflow is ellipsized
+        // and each line stays within the available width so layout cannot break.
+        let long = "Extremely Long Now Playing Title That Keeps Going ".repeat(8);
+        let lines = title_lines(&long, 24);
+
+        assert!(
+            lines.len() <= 2,
+            "title must be at most two lines, got {}",
+            lines.len()
+        );
+        assert!(
+            lines.last().unwrap().contains('…'),
+            "overflowing title must be ellipsized: {lines:?}"
+        );
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 24,
+                "title line exceeds width: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signal_view_long_title_render_stays_bounded() {
+        // The long-title constraint holds through the full render path without
+        // pushing layout regions out of view.
+        let mut app = base_app();
+        let id = app.selected_station().unwrap().id.clone();
+        play_first(&mut app);
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station: id,
+            title: "Extremely ".repeat(40),
+        }));
+        app.apply(Action::ToggleSignalView);
+
+        for (w, h) in [(40, 12), (80, 24), (120, 40)] {
+            let buf = render_buffer(&app, w, h);
+            // The footer hint still survives below the constrained title.
+            assert!(
+                buffer_text(&buf).contains("z/Esc back"),
+                "hint pushed off-screen by long title at {w}x{h}"
+            );
+        }
     }
 }

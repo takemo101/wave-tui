@@ -184,7 +184,7 @@ layout into a full-screen visualizer.
 | Mode            | Source      | Look                      |
 | --------------- | ----------- | ------------------------- |
 | `SpectrumStack` | FFT bands   | Particle analyzer columns |
-| `PeakDots`      | FFT bands   | One peak dot per column   |
+| `PeakDots`      | FFT bands   | Peak dots with a five-frame trail |
 | `SkylinePeaks`  | FFT bands   | Peak cap and dashed tail  |
 | `WaveScope`     | Waveform    | Oscilloscope trace        |
 | `MirrorWave`    | Waveform    | Mirrored waveform         |

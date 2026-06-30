@@ -23,11 +23,19 @@ use crate::search::SearchResults;
 use crate::settings::Settings;
 use crate::theme::ThemeName;
 
+use std::collections::VecDeque;
+
 /// Step applied to the volume for a single `VolumeUp`/`VolumeDown` action.
 const VOLUME_STEP: i32 = 5;
 
 /// Number of visualizer bands held in the current frame when idle/stopped.
 const VIZ_BANDS: usize = 16;
+
+/// Number of previous visualizer frames kept for PeakDots trail rendering.
+const VIZ_TRAIL_FRAMES: usize = 5;
+
+/// Current visualizer frame plus the trailing frames.
+const VIZ_HISTORY_FRAMES: usize = VIZ_TRAIL_FRAMES + 1;
 
 /// A focusable region of the UI.
 ///
@@ -272,6 +280,7 @@ pub struct App {
     playback: PlaybackState,
     current: Option<Station>,
     viz: VizFrame,
+    viz_history: VecDeque<VizFrame>,
     offline: bool,
     search_query: String,
     search_status: SearchStatus,
@@ -289,6 +298,8 @@ impl App {
     pub fn new(settings: Settings, catalog: Catalog) -> Self {
         let visible = catalog.stations().ranked();
         let current = settings.previous_station.clone();
+        let viz = VizFrame::silent(VIZ_BANDS);
+        let viz_history = VecDeque::from([viz.clone()]);
         Self {
             catalog,
             settings,
@@ -302,7 +313,8 @@ impl App {
             focus: FocusPane::Stations,
             playback: PlaybackState::Stopped,
             current,
-            viz: VizFrame::silent(VIZ_BANDS),
+            viz,
+            viz_history,
             offline: false,
             search_query: String::new(),
             search_status: SearchStatus::Idle,
@@ -630,9 +642,17 @@ impl App {
             AudioEvent::Stopped => self.playback = PlaybackState::Stopped,
             AudioEvent::Failed { station, message } => self.on_failed(station, message),
             AudioEvent::VolumeChanged(volume) => self.settings.volume = volume,
-            AudioEvent::Viz(frame) => self.viz = frame,
+            AudioEvent::Viz(frame) => self.set_viz_frame(frame),
             AudioEvent::IcyTitle { station, title } => self.on_icy_title(station, title),
         }
+    }
+
+    /// Store the latest visualizer frame and retain the short history used by
+    /// PeakDots to render real, audio-frame-driven trails.
+    fn set_viz_frame(&mut self, frame: VizFrame) {
+        self.viz = frame.clone();
+        self.viz_history.push_front(frame);
+        self.viz_history.truncate(VIZ_HISTORY_FRAMES);
     }
 
     /// Apply an ICY title, but only when it belongs to the current station.
@@ -755,6 +775,15 @@ impl App {
     /// The most recent visualizer frame.
     pub fn viz(&self) -> &VizFrame {
         &self.viz
+    }
+
+    /// The current visualizer frame followed by up to five previous frames.
+    ///
+    /// This short, non-persisted history is used only for visualizers that need a
+    /// real audio-frame trail; the first item is always the same frame as
+    /// [`Self::viz`].
+    pub fn viz_history(&self) -> impl ExactSizeIterator<Item = &VizFrame> + DoubleEndedIterator {
+        self.viz_history.iter()
     }
 
     /// Whether the app is in an offline/unreachable-network state.
@@ -1209,6 +1238,23 @@ mod tests {
         let frame = VizFrame::new([0.1, 0.9, 0.5], 0.7, [-0.5, 0.0, 0.5]);
         app.apply(Action::Audio(AudioEvent::Viz(frame.clone())));
         assert_eq!(app.viz(), &frame);
+    }
+
+    #[test]
+    fn audio_viz_keeps_current_plus_five_trailing_frames() {
+        let mut app = app_with(&["a"]);
+        for index in 0..8 {
+            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+                [index as f32 / 10.0],
+                0.0,
+                [],
+            ))));
+        }
+
+        let history: Vec<f32> = app.viz_history().map(|frame| frame.bands[0]).collect();
+
+        assert_eq!(history.len(), 6, "current plus five trailing frames");
+        assert_eq!(history, vec![0.7, 0.6, 0.5, 0.4, 0.3, 0.2]);
     }
 
     #[test]

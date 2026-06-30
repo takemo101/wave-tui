@@ -87,6 +87,31 @@ turning Wide or Compact into a full-width/full-screen visualizer layout.
 
 The `v` key cycles the visualizer mode and the selected mode is persisted.
 
+### Signal View: Quiet Signal
+
+Signal View is an opt-in visual-player surface entered with `z`, using the
+**Quiet Signal** direction selected from the design deck: a center-stage view of
+the current station with minimal chrome, generous negative space, a subdued
+key-hint footer, and a large theme-driven visualizer.
+
+Implications:
+
+- Signal View is a temporary display mode, not a layout tier and not a
+  navigation pane; it does not change the default Wide/Medium/Compact layouts and
+  is not persisted across launches.
+- It hides the Search, Browse, and Stations discovery UI and shows the current
+  station (ICY title when available, otherwise station name) with an idle prompt
+  when no station is selected.
+- The visualizer reuses the currently selected mode and theme and takes the
+  largest flexible region, so it is meaningfully larger than the normal Now
+  Playing visualizer on medium and large panes. It does not introduce a Signal
+  View-specific visualizer.
+- Allowed keys are `z`/`Esc` (back), `q` (quit), `Space`, `+`/`-`, `v`, `t`, and
+  `f`; `f` favorites the current station, not the hidden station-list selection.
+  Discovery, navigation, and focus keys are ignored silently.
+- Signal View adds no playlist, queue, search, or new selection behavior and does
+  not turn compact panes into a default full-screen visualizer.
+
 ### Theme Set: High Contrast Trio
 
 Initial themes:

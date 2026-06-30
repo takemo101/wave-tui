@@ -33,6 +33,10 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   provides them, falling back to station metadata otherwise.
 - **Three responsive layouts** — Wide "Search Console", plus Medium and Compact
   "Split Mini" tiers that keep both the station list and Now Playing visible.
+- **Signal View** — press `z` for a quiet, opt-in visual-player mode that hides
+  the discovery UI and shows the current station center-stage with a large
+  visualizer; `z`/`Esc` return and `q` quits. It is not persisted and has no CLI
+  flag.
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
@@ -137,6 +141,7 @@ search controls act on the focused pane.
 | `f`         | toggle favorite              |
 | `t`         | cycle theme                  |
 | `v`         | cycle visualizer mode        |
+| `z`         | toggle Signal View           |
 | `/`         | search Radio Browser         |
 | `Esc`       | clear search / return        |
 | `q` / `Esc` | quit when not searching      |
@@ -188,6 +193,22 @@ layout into a full-screen visualizer.
 The waveform modes treat both an empty and an all-zero waveform as a flat
 silence baseline, and `AmbientPulse` draws nothing for a silent frame, so a
 stopped or quiet stream stays calm rather than showing fake motion.
+
+### Signal View
+
+Press `z` to enter Signal View, a quiet visual-player mode for the current
+station. It hides the Search, Browse, and Stations UI and presents the current
+station center-stage with a large visualizer that fills the largest region of
+the screen. Press `z` or `Esc` to return to the normal UI; `q` still quits.
+
+While Signal View is active, only `Space` (play/stop), `+`/`-` (volume), `v`
+(visualizer mode), `t` (theme), and `f` (favorite) stay active — `f` favorites
+the station shown on screen. Discovery, navigation, and focus keys are ignored.
+Signal View is a temporary view: it is not saved across launches and has no
+command-line flag. With no current station it shows a short
+`Select a station, then press z` prompt, and it stays put across stopped,
+connecting, playing, and failed states instead of dropping you back to the
+normal UI.
 
 ## Command-line options
 

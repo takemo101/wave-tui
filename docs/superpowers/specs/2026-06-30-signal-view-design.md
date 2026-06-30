@@ -96,9 +96,9 @@ Long ICY titles or station names should be centered and constrained to at most t
 
 Signal View should match the station-list favorite language: show a small `★` near the title or metadata line only when the current station is a favorite. When the current station is not favorited, show no favorite marker rather than an empty placeholder.
 
-### Volume and Visualizer Mode
+### Volume Bar
 
-Signal View should show volume as a thin, low-chrome horizontal bar that spans most of the available title/metadata width, paired with the active visualizer mode label. The bar should use current theme colors and stay visually quieter than the primary title and visualizer.
+Signal View should show volume as a thin, low-chrome horizontal bar that spans most of the available title/metadata width. The bar should use current theme colors, stay visually quieter than the primary title and visualizer, and avoid attaching unrelated status labels such as the active visualizer mode.
 
 ### Key Hint
 

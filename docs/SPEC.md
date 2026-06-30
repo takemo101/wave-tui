@@ -384,10 +384,10 @@ non-favorites show no empty marker. It does not pause, cancel, or clear
 background search/list state. The visualizer reuses the currently selected theme
 and visualizer mode and receives the largest flexible layout region, so it is
 meaningfully larger than the normal Now Playing visualizer on medium and large
-panes. The title metadata includes a thin, near-full-width volume bar alongside
-the current visualizer mode. Signal View does not add playlist, queue, search, or
-new station-selection behavior, and it does not become the default compact
-layout.
+panes. The title metadata includes a thin, near-full-width volume bar without
+mixing in the current visualizer mode label. Signal View does not add playlist,
+queue, search, or new station-selection behavior, and it does not become the
+default compact layout.
 
 ### Themes
 

@@ -270,9 +270,9 @@ fn render_signal_view_label(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
 }
 
 /// Centered title block: an optional station + favorite metadata line, the
-/// primary title (at most two lines), and an optional low-priority
-/// volume/visualizer line. Lower-priority rows are only added when the block has
-/// vertical room, so a short title area still shows the title itself.
+/// primary title (at most two lines), and an optional low-priority volume line.
+/// Lower-priority rows are only added when the block has vertical room, so a
+/// short title area still shows the title itself.
 fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -307,8 +307,8 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
         )));
     }
 
-    // Lowest-priority metadata: a thin, wide volume bar plus selected visualizer
-    // mode. Dropped first when the title block is short.
+    // Lowest-priority metadata: a thin, wide volume bar. Dropped first when the
+    // title block is short.
     if app.current_station().is_some() && area.height >= 4 {
         lines.push(signal_view_volume_line(app, theme, area.width));
     }
@@ -323,9 +323,9 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
 fn signal_view_volume_line<'a>(app: &App, theme: &Theme, width: u16) -> Line<'a> {
     let volume = app.settings().volume.get();
     let prefix = format!("volume {volume}% ");
-    let suffix = format!(" {}", app.visualizer_mode().as_str());
-    let fixed_width = prefix.chars().count() + suffix.chars().count() + 2;
-    let bar_width = (width as usize).saturating_sub(fixed_width).max(4);
+    let bar_width = (width as usize)
+        .saturating_sub(prefix.chars().count())
+        .max(4);
     let filled = ((bar_width * volume as usize) + 50) / 100;
     let empty = bar_width.saturating_sub(filled);
 
@@ -333,11 +333,6 @@ fn signal_view_volume_line<'a>(app: &App, theme: &Theme, width: u16) -> Line<'a>
         Span::styled(prefix, Style::default().fg(theme.muted)),
         Span::styled("─".repeat(filled), Style::default().fg(theme.accent)),
         Span::styled("·".repeat(empty), Style::default().fg(theme.muted)),
-        Span::raw("  "),
-        Span::styled(
-            suffix.trim_start().to_string(),
-            Style::default().fg(theme.muted),
-        ),
     ])
 }
 
@@ -2202,9 +2197,10 @@ mod tests {
     }
 
     #[test]
-    fn signal_view_renders_a_thin_wide_volume_bar_with_visualizer_mode() {
-        // Signal View should show volume as a calm, near-full-width thin bar,
-        // not as the compact `vol NN% · mode` metadata string.
+    fn signal_view_renders_a_thin_wide_volume_bar_without_visualizer_label() {
+        // Signal View should show volume as a calm, near-full-width thin bar.
+        // The active visualizer mode is controlled by `v` and should not be
+        // visually attached to the volume control line.
         let mut app = base_app();
         app.apply(Action::PlaySelected);
         app.apply(Action::SetVolume(VolumePercent::new(60).unwrap()));
@@ -2217,8 +2213,8 @@ mod tests {
             .unwrap_or_else(|| panic!("volume line missing: {text}"));
 
         assert!(
-            volume_line.contains(app.visualizer_mode().as_str()),
-            "visualizer mode missing from volume line: {volume_line:?}"
+            !volume_line.contains(app.visualizer_mode().as_str()),
+            "visualizer mode should not be attached to volume line: {volume_line:?}"
         );
         assert!(
             !volume_line.contains("vol 60%"),

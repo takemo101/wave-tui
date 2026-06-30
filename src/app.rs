@@ -78,6 +78,19 @@ impl FocusPane {
     }
 }
 
+/// Top-level display surface selected by the app.
+///
+/// Signal View is a temporary, opt-in visual-player surface for the current
+/// station. It is display-only state: it changes what is rendered, not focus,
+/// source, selection, search, playback, or settings, and it is never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    /// Normal Search/Browse/Stations/Now Playing TUI.
+    Normal,
+    /// Opt-in visual-player surface for the current station.
+    SignalView,
+}
+
 /// Status of the online search, shown in the search strip.
 ///
 /// Pure display state owned by [`App`]: the controller sets it as a search
@@ -230,6 +243,12 @@ pub enum Action {
     SetOffline(bool),
     /// Apply an audio runtime event to playback state.
     Audio(AudioEvent),
+    /// Toggle the temporary Signal View display mode (`z`).
+    ToggleSignalView,
+    /// Return from Signal View to the normal TUI (`Esc`/`z` while in Signal View).
+    LeaveSignalView,
+    /// Toggle favorite state of the current station shown in Signal View (`f`).
+    ToggleCurrentFavorite,
 }
 
 /// The application state.
@@ -257,6 +276,7 @@ pub struct App {
     search_query: String,
     search_status: SearchStatus,
     now_playing_title: Option<String>,
+    display_mode: DisplayMode,
 }
 
 impl App {
@@ -287,6 +307,7 @@ impl App {
             search_query: String::new(),
             search_status: SearchStatus::Idle,
             now_playing_title: None,
+            display_mode: DisplayMode::Normal,
         }
     }
 
@@ -327,6 +348,9 @@ impl App {
             Action::SetSearchStatus(status) => self.search_status = status,
             Action::SetOffline(offline) => self.offline = offline,
             Action::Audio(event) => self.apply_audio(event),
+            Action::ToggleSignalView => self.toggle_signal_view(),
+            Action::LeaveSignalView => self.display_mode = DisplayMode::Normal,
+            Action::ToggleCurrentFavorite => self.toggle_current_favorite(),
         }
     }
 
@@ -523,6 +547,42 @@ impl App {
             let stations = self.favorite_stations();
             self.refresh_visible_keeping_selection(stations);
         }
+    }
+
+    /// Toggle the current station's favorite state through settings.
+    ///
+    /// Unlike [`Self::toggle_favorite`], this targets the app's current station
+    /// (the one Signal View presents), not the hidden station-list selection. No
+    /// current station means there is nothing to favorite, so it is a no-op.
+    ///
+    /// Adding and removing flow through [`crate::settings::Favorites`] so identity
+    /// dedupe is enforced there. When the Favorites source is active the visible
+    /// list is rebuilt from the updated collection, keeping selection in place
+    /// (clamped) like [`Self::toggle_favorite`].
+    fn toggle_current_favorite(&mut self) {
+        let Some(station) = self.current.clone() else {
+            return;
+        };
+        if self.settings.favorites.contains(&station) {
+            self.settings.favorites.remove(&station);
+        } else {
+            self.settings.favorites.add(station);
+        }
+        if self.source == ListSource::Favorites {
+            let stations = self.favorite_stations();
+            self.refresh_visible_keeping_selection(stations);
+        }
+    }
+
+    /// Flip the top-level display mode between Normal and Signal View.
+    ///
+    /// This is display-only: it touches no focus, source, selection, search, or
+    /// playback state, so background activity continues unchanged underneath.
+    fn toggle_signal_view(&mut self) {
+        self.display_mode = match self.display_mode {
+            DisplayMode::Normal => DisplayMode::SignalView,
+            DisplayMode::SignalView => DisplayMode::Normal,
+        };
     }
 
     /// Shift volume by `delta`, clamping into the valid `0..=100` range.
@@ -769,6 +829,26 @@ impl App {
     /// Whether a station is a current favorite (by id or URL identity).
     pub fn is_favorite(&self, station: &Station) -> bool {
         self.settings.favorites.contains(station)
+    }
+
+    /// Whether the current station is a favorite.
+    ///
+    /// Targets the current station (what Signal View shows), not the hidden
+    /// station-list selection. `false` when there is no current station.
+    pub fn current_station_is_favorite(&self) -> bool {
+        self.current
+            .as_ref()
+            .is_some_and(|station| self.settings.favorites.contains(station))
+    }
+
+    /// The active top-level display mode.
+    pub fn display_mode(&self) -> DisplayMode {
+        self.display_mode
+    }
+
+    /// Whether the full-screen Signal View surface is active.
+    pub fn is_signal_view(&self) -> bool {
+        self.display_mode == DisplayMode::SignalView
     }
 
     /// Whether a station is marked failed for this session.
@@ -1790,5 +1870,102 @@ mod tests {
         app.apply(Action::ClearSearch);
         assert_eq!(app.active_source(), ListSource::Favorites);
         assert_eq!(visible_ids(&app), vec!["a", "b"]);
+    }
+
+    // --- Signal View display mode (MIK-050) -----------------------------
+
+    #[test]
+    fn signal_view_toggle_is_display_only() {
+        let mut app = app_with(&["one", "two"]);
+        app.apply(Action::SetSearchQuery("jazz".to_string()));
+        app.apply(Action::SetFocus(FocusPane::Search));
+        let visible_before = visible_ids(&app);
+        let selected_before = app.selected_index();
+        let source_before = app.active_source();
+        let query_before = app.search_query().to_string();
+
+        app.apply(Action::ToggleSignalView);
+
+        assert!(app.is_signal_view());
+        assert_eq!(visible_ids(&app), visible_before);
+        assert_eq!(app.selected_index(), selected_before);
+        assert_eq!(app.active_source(), source_before);
+        assert_eq!(app.search_query(), query_before);
+        assert_eq!(app.focus(), FocusPane::Search);
+
+        app.apply(Action::ToggleSignalView);
+
+        assert!(!app.is_signal_view());
+        assert_eq!(visible_ids(&app), visible_before);
+    }
+
+    #[test]
+    fn leave_signal_view_is_idempotent() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+
+        app.apply(Action::LeaveSignalView);
+        assert_eq!(app.display_mode(), DisplayMode::Normal);
+
+        app.apply(Action::ToggleSignalView);
+        assert_eq!(app.display_mode(), DisplayMode::SignalView);
+
+        app.apply(Action::LeaveSignalView);
+        assert_eq!(app.display_mode(), DisplayMode::Normal);
+
+        app.apply(Action::LeaveSignalView);
+        assert_eq!(app.display_mode(), DisplayMode::Normal);
+    }
+
+    #[test]
+    fn toggle_current_favorite_uses_current_station_not_hidden_selection() {
+        let mut app = app_with(&["selected", "current"]);
+        app.apply(Action::SelectLast);
+        app.apply(Action::PlaySelected);
+        app.apply(Action::SelectFirst);
+
+        let current = app.current_station().cloned().expect("current station");
+        let hidden_selection = app.selected_station().cloned().expect("selected station");
+        assert_ne!(current.id, hidden_selection.id);
+
+        app.apply(Action::ToggleCurrentFavorite);
+
+        assert!(app.is_favorite(&current));
+        assert!(!app.is_favorite(&hidden_selection));
+        assert!(app.current_station_is_favorite());
+
+        app.apply(Action::ToggleCurrentFavorite);
+
+        assert!(!app.is_favorite(&current));
+        assert!(!app.current_station_is_favorite());
+    }
+
+    #[test]
+    fn toggle_current_favorite_without_current_station_is_noop() {
+        let mut app = app_with(&["selected"]);
+        let selected = app.selected_station().cloned().expect("selected station");
+
+        app.apply(Action::ToggleCurrentFavorite);
+
+        assert!(!app.is_favorite(&selected));
+        assert!(!app.current_station_is_favorite());
+    }
+
+    #[test]
+    fn toggle_current_favorite_in_favorites_source_refreshes_visible() {
+        let mut app = app_with_favorites(&["a", "b", "c"]);
+        apply_favorites_source(&mut app);
+        // Play the middle favorite so it becomes the current station, then move
+        // the hidden selection elsewhere to prove current drives the removal.
+        app.apply(Action::SelectNext); // index 1 == "b"
+        app.apply(Action::PlaySelected); // current = "b"
+        app.apply(Action::SelectFirst); // hidden selection back to "a"
+
+        app.apply(Action::ToggleCurrentFavorite);
+
+        // "b" (current) is removed from the visible Favorites list immediately,
+        // and selection is clamped in place like existing favorite behavior.
+        assert_eq!(app.settings().favorites.len(), 2);
+        assert_eq!(visible_ids(&app), vec!["a", "c"]);
+        assert_eq!(app.selected_index(), 0);
     }
 }

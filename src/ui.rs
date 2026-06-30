@@ -279,22 +279,20 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
     }
     let mut lines: Vec<Line> = Vec::new();
 
-    // Station name + subtle favorite marker, above the title, when a current
-    // station exists and the block is tall enough to spare the row.
+    // Station name + subtle favorite star, above the title, when a current
+    // station exists and the block is tall enough to spare the row. Match the
+    // station-list language: show `★` only for actual favorites and show no
+    // empty marker otherwise.
     if let Some(station) = app.current_station() {
         if area.height >= 3 {
-            let favorite = if app.current_station_is_favorite() {
-                "♥"
-            } else {
-                "♡"
-            };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    station.name.as_str().to_string(),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(format!(" {favorite}"), Style::default().fg(theme.playing)),
-            ]));
+            let mut spans = vec![Span::styled(
+                station.name.as_str().to_string(),
+                Style::default().fg(theme.muted),
+            )];
+            if app.current_station_is_favorite() {
+                spans.push(Span::styled(" ★", Style::default().fg(theme.accent)));
+            }
+            lines.push(Line::from(spans));
         }
     }
 
@@ -309,23 +307,38 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
         )));
     }
 
-    // Lowest-priority metadata: volume and the selected visualizer mode. Dropped
-    // first when the title block is short.
+    // Lowest-priority metadata: a thin, wide volume bar plus selected visualizer
+    // mode. Dropped first when the title block is short.
     if app.current_station().is_some() && area.height >= 4 {
-        lines.push(Line::styled(
-            format!(
-                "vol {}% · {}",
-                app.settings().volume.get(),
-                app.visualizer_mode().as_str()
-            ),
-            Style::default().fg(theme.muted),
-        ));
+        lines.push(signal_view_volume_line(app, theme, area.width));
     }
 
     Paragraph::new(lines)
         .alignment(Alignment::Center)
         .style(theme.base_style())
         .render(area, buf);
+}
+
+/// Build a calm, near-full-width volume line for Signal View.
+fn signal_view_volume_line<'a>(app: &App, theme: &Theme, width: u16) -> Line<'a> {
+    let volume = app.settings().volume.get();
+    let prefix = format!("volume {volume}% ");
+    let suffix = format!(" {}", app.visualizer_mode().as_str());
+    let fixed_width = prefix.chars().count() + suffix.chars().count() + 2;
+    let bar_width = (width as usize).saturating_sub(fixed_width).max(4);
+    let filled = ((bar_width * volume as usize) + 50) / 100;
+    let empty = bar_width.saturating_sub(filled);
+
+    Line::from(vec![
+        Span::styled(prefix, Style::default().fg(theme.muted)),
+        Span::styled("─".repeat(filled), Style::default().fg(theme.accent)),
+        Span::styled("·".repeat(empty), Style::default().fg(theme.muted)),
+        Span::raw("  "),
+        Span::styled(
+            suffix.trim_start().to_string(),
+            Style::default().fg(theme.muted),
+        ),
+    ])
 }
 
 /// The subdued, low-contrast key-hint footer.
@@ -2144,8 +2157,31 @@ mod tests {
     }
 
     #[test]
-    fn signal_view_shows_current_station_favorite_marker() {
-        // The favorite state of the current station is shown with a small ♥/♡.
+    fn signal_view_hides_favorite_marker_when_current_station_is_not_favorite() {
+        // Signal View uses the station-list favorite language: no marker when the
+        // current station is not a favorite.
+        let mut app = base_app();
+        app.apply(Action::PlaySelected);
+        app.apply(Action::ToggleSignalView);
+        assert!(!app.current_station_is_favorite());
+
+        let text = buffer_text(&render_buffer(&app, 100, 30));
+
+        assert!(!text.contains('★'), "non-favorite star leaked: {text}");
+        assert!(
+            !text.contains('♥'),
+            "heart marker should not render: {text}"
+        );
+        assert!(
+            !text.contains('♡'),
+            "empty favorite marker should not render: {text}"
+        );
+    }
+
+    #[test]
+    fn signal_view_shows_current_station_favorite_marker_as_star() {
+        // The favorite state of the current station is shown like the station
+        // list: a star only when it is actually favorited.
         let mut app = base_app();
         app.apply(Action::PlaySelected);
         app.apply(Action::ToggleCurrentFavorite);
@@ -2154,7 +2190,45 @@ mod tests {
 
         let text = buffer_text(&render_buffer(&app, 100, 30));
 
-        assert!(text.contains('♥'), "favorite marker missing: {text}");
+        assert!(text.contains('★'), "favorite star missing: {text}");
+        assert!(
+            !text.contains('♥'),
+            "heart marker should not render: {text}"
+        );
+        assert!(
+            !text.contains('♡'),
+            "empty favorite marker should not render: {text}"
+        );
+    }
+
+    #[test]
+    fn signal_view_renders_a_thin_wide_volume_bar_with_visualizer_mode() {
+        // Signal View should show volume as a calm, near-full-width thin bar,
+        // not as the compact `vol NN% · mode` metadata string.
+        let mut app = base_app();
+        app.apply(Action::PlaySelected);
+        app.apply(Action::SetVolume(VolumePercent::new(60).unwrap()));
+        app.apply(Action::ToggleSignalView);
+
+        let text = buffer_text(&render_buffer(&app, 100, 30));
+        let volume_line = text
+            .lines()
+            .find(|line| line.contains("volume 60%"))
+            .unwrap_or_else(|| panic!("volume line missing: {text}"));
+
+        assert!(
+            volume_line.contains(app.visualizer_mode().as_str()),
+            "visualizer mode missing from volume line: {volume_line:?}"
+        );
+        assert!(
+            !volume_line.contains("vol 60%"),
+            "old compact volume label leaked: {volume_line:?}"
+        );
+        let bar_cells = volume_line
+            .chars()
+            .filter(|ch| matches!(ch, '─' | '·'))
+            .count();
+        assert!(bar_cells >= 40, "volume bar too short: {volume_line:?}");
     }
 
     #[test]

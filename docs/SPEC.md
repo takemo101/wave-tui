@@ -378,12 +378,16 @@ While Signal View is active:
 Signal View displays the app's current station (the idle prompt
 `Select a station, then press z` when none exists), shows the ICY now-playing
 title when available and otherwise the station name, and keeps the user in the
-mode across stopped/connecting/playing/failed states. It does not pause, cancel,
-or clear background search/list state. The visualizer reuses the currently
-selected theme and visualizer mode and receives the largest flexible layout
-region, so it is meaningfully larger than the normal Now Playing visualizer on
-medium and large panes. Signal View does not add playlist, queue, search, or new
-station-selection behavior, and it does not become the default compact layout.
+mode across stopped/connecting/playing/failed states. Favorite state matches the
+station list: a small `★` is shown only when the current station is favorited;
+non-favorites show no empty marker. It does not pause, cancel, or clear
+background search/list state. The visualizer reuses the currently selected theme
+and visualizer mode and receives the largest flexible layout region, so it is
+meaningfully larger than the normal Now Playing visualizer on medium and large
+panes. The title metadata includes a thin, near-full-width volume bar alongside
+the current visualizer mode. Signal View does not add playlist, queue, search, or
+new station-selection behavior, and it does not become the default compact
+layout.
 
 ### Themes
 

@@ -259,6 +259,18 @@ write operations when GitButler is active.
 - Read-only git inspection is acceptable when needed.
 - If GitButler is not set up for this directory, do not force it; ask or proceed
   without version-control mutation.
+- Avoid creating PRs from temporary clones while this workspace is
+  GitButler-managed, unless explicitly necessary. If a temporary clone is used,
+  treat the main workspace as stale afterward: return here, verify `but status`,
+  `but config target`, and `but pull --check`, then repair or sync before
+  starting more work.
+- Do not leave merged GitButler branches, old virtual branch records, or stale
+  target refs applied in the main workspace after using a clean clone for PR
+  work. Remote `origin/main` remains authoritative, but GitButler target and
+  workspace state must be brought back into alignment before further commits.
+- If `but pull --check` reports a merge-base error, stop normal feature work and
+  repair GitButler state first; do not keep committing from workaround clones
+  unless the user explicitly approves that escape hatch.
 
 ## Documentation rules
 

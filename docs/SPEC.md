@@ -359,6 +359,32 @@ Space semantics:
 - If playing: stop current station.
 - If stopped and a current station exists: reconnect/play that station.
 
+### Signal View
+
+Signal View is an explicit visual-player mode entered with `z` from the normal
+TUI. It hides the Search, Browse, and Stations discovery UI so the current
+station can be presented center-stage with a large visualizer. It is temporary
+display state: it is not persisted across launches and has no CLI startup flag.
+
+While Signal View is active:
+
+- `z` or `Esc` returns to the normal UI; `q` still quits the app.
+- `Space`, `+`/`-`, `v`, `t`, and `f` keep their normal behavior.
+- `f` toggles favorite state for the *current* station shown on screen, not the
+  hidden station-list selection.
+- Search, focus movement, Browse, and station navigation/selection keys are
+  ignored silently.
+
+Signal View displays the app's current station (the idle prompt
+`Select a station, then press z` when none exists), shows the ICY now-playing
+title when available and otherwise the station name, and keeps the user in the
+mode across stopped/connecting/playing/failed states. It does not pause, cancel,
+or clear background search/list state. The visualizer reuses the currently
+selected theme and visualizer mode and receives the largest flexible layout
+region, so it is meaningfully larger than the normal Now Playing visualizer on
+medium and large panes. Signal View does not add playlist, queue, search, or new
+station-selection behavior, and it does not become the default compact layout.
+
 ### Themes
 
 MVP includes the **High Contrast Trio** selected in the design deck.

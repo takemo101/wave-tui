@@ -277,6 +277,15 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
     if area.width == 0 || area.height == 0 {
         return;
     }
+
+    Paragraph::new(signal_view_title_lines(app, theme, area.width, area.height))
+        .alignment(Alignment::Center)
+        .style(theme.base_style())
+        .render(area, buf);
+}
+
+/// Build the centered Signal View title block lines without mutating the buffer.
+fn signal_view_title_lines<'a>(app: &App, theme: &Theme, width: u16, height: u16) -> Vec<Line<'a>> {
     let mut lines: Vec<Line> = Vec::new();
 
     // Station name + subtle favorite star, above the title, when a current
@@ -284,7 +293,7 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
     // station-list language: show `★` only for actual favorites and show no
     // empty marker otherwise.
     if let Some(station) = app.current_station() {
-        if area.height >= 3 {
+        if height >= 3 {
             let mut spans = vec![Span::styled(
                 station.name.as_str().to_string(),
                 Style::default().fg(theme.muted),
@@ -298,7 +307,7 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
 
     // Primary title, constrained to at most two lines so a long ICY title or
     // station name can never push the visualizer or hint out of view.
-    for line in title_lines(&signal_view_primary_title(app), area.width) {
+    for line in title_lines(&signal_view_primary_title(app), width) {
         lines.push(Line::from(Span::styled(
             line,
             Style::default()
@@ -309,14 +318,11 @@ fn render_signal_view_title(app: &App, theme: &Theme, area: Rect, buf: &mut Buff
 
     // Lowest-priority metadata: a thin, wide volume bar. Dropped first when the
     // title block is short.
-    if app.current_station().is_some() && area.height >= 4 {
-        lines.push(signal_view_volume_line(app, theme, area.width));
+    if app.current_station().is_some() && height >= 4 {
+        lines.push(signal_view_volume_line(app, theme, width));
     }
 
-    Paragraph::new(lines)
-        .alignment(Alignment::Center)
-        .style(theme.base_style())
-        .render(area, buf);
+    lines
 }
 
 /// Build a calm, near-full-width volume line for Signal View.

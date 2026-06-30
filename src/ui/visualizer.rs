@@ -6,11 +6,12 @@
 //! orchestration and calls only [`render_visualizer`]; every other item here is
 //! private to this module.
 //!
-//! Like the rest of [`crate::ui`], rendering is read-only: each renderer is a
-//! pure function of the current [`VizFrame`] (FFT bands, RMS, or the time-domain
-//! waveform), the pane area, and the active [`Theme`]. No RNG, time, or tick
-//! state is used, so the same frame always renders identically. All colors come
-//! from the active [`Theme`]; this module hard-codes no palette values.
+//! Like the rest of [`crate::ui`], rendering is read-only: each renderer is
+//! driven by real [`VizFrame`] data (FFT bands, RMS, or the time-domain waveform),
+//! the pane area, and the active [`Theme`]. No RNG, wall-clock time, or fake
+//! animation is used; PeakDots may read the app's short VizFrame history to draw
+//! real frame trails. All colors come from the active [`Theme`]; this module
+//! hard-codes no palette values.
 
 use ratatui::{buffer::Buffer, layout::Rect};
 
@@ -93,31 +94,44 @@ fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, fg: ratatui::style::Colo
     }
 }
 
-/// The "Peak Dots" visualizer: one themed dot per pane column, placed at the
-/// column's FFT peak height instead of a filled bar.
+/// PeakDots glyphs from current frame to oldest retained trail frame.
+const PEAK_DOT_TRAIL_GLYPHS: [char; 6] = ['●', '•', '∙', '·', '·', '·'];
+
+/// The "Peak Dots" visualizer: one themed current dot per pane column, plus a
+/// short five-frame trail of quieter dots from recent real audio frames.
 ///
 /// A distinct renderer from [`render_spectrum`]: it shares the full-pane-width
 /// [`spectrum_columns`] sampling and the theme's low→mid→high spectrum gradient,
-/// but draws only the peak cell of each column as a dot so the visualizer reads as a
-/// quieter peak band. Columns whose magnitude rounds to zero (silent/empty
-/// frames) draw nothing. Pure function of the current [`VizFrame`]; it carries no
-/// animation or mode-specific state.
+/// but draws only peak cells so the visualizer reads as a quiet peak band. Older
+/// frames are drawn first with smaller/fainter glyphs, then the current frame is
+/// drawn last as `●`, so overlap never dims the current peak. Columns whose
+/// magnitude rounds to zero (silent/empty frames) draw nothing. The trail is
+/// driven only by recent [`VizFrame`] history, never by fake animation.
 fn render_peak_dots(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let columns = spectrum_columns(&app.viz().bands, area.width as usize);
-    for (i, (magnitude, position)) in columns.into_iter().enumerate() {
-        let filled = (magnitude * area.height as f32).round() as u16;
-        if filled == 0 {
-            continue;
-        }
-        let color = theme.spectrum_color(position);
-        let x = area.x + i as u16;
-        // The peak sits at the top of where a filled bar would reach.
-        let y = area.y + area.height - filled;
-        if let Some(cell) = buf.cell_mut((x, y)) {
-            cell.set_char('●').set_fg(color);
+    let history: Vec<_> = app.viz_history().enumerate().collect();
+    for (age, frame) in history.into_iter().rev() {
+        let glyph = PEAK_DOT_TRAIL_GLYPHS
+            .get(age)
+            .copied()
+            .unwrap_or(*PEAK_DOT_TRAIL_GLYPHS.last().unwrap());
+        let columns = spectrum_columns(&frame.bands, area.width as usize);
+        for (i, (magnitude, position)) in columns.into_iter().enumerate() {
+            let filled = (magnitude * area.height as f32).round() as u16;
+            if filled == 0 {
+                continue;
+            }
+            let color = if age >= 3 {
+                theme.muted
+            } else {
+                theme.spectrum_color(position)
+            };
+            let x = area.x + i as u16;
+            // The peak sits at the top of where a filled bar would reach.
+            let y = area.y + area.height - filled;
+            set_cell(buf, x, y, glyph, color);
         }
     }
 }
@@ -630,9 +644,10 @@ mod tests {
     }
 
     #[test]
-    fn peak_dots_is_unaffected_by_spectrum_particles() {
-        // The animated particle upgrade is scoped to SpectrumStack: the adjacent
-        // PeakDots mode still draws its peak dots and carries no particle glyphs.
+    fn peak_dots_single_frame_is_unaffected_by_spectrum_particles() {
+        // The animated particle upgrade is scoped to SpectrumStack: a fresh
+        // single-frame PeakDots render still draws peak dots without a particle
+        // field. Trail glyphs appear only after previous VizFrames exist.
         let mut app = with_flat_frame(1.0, 16);
         app.apply(Action::CycleVisualizerMode);
         assert_eq!(app.visualizer_mode(), VisualizerMode::PeakDots);
@@ -645,7 +660,7 @@ mod tests {
         assert!(text.contains('●'), "PeakDots lost its dots: {text}");
         assert!(
             !text.chars().any(is_particle),
-            "particle glyphs leaked into PeakDots: {text}"
+            "single-frame PeakDots should not draw a particle field: {text}"
         );
     }
 
@@ -834,6 +849,53 @@ mod tests {
                 || has_fg(&buf, theme.spectrum_high),
             "peak dot colors not themed"
         );
+    }
+
+    #[test]
+    fn peak_dots_renders_trail_from_previous_audio_frames() {
+        // PeakDots keeps a short real-frame trail: the current peak remains a
+        // strong dot, while previous frame peaks render as quieter glyphs at
+        // their old heights.
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut app = base_app();
+        app.apply(Action::CycleVisualizerMode); // SpectrumStack -> PeakDots
+        for magnitude in [0.2_f32, 0.4, 0.6] {
+            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+                [magnitude],
+                magnitude,
+                [],
+            ))));
+        }
+
+        let area = Rect::new(0, 0, 1, 10);
+        let mut buf = Buffer::empty(area);
+        render_peak_dots(&theme, &app, area, &mut buf);
+
+        assert_eq!(buf.cell((0, 4)).unwrap().symbol(), "●", "current peak");
+        assert_eq!(buf.cell((0, 6)).unwrap().symbol(), "•", "one-frame trail");
+        assert_eq!(buf.cell((0, 8)).unwrap().symbol(), "∙", "two-frame trail");
+    }
+
+    #[test]
+    fn peak_dots_current_dot_wins_when_trail_overlaps() {
+        // Drawing older frames first must never dim the current peak when the
+        // current and trailing frames land on the same cell.
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let mut app = base_app();
+        app.apply(Action::CycleVisualizerMode); // SpectrumStack -> PeakDots
+        for _ in 0..3 {
+            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+                [1.0_f32],
+                1.0,
+                [],
+            ))));
+        }
+
+        let area = Rect::new(0, 0, 1, 6);
+        let mut buf = Buffer::empty(area);
+        render_peak_dots(&theme, &app, area, &mut buf);
+
+        assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "●");
     }
 
     #[test]

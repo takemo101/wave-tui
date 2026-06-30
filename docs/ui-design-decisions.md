@@ -76,14 +76,15 @@ Implications:
 set; `MIK-031` adds a third FFT-band member so the set is now six modes:
 `SpectrumStack`, `PeakDots`, `SkylinePeaks`, `WaveScope`, `MirrorWave`, and
 `AmbientPulse`, all implemented. `SpectrumStack`/`PeakDots`/`SkylinePeaks` are
-FFT-band driven (`SkylinePeaks` is a calm, stateless skyline of bright peak caps
-over a subtle dashed tail, distinct from the solid `SpectrumStack` bars and the
-single `PeakDots` dot), `WaveScope`/`MirrorWave` draw the time-domain waveform,
-and `AmbientPulse` is an RMS/band ambient glow. This requires `VizFrame` to carry
-a low-resolution normalized waveform alongside FFT bands and RMS. All modes
-remain real-audio-driven and stretch/interpolate their source data to fill the
-allocated visualizer pane width; this means using the current pane fully, not
-turning Wide or Compact into a full-width/full-screen visualizer layout.
+FFT-band driven (`PeakDots` draws the current peak with a five-frame real-audio
+trail, while `SkylinePeaks` is a calm skyline of bright peak caps over a subtle
+dashed tail, distinct from the solid `SpectrumStack` bars), `WaveScope`/
+`MirrorWave` draw the time-domain waveform, and `AmbientPulse` is an RMS/band
+ambient glow. This requires `VizFrame` to carry a low-resolution normalized
+waveform alongside FFT bands and RMS. All modes remain real-audio-driven and
+stretch/interpolate their source data to fill the allocated visualizer pane
+width; this means using the current pane fully, not turning Wide or Compact into
+a full-width/full-screen visualizer layout.
 
 The `v` key cycles the visualizer mode and the selected mode is persisted.
 

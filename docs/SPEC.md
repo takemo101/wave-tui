@@ -443,7 +443,7 @@ drawing-oriented shape, not raw audio buffers.
 Visualizer modes (all implemented and selectable via `v`):
 
 1. `SpectrumStack` — particle-filled vertical FFT analyzer columns and default mode.
-2. `PeakDots` — FFT bars with a dot/peak emphasis.
+2. `PeakDots` — FFT peak dots with a five-frame real-audio trail; the current dot is strongest and older dots fade as quieter marks.
 3. `SkylinePeaks` — stateless FFT skyline: a bright peak cap over a subtle dashed
    tail, distinct from both `SpectrumStack` and `PeakDots`.
 4. `WaveScope` — waveform line/scope display from `VizFrame::waveform`.

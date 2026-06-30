@@ -109,8 +109,8 @@ Implications:
   View-specific visualizer.
 - Favorite state uses the same calm star language as station lists: `★` appears
   only when the current station is favorited, and non-favorites show no empty
-  marker. Volume is shown as a thin, near-full-width bar paired with the active
-  visualizer mode label.
+  marker. Volume is shown as a thin, near-full-width bar without attaching the
+  visualizer mode label to the volume control.
 - Allowed keys are `z`/`Esc` (back), `q` (quit), `Space`, `+`/`-`, `v`, `t`, and
   `f`; `f` favorites the current station, not the hidden station-list selection.
   Discovery, navigation, and focus keys are ignored silently.

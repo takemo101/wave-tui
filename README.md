@@ -209,8 +209,8 @@ focus keys are ignored. Signal View is a temporary view: it is not saved across
 launches and has no command-line flag. With no current station it shows a short
 `Select a station, then press z` prompt, and it stays put across stopped,
 connecting, playing, and failed states instead of dropping you back to the
-normal UI. The title area includes a thin, near-full-width volume bar with the
-active visualizer mode label.
+normal UI. The title area includes a thin, near-full-width volume bar without
+mixing in unrelated status labels.
 
 ## Command-line options
 

@@ -444,8 +444,8 @@ Visualizer modes (all implemented and selectable via `v`):
 
 1. `SpectrumStack` — particle-filled vertical FFT analyzer columns and default mode.
 2. `PeakDots` — FFT peak dots with a five-frame real-audio trail; the current dot is strongest and older dots fade as quieter marks.
-3. `SkylinePeaks` — stateless FFT skyline: a bright peak cap over a subtle dashed
-   tail, distinct from both `SpectrumStack` and `PeakDots`.
+3. `SkylinePeaks` — stateless FFT skyline: a bright peak cap over a digital 0/1
+   binary tail, distinct from both `SpectrumStack` and `PeakDots`.
 4. `WaveScope` — waveform line/scope display from `VizFrame::waveform`.
 5. `MirrorWave` — symmetrical waveform display for a calmer oscilloscope feel.
 6. `AmbientPulse` — low-noise RMS/band-driven ambient display.

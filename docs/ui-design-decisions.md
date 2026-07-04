@@ -77,8 +77,8 @@ set; `MIK-031` adds a third FFT-band member so the set is now six modes:
 `SpectrumStack`, `PeakDots`, `SkylinePeaks`, `WaveScope`, `MirrorWave`, and
 `AmbientPulse`, all implemented. `SpectrumStack`/`PeakDots`/`SkylinePeaks` are
 FFT-band driven (`PeakDots` draws the current peak with a five-frame real-audio
-trail, while `SkylinePeaks` is a calm skyline of bright peak caps over a subtle
-dashed tail, distinct from the solid `SpectrumStack` bars), `WaveScope`/
+trail, while `SkylinePeaks` is a calm skyline of bright peak caps over a digital
+0/1 binary tail, distinct from the solid `SpectrumStack` bars), `WaveScope`/
 `MirrorWave` draw the time-domain waveform, and `AmbientPulse` is an RMS/band
 ambient glow. This requires `VizFrame` to carry a low-resolution normalized
 waveform alongside FFT bands and RMS. All modes remain real-audio-driven and

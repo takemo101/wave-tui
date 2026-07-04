@@ -137,18 +137,19 @@ fn render_peak_dots(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
 }
 
 /// The "Skyline Peaks" visualizer: a calm FFT skyline of bright peak caps over a
-/// subtle dashed tail.
+/// digital binary tail.
 ///
 /// A third FFT-band Spectrum-family renderer alongside [`render_spectrum`] and
 /// [`render_peak_dots`]. It shares the full-pane-width [`spectrum_columns`]
 /// sampling and the theme's low→mid→high spectrum gradient, but draws each column
-/// as a distinct silhouette: a bright cap glyph (`▀`) marks the peak and a light
-/// dashed tail (`╎`) fills the body below it down to the floor. This reads
-/// quieter than the solid [`render_spectrum`] bars yet carries more presence than
-/// the single [`render_peak_dots`] dot, so the three FFT modes stay visibly
-/// distinct. Columns whose magnitude rounds to zero (silent/empty frames) draw
-/// nothing. Pure function of the current [`VizFrame`]; it carries no animation or
-/// mode-specific state.
+/// as a distinct silhouette: a bright cap glyph (`▀`) marks the peak and a
+/// deterministic pseudo-random binary tail (`0`/`1`) fills the body below it down
+/// to the floor. This reads quieter than the solid [`render_spectrum`] bars yet
+/// carries a digital Matrix-like presence beyond the single [`render_peak_dots`]
+/// dot, so the three FFT modes stay visibly distinct. Columns whose magnitude
+/// rounds to zero (silent/empty frames) draw nothing. Pure function of the current
+/// [`VizFrame`]; it carries no animation, RNG, wall-clock time, or mode-specific
+/// state.
 fn render_skyline_peaks(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -162,17 +163,44 @@ fn render_skyline_peaks(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) 
         let color = theme.spectrum_color(position);
         let x = area.x + i as u16;
         // The cap sits at the top of where a filled bar would reach; the tail is
-        // the calm dashed body beneath it, down to the floor.
+        // the calm digital body beneath it, down to the floor.
         let cap_y = area.y + area.height - filled;
         for row in 0..filled.saturating_sub(1) {
             let y = area.y + area.height - 1 - row;
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_char('╎').set_fg(color);
+                cell.set_char(skyline_binary_tail_digit(i, row, filled, magnitude))
+                    .set_fg(color);
             }
         }
         if let Some(cell) = buf.cell_mut((x, cap_y)) {
             cell.set_char('▀').set_fg(color);
         }
+    }
+}
+
+/// Stable pseudo-random binary digit for the SkylinePeaks tail.
+///
+/// This keeps the Matrix-like texture deterministic for tests and screenshots:
+/// the same audio frame and pane always produce the same cells, while nearby
+/// columns/rows still alternate enough to avoid a mechanical checkerboard.
+fn skyline_binary_tail_digit(
+    column: usize,
+    row_from_floor: u16,
+    filled: u16,
+    magnitude: f32,
+) -> char {
+    let magnitude_bucket = (magnitude.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let mut hash = (column as u32).wrapping_mul(0x045d_9f3b)
+        ^ (row_from_floor as u32).wrapping_mul(0x27d4_eb2d)
+        ^ (filled as u32).wrapping_mul(0x1656_67b1)
+        ^ magnitude_bucket.wrapping_mul(0x9e37_79b9);
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x7feb_352d);
+    hash ^= hash >> 15;
+    if hash & 1 == 0 {
+        '0'
+    } else {
+        '1'
     }
 }
 
@@ -930,8 +958,9 @@ mod tests {
     #[test]
     fn selecting_skyline_peaks_changes_the_rendered_visualizer() {
         // SkylinePeaks is reachable from PeakDots via the `v` cycle and routes to
-        // its own renderer: a bright cap glyph over a subtle dashed tail, distinct
-        // from both the filled SpectrumStack bars and the single PeakDots dot.
+        // its own renderer: a bright cap glyph over a digital binary tail,
+        // distinct from both the filled SpectrumStack bars and the single
+        // PeakDots dot.
         let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
             vec![1.0_f32; 8],
@@ -945,8 +974,12 @@ mod tests {
             "skyline peaks must draw a cap glyph: {skyline_text}"
         );
         assert!(
-            skyline_text.contains('╎'),
-            "skyline peaks must draw a subtle tail glyph: {skyline_text}"
+            skyline_text.contains('0') || skyline_text.contains('1'),
+            "skyline peaks must draw a digital binary tail: {skyline_text}"
+        );
+        assert!(
+            !skyline_text.contains('╎'),
+            "skyline peaks must replace the dashed tail with binary digits: {skyline_text}"
         );
         // Distinct from the sibling spectrum modes' glyph languages.
         assert!(
@@ -993,9 +1026,9 @@ mod tests {
     }
 
     #[test]
-    fn skyline_peaks_draws_a_subtle_tail_below_the_cap() {
-        // A tall column shows the bright cap on top and the calm dashed tail
-        // beneath it, so the silhouette reads as a skyline rather than a solid bar.
+    fn skyline_peaks_draws_a_digital_binary_tail_below_the_cap() {
+        // A tall column shows the bright cap on top and a calm 0/1 tail beneath
+        // it, so the silhouette reads as a digital skyline rather than a solid bar.
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
         app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
@@ -1010,17 +1043,27 @@ mod tests {
         let x = 0;
         assert_eq!(buf.cell((x, 0)).unwrap().symbol(), "▀", "cap on top row");
         for y in 1..area.height {
-            assert_eq!(
-                buf.cell((x, y)).unwrap().symbol(),
-                "╎",
-                "tail glyph below the cap at row {y}"
+            let glyph = buf.cell((x, y)).unwrap().symbol();
+            assert!(
+                glyph == "0" || glyph == "1",
+                "tail below the cap must be a binary digit at row {y}, got {glyph:?}"
             );
         }
-        // The tail is not a solid block (distinct from the SpectrumStack fill).
+        let text = buffer_text(&buf);
         assert!(
-            !buffer_text(&buf).contains('█'),
-            "skyline tail must not be solid bars"
+            text.contains('0'),
+            "binary tail should include zeros: {text}"
         );
+        assert!(
+            text.contains('1'),
+            "binary tail should include ones: {text}"
+        );
+        assert!(
+            !text.contains('╎'),
+            "skyline tail must not use the old dashed glyph"
+        );
+        // The tail is not a solid block (distinct from the SpectrumStack fill).
+        assert!(!text.contains('█'), "skyline tail must not be solid bars");
     }
 
     #[test]

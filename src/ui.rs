@@ -30,7 +30,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, FocusPane, ListSource, SearchStatus};
+use crate::app::{Action, App, FocusPane, ListSource, SearchStatus};
 use crate::layout::LayoutTier;
 use crate::model::{CodecKind, PlaybackState, Station};
 use crate::theme::Theme;
@@ -67,6 +67,21 @@ pub(crate) fn render_splash(kind: SplashKind, theme: &Theme, tick: u16, frame: &
 /// no state mutation.
 pub fn render(app: &App, frame: &mut Frame) {
     render_into(app, frame.area(), frame.buffer_mut());
+}
+
+/// Pure hit test for Agent Pulse mouse input.
+///
+/// Maps a click at (`column`, `row`) within the rendered `area` to a
+/// read-only Agent Pulse action — overlay node/list selection or the
+/// `Completed (n)` disclosure — and `None` for every other click. The CLI
+/// event loop owns applying the returned action; this function never mutates
+/// `App` and never returns playback, station, search, or settings actions.
+///
+/// Temporary interface stub: the overlay's rendering and geometry land with
+/// the Agent Pulse UI task, so no click resolves to an action yet.
+pub(crate) fn agent_pulse_hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<Action> {
+    let _ = (area, column, row, app);
+    None
 }
 
 /// Render into an explicit area and buffer.

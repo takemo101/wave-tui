@@ -23,17 +23,22 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use crate::app::{Action, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioEvent, AudioHandle, AudioRuntime, AudioRuntimeConfig};
 use crate::catalog::Catalog;
+use crate::herdr::{self, HerdrMonitor, MonitorEvent};
 use crate::model::{PlaybackState, SearchQuery, VolumePercent};
 use crate::search::{RadioBrowserClient, SearchCache, SearchError, SearchResults};
 use crate::settings::{self, Settings};
@@ -66,6 +71,8 @@ OPTIONS:
     --no-auto-play                Start silently even if a previous station exists
     --audio-output-device <name>  CPAL output device name
     --low-power                   Lower UI update cadence (audio unaffected)
+    --no-agent-pulse              Disable the Herdr Agent Pulse integration for
+                                  this run (never persisted)
     --search <query>              Start in search mode with this query
     -h, --help                    Print help
     -V, --version                 Print version
@@ -84,6 +91,9 @@ pub struct CliArgs {
     pub no_auto_play: bool,
     pub audio_output_device: Option<String>,
     pub low_power: bool,
+    /// Disable the Herdr Agent Pulse integration for this run only; never
+    /// persisted and never applied to settings.
+    pub no_agent_pulse: bool,
     pub search: Option<String>,
 }
 
@@ -164,6 +174,7 @@ where
             "-V" | "--version" => return Ok(CliInvocation::Version),
             "--no-auto-play" => parsed.no_auto_play = true,
             "--low-power" => parsed.low_power = true,
+            "--no-agent-pulse" => parsed.no_agent_pulse = true,
             "--theme" => {
                 let raw = take_value("--theme")?;
                 parsed.theme =
@@ -206,6 +217,9 @@ pub enum KeyOutcome {
     ExitOrBack,
     /// `z`: toggle the Signal View display mode.
     ToggleSignalView,
+    /// `a`: toggle the Agent Pulse overlay. The reducer keeps it a no-op
+    /// while the integration is hidden or Signal View is active.
+    ToggleAgentPulse,
     FocusNext,
     FocusPrevious,
     SelectNext,
@@ -278,6 +292,7 @@ pub fn map_key(key: KeyEvent, searching: bool) -> KeyOutcome {
             KeyCode::Char('q') => KeyOutcome::Quit,
             KeyCode::Esc => KeyOutcome::ExitOrBack,
             KeyCode::Char('z') => KeyOutcome::ToggleSignalView,
+            KeyCode::Char('a') => KeyOutcome::ToggleAgentPulse,
             KeyCode::Char('j') => KeyOutcome::SelectNext,
             KeyCode::Char('k') => KeyOutcome::SelectPrevious,
             KeyCode::Char('g') => KeyOutcome::SelectFirst,
@@ -526,28 +541,52 @@ fn search_worker(rx: Receiver<SearchRequest>, tx: Sender<SearchResponse>) {
 
 // === Terminal lifecycle ==================================================
 
+/// Whether the terminal should capture mouse events for this run.
+///
+/// Mouse capture exists only to feed `Event::Mouse` to the Agent Pulse
+/// overlay's read-only click selection, and it changes terminal behavior
+/// (native text selection needs Shift+drag while captured). So it follows
+/// the monitor exactly: standalone, ineligible, and `--no-agent-pulse`
+/// launches keep their pre-integration terminal behavior untouched.
+fn mouse_capture_for(monitor: Option<&HerdrMonitor>) -> bool {
+    monitor.is_some()
+}
+
 /// RAII guard owning the terminal in raw/alternate-screen mode.
 ///
 /// Restoration runs in [`Drop`], so the terminal is restored on a normal quit,
 /// on a recoverable error returned from the event loop, and on a panic.
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    /// Whether mouse capture was enabled and must be released on drop.
+    mouse_capture: bool,
 }
 
 impl TerminalGuard {
-    fn new() -> Result<Self> {
+    fn new(mouse_capture: bool) -> Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen).context("entering alternate screen")?;
+        if mouse_capture {
+            execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+                .context("entering alternate screen")?;
+        } else {
+            execute!(stdout, EnterAlternateScreen).context("entering alternate screen")?;
+        }
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).context("creating terminal")?;
-        Ok(Self { terminal })
+        Ok(Self {
+            terminal,
+            mouse_capture,
+        })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
+        if self.mouse_capture {
+            let _ = execute!(self.terminal.backend_mut(), DisableMouseCapture);
+        }
         let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
         let _ = self.terminal.show_cursor();
     }
@@ -626,6 +665,13 @@ fn run_app(args: CliArgs) -> Result<()> {
 
     let mut app = App::new(settings, Catalog::curated());
 
+    // Agent Pulse monitor: created only when the official Herdr plugin
+    // environment is eligible and `--no-agent-pulse` is absent. `None` keeps
+    // standalone behavior exact. The polling thread is joined on every exit
+    // path: explicitly in the shutdown block on a normal return, and by
+    // `HerdrMonitor`'s `Drop` on the early `?` returns below.
+    let monitor = herdr::context_from_env(args.no_agent_pulse).map(herdr::spawn_monitor);
+
     let audio = AudioRuntime::spawn(AudioRuntimeConfig {
         output_device: args.audio_output_device.clone(),
         low_power: args.low_power,
@@ -666,9 +712,10 @@ fn run_app(args: CliArgs) -> Result<()> {
         audio: &audio,
         request_tx: &request_tx,
         response_rx: &response_rx,
+        monitor: monitor.as_ref(),
     };
 
-    let mut guard = TerminalGuard::new()?;
+    let mut guard = TerminalGuard::new(mouse_capture_for(monitor.as_ref()))?;
 
     // Startup splash: a quiet, skippable transition after entering the alternate
     // screen and before the main UI loop. It does not touch app/audio state.
@@ -705,6 +752,9 @@ fn run_app(args: CliArgs) -> Result<()> {
     // user changed volume). The terminal is restored when `guard` drops.
     let _ = audio.command_tx.send(AudioCommand::Shutdown);
     let _ = request_tx.send(SearchRequest::Shutdown);
+    if let Some(monitor) = monitor {
+        monitor.stop();
+    }
     persistence.save(&app);
     let _ = worker.join();
 
@@ -725,6 +775,9 @@ struct Runtime<'a> {
     audio: &'a AudioHandle,
     request_tx: &'a Sender<SearchRequest>,
     response_rx: &'a Receiver<SearchResponse>,
+    /// The optional Herdr Agent Pulse monitor; `None` for standalone,
+    /// ineligible, or `--no-agent-pulse` launches.
+    monitor: Option<&'a HerdrMonitor>,
 }
 
 /// The terminal event loop: render, fire due searches, handle input, and drain
@@ -753,10 +806,17 @@ fn event_loop(
         }
 
         if event::poll(poll_interval)? {
-            if let Event::Key(key) = event::read()? {
-                if handle_key(key, app, runtime.audio, debounce, persistence) == Flow::Quit {
+            match event::read()? {
+                Event::Key(key)
+                    if handle_key(key, app, runtime.audio, debounce, persistence) == Flow::Quit =>
+                {
                     return Ok(());
                 }
+                Event::Mouse(mouse) => {
+                    let size = terminal.size()?;
+                    handle_mouse(mouse, Rect::new(0, 0, size.width, size.height), app);
+                }
+                _ => {}
             }
         }
 
@@ -766,6 +826,18 @@ fn event_loop(
 
         while let Ok(response) = runtime.response_rx.try_recv() {
             apply_search_response(app, debounce, response);
+        }
+
+        if let Some(monitor) = runtime.monitor {
+            while let Ok(event) = monitor.events().try_recv() {
+                apply_monitor_event(app, event, Instant::now());
+            }
+            // Stale/unavailable thresholds advance every loop, so the
+            // 15-second unavailable state occurs even when no monitor event
+            // arrives (e.g. the socket stays silent).
+            app.apply(Action::AgentTick {
+                now: Instant::now(),
+            });
         }
     }
 }
@@ -813,12 +885,24 @@ fn handle_key(
         return handle_signal_view_key(map_key(key, false), app, audio, persistence);
     }
 
+    // The Agent Pulse overlay is a temporary read-only modal. It is routed
+    // after Signal View (which never shows Agent Pulse) and before the normal
+    // focus-aware handling so overlay navigation is consumed before station
+    // navigation. Keys are mapped as navigation: the overlay only opens from
+    // navigation mode, and it never moves focus into the search strip.
+    if app.is_agent_overlay_open() {
+        return handle_agent_overlay_key(map_key(key, false), app);
+    }
+
     let searching = app.focus() == FocusPane::Search;
     let before = app.settings().clone();
 
     match map_key(key, searching) {
         KeyOutcome::Quit | KeyOutcome::ExitOrBack => return Flow::Quit,
         KeyOutcome::ToggleSignalView => app.apply(Action::ToggleSignalView),
+        // The reducer keeps this a no-op for standalone/ineligible launches,
+        // so `a` stays harmless when no monitor was ever created.
+        KeyOutcome::ToggleAgentPulse => app.apply(Action::ToggleAgentOverlay),
         KeyOutcome::Ignore => {}
         KeyOutcome::FocusNext => app.apply(Action::FocusNext),
         KeyOutcome::FocusPrevious => app.apply(Action::FocusPrevious),
@@ -984,8 +1068,10 @@ fn handle_signal_view_key(
                 .send(AudioCommand::SetVolume(app.settings().volume));
         }
         // Disabled keys are silent no-ops: search, focus movement, station
-        // navigation, and station selection do nothing while Signal View is active.
+        // navigation, station selection, and Agent Pulse do nothing while
+        // Signal View is active.
         KeyOutcome::Ignore
+        | KeyOutcome::ToggleAgentPulse
         | KeyOutcome::FocusNext
         | KeyOutcome::FocusPrevious
         | KeyOutcome::SelectNext
@@ -1003,6 +1089,71 @@ fn handle_signal_view_key(
         persistence.save(app);
     }
     Flow::Continue
+}
+
+/// Route a key while the Agent Pulse overlay is open.
+///
+/// The overlay is a read-only modal: `Tab`/arrows (and their `j`/`k`
+/// synonyms) move the agent selection, `Enter` keeps the information card
+/// visible, and `a`/`Esc` close it. `q`/`Ctrl+C` still quit. Every other key
+/// is consumed silently so overlay input can never play a station, move
+/// station selection, change settings or focus, or alter audio.
+fn handle_agent_overlay_key(outcome: KeyOutcome, app: &mut App) -> Flow {
+    match outcome {
+        KeyOutcome::Quit => return Flow::Quit,
+        KeyOutcome::ToggleAgentPulse => app.apply(Action::ToggleAgentOverlay),
+        KeyOutcome::ExitOrBack => app.apply(Action::CloseAgentOverlay),
+        KeyOutcome::FocusNext | KeyOutcome::SelectNext => app.apply(Action::SelectNextAgent),
+        KeyOutcome::FocusPrevious | KeyOutcome::SelectPrevious => {
+            app.apply(Action::SelectPreviousAgent)
+        }
+        // `Enter` keeps the information card visible: the selection already
+        // drives the card, so there is nothing to mutate.
+        KeyOutcome::Play => {}
+        // Everything else is consumed while the overlay is open: playback,
+        // volume, theme, visualizer, favorites, search, Signal View, and
+        // list jumps stay untouched behind the read-only overlay.
+        KeyOutcome::Ignore
+        | KeyOutcome::ToggleSignalView
+        | KeyOutcome::SelectFirst
+        | KeyOutcome::SelectLast
+        | KeyOutcome::TogglePlayback
+        | KeyOutcome::ToggleFavorite
+        | KeyOutcome::CycleTheme
+        | KeyOutcome::CycleVisualizerMode
+        | KeyOutcome::VolumeUp
+        | KeyOutcome::VolumeDown
+        | KeyOutcome::BeginSearch
+        | KeyOutcome::SearchChar(_)
+        | KeyOutcome::SearchBackspace
+        | KeyOutcome::ClearSearch => {}
+    }
+    Flow::Continue
+}
+
+/// Fold a typed Herdr monitor event into app state at the current time.
+///
+/// Poll failures arrive here as recoverable reducer state (stale, then
+/// unavailable), never as an event-loop error.
+fn apply_monitor_event(app: &mut App, event: MonitorEvent, now: Instant) {
+    match event {
+        MonitorEvent::Snapshot(agents) => app.apply(Action::AgentSnapshot { agents, now }),
+        MonitorEvent::Failed => app.apply(Action::AgentPollFailed { now }),
+    }
+}
+
+/// Route a mouse event through the pure UI hit test.
+///
+/// Only actions returned by [`crate::ui::agent_pulse_hit_test`] are applied —
+/// read-only Agent Pulse selection/disclosure by contract — so every click
+/// outside the overlay keeps its current behavior: none.
+fn handle_mouse(mouse: MouseEvent, area: Rect, app: &mut App) {
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    if let Some(action) = crate::ui::agent_pulse_hit_test(area, mouse.column, mouse.row, app) {
+        app.apply(action);
+    }
 }
 
 /// Update the live query text and (re)schedule or cancel the debounced search.
@@ -1709,6 +1860,422 @@ mod tests {
         assert!(app.current_station_is_favorite());
     }
 
+    // --- Agent Pulse: flag, key routing, monitor events, and mouse --------
+
+    use crate::app::AgentPulseConnection;
+    use crate::herdr::{AgentSnapshot, AgentStatus, MonitorEvent};
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    fn pulse_agent(pane: &str) -> AgentSnapshot {
+        AgentSnapshot {
+            pane_id: pane.to_string(),
+            agent: Some("claude".to_string()),
+            // Distinct names keep the reducer's display-name sort stable.
+            name: Some(pane.to_string()),
+            cwd: None,
+            status: AgentStatus::Working,
+        }
+    }
+
+    /// Bring the integration to life the way an eligible plugin launch would:
+    /// a successful snapshot moves the reducer out of `Hidden`.
+    fn connect_agent_pulse(app: &mut App, panes: &[&str]) {
+        app.apply(Action::AgentSnapshot {
+            agents: panes.iter().map(|pane| pulse_agent(pane)).collect(),
+            now: Instant::now(),
+        });
+    }
+
+    fn left_click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn parse_args_reads_no_agent_pulse() {
+        let invocation = parse(&["--no-agent-pulse"]).unwrap();
+        assert_eq!(
+            invocation,
+            CliInvocation::Run(CliArgs {
+                no_agent_pulse: true,
+                ..CliArgs::default()
+            })
+        );
+    }
+
+    #[test]
+    fn usage_documents_no_agent_pulse() {
+        assert!(
+            USAGE.contains("--no-agent-pulse"),
+            "help text must document --no-agent-pulse"
+        );
+    }
+
+    #[test]
+    fn no_agent_pulse_leaves_settings_untouched() {
+        // The flag is a one-run disable: it must not flow into the in-memory
+        // settings (and therefore never into what persistence writes back).
+        let saved = Settings::default();
+        let args = CliArgs {
+            no_agent_pulse: true,
+            ..CliArgs::default()
+        };
+        assert_eq!(apply_overrides(saved.clone(), &args), saved);
+    }
+
+    #[test]
+    fn map_key_maps_a_to_agent_pulse_toggle_in_navigation_mode() {
+        assert_eq!(
+            map_key(key(KeyCode::Char('a')), false),
+            KeyOutcome::ToggleAgentPulse
+        );
+        // While the search strip is focused, `a` stays ordinary query text.
+        assert_eq!(
+            map_key(key(KeyCode::Char('a')), true),
+            KeyOutcome::SearchChar('a')
+        );
+    }
+
+    #[test]
+    fn a_is_harmless_while_agent_pulse_is_hidden() {
+        // Standalone/ineligible launches never leave Hidden, so `a` must not
+        // open the overlay or disturb any existing state.
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        let settings_before = app.settings().clone();
+
+        let flow = handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert_eq!(flow, Flow::Continue);
+        assert!(!app.is_agent_overlay_open(), "hidden pulse keeps a inert");
+        assert_eq!(app.focus(), FocusPane::Stations);
+        assert_eq!(app.settings(), &settings_before);
+        assert!(cmd_rx.try_recv().is_err(), "a must not touch audio");
+    }
+
+    #[test]
+    fn a_toggles_the_agent_overlay_when_the_integration_is_live() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        assert!(!app.is_agent_overlay_open());
+
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_agent_overlay_open(), "a opens the overlay");
+
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(!app.is_agent_overlay_open(), "a closes the overlay again");
+    }
+
+    #[test]
+    fn signal_view_ignores_the_agent_pulse_toggle() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_signal_view());
+
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(
+            !app.is_agent_overlay_open(),
+            "Signal View must not open Agent Pulse"
+        );
+        assert!(app.is_signal_view(), "a must not leave Signal View");
+    }
+
+    #[test]
+    fn agent_overlay_esc_closes_without_quitting_and_q_still_quits() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        let focus_before = app.focus();
+
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let flow = handle_key(
+            key(KeyCode::Esc),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(flow, Flow::Continue, "Esc closes the overlay, not the app");
+        assert!(!app.is_agent_overlay_open());
+        assert_eq!(app.focus(), focus_before, "closing preserves focus");
+
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let flow = handle_key(
+            key(KeyCode::Char('q')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(flow, Flow::Quit, "q quits even while the overlay is open");
+    }
+
+    #[test]
+    fn agent_overlay_routes_navigation_to_agents_not_stations() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let station_before = app.selected_index();
+        let browse_before = app.browse_selected();
+        let focus_before = app.focus();
+
+        handle_key(
+            key(KeyCode::Tab),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(
+            app.selected_agent().map(|agent| agent.pane_id.as_str()),
+            Some("alpha"),
+            "Tab selects the first agent"
+        );
+
+        handle_key(
+            key(KeyCode::Down),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(
+            app.selected_agent().map(|agent| agent.pane_id.as_str()),
+            Some("beta"),
+            "Down moves the agent selection"
+        );
+
+        handle_key(
+            key(KeyCode::Up),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(
+            app.selected_agent().map(|agent| agent.pane_id.as_str()),
+            Some("alpha"),
+            "Up moves the agent selection back"
+        );
+
+        assert_eq!(
+            app.selected_index(),
+            station_before,
+            "overlay navigation must not move station selection"
+        );
+        assert_eq!(app.browse_selected(), browse_before);
+        assert_eq!(
+            app.focus(),
+            focus_before,
+            "Tab is consumed before focus movement"
+        );
+    }
+
+    #[test]
+    fn agent_overlay_enter_cannot_play_a_station() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert!(app.current_station().is_none(), "Enter must not play");
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "no audio command may leave the overlay"
+        );
+        assert!(app.is_agent_overlay_open(), "Enter keeps the overlay open");
+    }
+
+    #[test]
+    fn agent_overlay_consumes_remaining_controls_read_only() {
+        // While the overlay is open, keys outside its read-only contract are
+        // consumed silently so they cannot alter audio, settings, or focus.
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let settings_before = app.settings().clone();
+        let focus_before = app.focus();
+
+        for code in [
+            KeyCode::Char(' '),
+            KeyCode::Char('+'),
+            KeyCode::Char('-'),
+            KeyCode::Char('t'),
+            KeyCode::Char('v'),
+            KeyCode::Char('f'),
+            KeyCode::Char('/'),
+            KeyCode::Char('z'),
+        ] {
+            let flow = handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+            assert_eq!(flow, Flow::Continue, "{code:?} must be a silent no-op");
+        }
+
+        assert_eq!(app.settings(), &settings_before, "settings stay untouched");
+        assert_eq!(app.focus(), focus_before, "search focus stays untouched");
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert!(!app.is_signal_view(), "z is consumed by the overlay");
+        assert!(cmd_rx.try_recv().is_err(), "no audio command may be sent");
+        assert!(app.is_agent_overlay_open());
+    }
+
+    #[test]
+    fn mouse_capture_follows_the_monitor() {
+        // Standalone/ineligible/disabled launches have no monitor and must
+        // keep exact pre-integration terminal behavior: no mouse capture.
+        assert!(!mouse_capture_for(None));
+
+        // Only a live monitor (an eligible plugin launch) turns capture on.
+        // The socket path does not need to work; the monitor only needs to
+        // exist, exactly as in run_app.
+        let monitor = herdr::spawn_monitor(crate::herdr::HerdrContext {
+            socket_path: "/nonexistent/wave-tui-cli-test.sock".into(),
+            workspace_id: "ws-test".to_string(),
+        });
+        assert!(mouse_capture_for(Some(&monitor)));
+        monitor.stop();
+    }
+
+    #[test]
+    fn monitor_events_reach_the_reducer_as_recoverable_state() {
+        let (mut app, _debounce, _persistence) = controller();
+
+        apply_monitor_event(
+            &mut app,
+            MonitorEvent::Snapshot(vec![pulse_agent("alpha")]),
+            Instant::now(),
+        );
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+
+        apply_monitor_event(&mut app, MonitorEvent::Failed, Instant::now());
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Stale,
+            "a poll failure is recoverable reducer state, not an error"
+        );
+
+        apply_monitor_event(
+            &mut app,
+            MonitorEvent::Snapshot(vec![pulse_agent("alpha")]),
+            Instant::now(),
+        );
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected,
+            "a fresh snapshot recovers from stale"
+        );
+    }
+
+    #[test]
+    fn mouse_clicks_apply_only_hit_test_actions() {
+        let (mut app, _debounce, _persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+        let station_before = app.selected_index();
+        let area = Rect::new(0, 0, 80, 24);
+
+        // The hit test is the only source of mouse actions; while it maps no
+        // click (Task 4 owns overlay geometry), every click changes nothing.
+        handle_mouse(left_click(5, 5), area, &mut app);
+        assert_eq!(app.selected_index(), station_before);
+        assert!(app.selected_agent().is_none());
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert!(app.is_agent_overlay_open());
+
+        // Non-click mouse events (movement, scroll, release) are ignored.
+        let moved = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(moved, area, &mut app);
+        assert_eq!(app.selected_index(), station_before);
+        assert!(app.selected_agent().is_none());
+    }
+
     // --- parse_args ------------------------------------------------------
 
     fn parse(args: &[&str]) -> Result<CliInvocation, CliError> {
@@ -1731,6 +2298,7 @@ mod tests {
             "--audio-output-device",
             "Speakers",
             "--low-power",
+            "--no-agent-pulse",
             "--search",
             "lofi",
         ])
@@ -1743,6 +2311,7 @@ mod tests {
                 no_auto_play: true,
                 audio_output_device: Some("Speakers".to_string()),
                 low_power: true,
+                no_agent_pulse: true,
                 search: Some("lofi".to_string()),
             })
         );

@@ -797,7 +797,7 @@ fn event_loop(
     };
 
     loop {
-        terminal.draw(|frame| crate::ui::render(app, frame))?;
+        terminal.draw(|frame| crate::ui::render(app, low_power, frame))?;
 
         if let Some((query, generation)) = debounce.take_due(Instant::now()) {
             let _ = runtime

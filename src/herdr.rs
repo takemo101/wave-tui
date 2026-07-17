@@ -27,8 +27,10 @@ pub(crate) struct HerdrContext {
     pub workspace_id: String,
 }
 
+// `AgentStatus` and `AgentSnapshot` are `pub` (not `pub(crate)`) because they
+// appear in the public `app::Action` enum, like `audio::AudioEvent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentStatus {
+pub enum AgentStatus {
     Working,
     Blocked,
     Done,
@@ -37,7 +39,7 @@ pub(crate) enum AgentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSnapshot {
+pub struct AgentSnapshot {
     pub pane_id: String,
     pub agent: Option<String>,
     pub name: Option<String>,

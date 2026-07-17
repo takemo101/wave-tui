@@ -5,6 +5,7 @@ pub mod app;
 pub mod audio;
 pub mod catalog;
 pub mod cli;
+pub mod herdr;
 pub mod layout;
 pub mod model;
 pub mod search;

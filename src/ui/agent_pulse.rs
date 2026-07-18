@@ -384,7 +384,7 @@ pub(super) fn hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<A
 /// untouched. Clears the full area, then draws the title/count, the
 /// FFT-derived flow line, each agent's trail, halo, and state-colored light,
 /// the selected explicit-name label, and a restrained footer hint. Stale
-/// renders the frozen baseline geometry dimmed under a `reconnecting` banner;
+/// renders the frozen last live field dimmed under a `reconnecting` banner;
 /// Unavailable hides every light behind calm copy. `now` is injected by the
 /// render entry point but deliberately unused: motion derives from audio
 /// frames only.

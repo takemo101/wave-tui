@@ -885,20 +885,20 @@ fn handle_key(
         return handle_signal_view_key(map_key(key, false), app, audio, persistence);
     }
 
-    // The Beat Orbit canvas gate is routed after Signal View (which never
-    // shows Agent Pulse) and before the normal focus-aware handling. Keys
-    // are mapped as navigation — the canvas only opens from navigation mode
-    // and never moves focus into the search strip — so canvas-local keys
-    // (particle selection, close) are consumed before station navigation,
-    // while every unconsumed outcome falls through to the normal handling
-    // below exactly once. That keeps the documented global player controls
-    // (playback, volume, theme, favorite, visualizer) available with their
-    // normal semantics and side effects, without recursive dispatch.
-    let orbit_open = app.is_agent_overlay_open();
-    let searching = !orbit_open && app.focus() == FocusPane::Search;
+    // The Bioluminescent Current canvas gate is routed after Signal View
+    // (which never shows Agent Pulse) and before the normal focus-aware
+    // handling. Keys are mapped as navigation — the canvas only opens from
+    // navigation mode and never moves focus into the search strip — so
+    // canvas-local keys (light selection, close) are consumed before station
+    // navigation, while every unconsumed outcome falls through to the normal
+    // handling below exactly once. That keeps the documented global player
+    // controls (playback, volume, theme, favorite, visualizer) available with
+    // their normal semantics and side effects, without recursive dispatch.
+    let current_open = app.is_agent_overlay_open();
+    let searching = !current_open && app.focus() == FocusPane::Search;
     let outcome = map_key(key, searching);
-    if orbit_open {
-        if let Some(flow) = handle_beat_orbit_key(outcome.clone(), app) {
+    if current_open {
+        if let Some(flow) = handle_current_key(outcome.clone(), app) {
             return flow;
         }
     }
@@ -1099,10 +1099,10 @@ fn handle_signal_view_key(
     Flow::Continue
 }
 
-/// Route a canvas-local key while the Beat Orbit canvas is open, or return
-/// `None` to delegate the outcome to the normal handling path.
+/// Route a canvas-local key while the Bioluminescent Current canvas is open,
+/// or return `None` to delegate the outcome to the normal handling path.
 ///
-/// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the particle
+/// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the light
 /// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
 /// Station selection (`Enter`), list jumps, and search entry are consumed so
 /// canvas input can never play a station, move station selection, or enter
@@ -1111,7 +1111,7 @@ fn handle_signal_view_key(
 /// caller runs the existing non-canvas branch exactly once, so the
 /// documented global player controls keep their normal semantics and side
 /// effects without recursive dispatch.
-fn handle_beat_orbit_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
+fn handle_current_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
     match outcome {
         KeyOutcome::Quit => Some(Flow::Quit),
         KeyOutcome::ToggleAgentPulse | KeyOutcome::ExitOrBack => {
@@ -1153,8 +1153,8 @@ fn apply_monitor_event(app: &mut App, event: MonitorEvent, now: Instant) {
 /// Route a mouse event through the pure UI hit test.
 ///
 /// Only actions returned by [`crate::ui::agent_pulse_hit_test`] are applied —
-/// read-only Agent Pulse selection/disclosure by contract — so every click
-/// outside the overlay keeps its current behavior: none.
+/// read-only Bioluminescent Current light selection by contract — so every
+/// click outside the canvas keeps its current behavior: none.
 fn handle_mouse(mouse: MouseEvent, area: Rect, app: &mut App) {
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
         return;
@@ -2166,7 +2166,7 @@ mod tests {
     }
 
     #[test]
-    fn beat_orbit_a_and_escape_toggle_without_changing_station_focus() {
+    fn current_a_and_escape_toggle_without_changing_station_focus() {
         let (audio, _cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha"]);
@@ -2196,7 +2196,7 @@ mod tests {
     }
 
     #[test]
-    fn beat_orbit_selection_does_not_move_station_selection() {
+    fn current_light_selection_does_not_move_station_selection() {
         let (audio, _cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha", "beta"]);
@@ -2215,7 +2215,7 @@ mod tests {
     }
 
     #[test]
-    fn beat_orbit_keeps_volume_theme_playback_favorite_and_visualizer_controls() {
+    fn current_keeps_volume_theme_playback_favorite_and_visualizer_controls() {
         let (audio, cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha"]);
@@ -2301,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn beat_orbit_consumes_station_search_and_list_navigation_keys() {
+    fn current_consumes_station_search_and_list_navigation_keys() {
         let (audio, cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha"]);
@@ -2328,7 +2328,7 @@ mod tests {
     }
 
     #[test]
-    fn beat_orbit_delegates_signal_view_toggle_to_the_normal_path() {
+    fn current_delegates_signal_view_toggle_to_the_normal_path() {
         let (audio, _cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha"]);
@@ -2360,30 +2360,41 @@ mod tests {
         assert!(app.is_agent_overlay_open(), "back to the open canvas");
     }
 
+    /// Scan the open Bioluminescent Current canvas for the first cell the
+    /// pure hit test resolves to a light, so mouse tests target real Current
+    /// geometry instead of assuming any particular flow shape.
+    fn first_current_light_hit(area: Rect, app: &App) -> (u16, u16) {
+        for row in 0..area.height {
+            for column in 0..area.width {
+                if crate::ui::agent_pulse_hit_test(area, column, row, app).is_some() {
+                    return (column, row);
+                }
+            }
+        }
+        panic!("an open canvas exposes light targets");
+    }
+
     #[test]
-    fn mouse_selects_a_beat_orbit_particle() {
+    fn current_click_selects_a_light_without_moving_station_selection() {
         let (mut app, _debounce, _persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha", "beta"]);
         app.apply(Action::ToggleAgentOverlay);
+        let station_before = app.selected_index();
         let area = Rect::new(0, 0, 100, 30);
 
         // Find a click the pure hit test maps, then route it through the
         // event-loop path.
-        let mut hit = None;
-        'scan: for row in 0..area.height {
-            for column in 0..area.width {
-                if crate::ui::agent_pulse_hit_test(area, column, row, &app).is_some() {
-                    hit = Some((column, row));
-                    break 'scan;
-                }
-            }
-        }
-        let (column, row) = hit.expect("an open canvas exposes particle targets");
+        let (column, row) = first_current_light_hit(area, &app);
 
         handle_mouse(left_click(column, row), area, &mut app);
         assert!(
             app.selected_agent().is_some(),
-            "a particle click selects that agent"
+            "a light click selects that agent"
+        );
+        assert_eq!(
+            app.selected_index(),
+            station_before,
+            "a light click must not move station selection"
         );
     }
 
@@ -2445,7 +2456,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
 
         // The hit test is the only source of mouse actions; a click that
-        // lands on no particle slot changes nothing.
+        // lands on no light cell changes nothing.
         handle_mouse(left_click(5, 5), area, &mut app);
         assert_eq!(app.selected_index(), station_before);
         assert!(app.selected_agent().is_none());

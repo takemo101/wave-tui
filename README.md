@@ -40,10 +40,10 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
 - **Herdr Agent Pulse (optional)** — when launched as the official Herdr
   plugin (Herdr 0.7.0+), a quiet, read-only `● n active` count of the AI
   coding agents on the local Herdr socket appears in Wide/Medium layouts, and
-  `a` opens a full-screen, music-reactive **Kinetic Collage** canvas that
-  renders each agent as a stable procedural album-art tile over an
-  audio-driven background. It never reads agent output, never controls panes,
-  and standalone launches are completely unchanged (see
+  `a` opens a full-screen **Dual Phase Scope** canvas: two real-audio
+  Lissajous traces behind calm agent frames with state-colored edges and
+  status cores. It never reads agent output, never controls panes, and
+  standalone launches are completely unchanged (see
   [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
@@ -283,35 +283,47 @@ agent reported by the session's socket is shown.
   playback context, but `a` still opens the canvas while the integration is
   active.
 - **Signal View** never shows Agent Pulse and ignores `a`.
-- Press `a` for the **Kinetic Collage** canvas: a full-screen view that
-  replaces the whole player surface. Every agent is one small, stable
-  abstract album-art tile: its motif, palette arrangement, and staggered
-  position derive from the agent's private identity, so a tile stays
-  recognizable across frames and never morphs or swaps with the music.
-  Behind the tiles, a low-contrast waveform/FFT trace and a breathing
-  theme-phosphor vignette react to the played audio. RMS and each tile's
-  assigned FFT band move its tile with a small bounded scale/offset and add
-  a one- or two-layer soft shadow trail drawn from real recent visualizer
-  frames. Silence (or no audio) leaves the collage dim and still; nothing
-  animates on a timer. With no agents the canvas shows a calm
+- Press `a` for the **Dual Phase Scope** canvas: Agent Pulse opens a
+  full-screen Dual Phase Scope with two real-audio Lissajous traces,
+  replacing the whole player surface. Each trace is a phase portrait of
+  paired played samples — no trace is a scrolling amplitude-over-time
+  waveform. With stereo output the primary trace plots the played
+  left/right sample pairs; mono streams pair the played mono mix with the
+  same mix at a documented 29-sample lag, and the secondary trace always
+  uses a distinct 97-sample mono lag, so every supported stream draws a real
+  oscilloscope figure. Up to two dim phosphor-persistence layers echo recent
+  real visualizer frames, and a breathing theme-phosphor vignette spreads
+  with RMS. Nothing animates on a timer: silence (or no audio) leaves the
+  scope dim and still. With no agents the canvas shows a calm
   `agents · none active`.
-- Theme colors communicate state as a restrained tile edge glow: working
-  tiles glow strongest (the playing color), blocked uses the error color,
-  and idle/done/unknown stay muted; a done tile stays muted/dim until the
-  next snapshot omits it. Dense terminals shrink tile size and spacing
-  rather than hiding tiles — every agent keeps one visible tile.
-- Selecting a tile brings it forward and shows only `name · status` for
-  agents with an explicit Herdr `name`; an unnamed selection shows no label
-  at all. Pane ids, workspace ids, working directories, and agent types
-  never render.
+- Every agent is one small, stable frame whose position derives from the
+  agent's private identity. Agent frames keep state-colored edges; Working
+  has an audio-driven spinner core (`◜◝◞◟`, advanced only by newly played
+  audio data, never a clock), while Idle (`◌`), Blocked (`×`), and Done
+  (`·`) remain stationary. Working edges glow strongest (the playing
+  color), Blocked uses the error color, and idle/done/unknown stay muted; a
+  done frame stays muted/dim until the next snapshot omits it. RMS and each
+  frame's assigned FFT band still move its rectangle with a small bounded
+  scale/offset and soft shadow trails drawn from real recent visualizer
+  frames. Dense terminals shrink frame size and spacing rather than hiding
+  frames — every agent keeps one visible frame.
+- Selecting a frame brings it forward and shows only `name · status` for
+  agents with an explicit Herdr `name`, placed near that frame; an unnamed
+  selection shows no label at all. Pane ids, workspace ids, working
+  directories, and agent types never render.
+- In `--low-power`, trace, persistence, frame, shadow, and spinner geometry
+  are frozen while state edge/core colors may still refresh. The frozen
+  geometry is captured from the first *audible* visualizer frame after
+  startup (RMS above the silence threshold with real phase data); until
+  audio becomes audible, low power simply renders the current live frame.
 
 ### Canvas controls
 
 | Key / input        | Action                                   |
 | ------------------ | ---------------------------------------- |
 | `a` / `Esc`        | close the canvas                         |
-| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select a tile          |
-| mouse click        | select a tile (its cells only)           |
+| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select an agent frame  |
+| mouse click        | select an agent frame (its cells only)   |
 | `Space`, `+`/`-`, `f`, `t`, `v`, `z` | normal player behavior |
 | `q` / `Ctrl+C`     | quit the app                             |
 
@@ -334,10 +346,12 @@ The integration polls Herdr's `agent.list` every 5 seconds over the local Unix
 socket. Failures are recoverable and never interrupt playback:
 
 - After the first failed poll, the `● n active` count dims and the canvas
-  freezes the last live collage — background, tiles, and shadow trails —
-  dimmed, under a `stale · reconnecting` banner.
+  freezes the last live scope composition — phase traces, persistence,
+  frames, cores, and shadow trails — dimmed, under a `stale · reconnecting`
+  banner.
 - After 15 seconds without a successful response, the summary disappears and
-  the canvas hides every tile behind `agents · unavailable · retrying`.
+  the canvas hides every frame and trace behind
+  `agents · unavailable · retrying`.
 - Polling continues; a fresh successful snapshot restores the live view.
 
 ### Privacy and read-only limits
@@ -351,7 +365,7 @@ Agent Pulse is strictly observational:
 - It shows every agent reported by the plugin invocation's local Herdr
   socket, across that session's workspaces; it never discovers other Herdr
   sessions or opens another socket.
-- Only a selected tile's explicit Herdr `name` is ever rendered; there is no
+- Only a selected frame's explicit Herdr `name` is ever rendered; there is no
   fallback label and no pane/workspace/cwd/agent-type detail on screen.
 - It never changes volume, theme, station, playback, search, or the
   visualizer, and never emits OS notifications.
@@ -473,9 +487,12 @@ for findings and caveats.
 - [`herdr-plugin.toml`](herdr-plugin.toml) — official Herdr plugin manifest
 - [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
   — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
-  presentation superseded by the Kinetic Collage design)
+  presentation superseded by the Lissajous Scope design)
+- [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
+  — Agent Pulse Lissajous Scope design (current presentation decision)
 - [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
-  — Agent Pulse Kinetic Collage design (current presentation decision)
+  — Agent Pulse Kinetic Collage design (historical; presentation superseded
+  by the Lissajous Scope design)
 - [`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md)
   — Agent Pulse Bioluminescent Current design (superseded by Kinetic Collage)
 - [`docs/superpowers/plans/2026-06-27-radio-replacement.md`](docs/superpowers/plans/2026-06-27-radio-replacement.md)
@@ -484,6 +501,8 @@ for findings and caveats.
   — Herdr Agent Pulse implementation plan
 - [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md)
   — Kinetic Collage implementation plan
+- [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md)
+  — Lissajous Scope implementation plan
 
 ## Verification
 

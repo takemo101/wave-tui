@@ -55,7 +55,7 @@
 - Produces: `model::PhaseTrace { x: Vec<f32>, y: Vec<f32> }` and `VizFrame::{primary_phase, secondary_phase}`.
 - Existing callers continue using `VizFrame::new(bands, rms, waveform)`; it initializes empty phase traces. The analyzer alone calls `VizFrame::with_phase(...)`.
 
-- [ ] **Step 1: Add failing model and analyzer tests.**
+- [x] **Step 1: Add failing model and analyzer tests.**
 
 In `src/model.rs` tests, add the normalized phase-pair contract:
 
@@ -97,7 +97,7 @@ fn analyze_uses_distinct_lags_for_mono_phase_traces() {
 }
 ```
 
-- [ ] **Step 2: Run the focused model/analyzer tests and confirm they fail.**
+- [x] **Step 2: Run the focused model/analyzer tests and confirm they fail.**
 
 Run:
 
@@ -108,7 +108,7 @@ cargo test audio::analyzer::tests::analyze_
 
 Expected: FAIL because `PhaseTrace`, `primary_phase`, `secondary_phase`, and typed played samples do not yet exist.
 
-- [ ] **Step 3: Define the narrow typed played-sample and phase-trace boundaries.**
+- [x] **Step 3: Define the narrow typed played-sample and phase-trace boundaries.**
 
 Create `src/audio/played_sample.rs`:
 
@@ -159,7 +159,7 @@ impl PhaseTrace {
 
 Extend `VizFrame` with public `primary_phase` and `secondary_phase`; retain `new` as a compatibility constructor that supplies `PhaseTrace::empty()`. Add `with_phase(bands, rms, waveform, primary_phase, secondary_phase)` as the analyzer constructor.
 
-- [ ] **Step 4: Replace the untyped mirror channel and derive phase pairs in the analyzer.**
+- [x] **Step 4: Replace the untyped mirror channel and derive phase pairs in the analyzer.**
 
 Change `played_tx`/`played_rx` in `start_playback`, `build_output_stream`, and `run_analyzer_loop` from `f32` to `PlayedSample`. In the output callback, keep pre-volume behavior but send only when a decoded source frame exists:
 
@@ -180,7 +180,7 @@ let y = if use_stereo { sample.right } else { lagged.mono };
 
 Use the first non-zero lag constant for a stereo primary or mono primary fallback; use a distinct non-zero lag for the secondary trace. Skip the final `lag` source frames rather than wrapping, so every pair is chronological and no synthetic waveform is introduced. `analyze` calls `VizFrame::with_phase` with the existing bands/RMS/waveform plus both traces.
 
-- [ ] **Step 5: Add output boundary tests and run Task 1 verification.**
+- [x] **Step 5: Add output boundary tests and run Task 1 verification.**
 
 Add tests in `src/audio/output.rs`:
 
@@ -215,7 +215,7 @@ cargo check
 
 Expected: every command exits 0.
 
-- [ ] **Step 6: Commit the typed phase-data slice.**
+- [x] **Step 6: Commit the typed phase-data slice.**
 
 ```bash
 but commit agent-pulse-lissajous-scope -m "feat: expose played-audio phase traces"
@@ -235,7 +235,7 @@ but commit agent-pulse-lissajous-scope -m "feat: expose played-audio phase trace
 - Produces: private `PhaseCell`, `PhaseLayer`, `spinner_glyph`, and `selection_label_rect`; `CollageLayout` retains `tiles` but replaces its waveform `trace` with phase layers.
 - Produces: `App::configure_low_power_visuals(bool)` and `App::low_power_viz()` for frozen low-power geometry; this setting is configured exactly once by `run_app` before the event loop.
 
-- [ ] **Step 1: Replace waveform/album-motif tests with failing Scope/Core contract tests.**
+- [x] **Step 1: Replace waveform/album-motif tests with failing Scope/Core contract tests.**
 
 In `src/ui/agent_pulse.rs` tests, remove expectations that assert `AlbumMotif`, waveform columns, or motif interior glyphs. Add:
 
@@ -277,7 +277,7 @@ fn selected_named_frame_shows_only_name_and_status_near_its_frame() {
 }
 ```
 
-- [ ] **Step 2: Run focused UI tests and confirm they fail.**
+- [x] **Step 2: Run focused UI tests and confirm they fail.**
 
 Run:
 
@@ -289,7 +289,7 @@ cargo test ui::agent_pulse::tests::selected_named_frame
 
 Expected: FAIL because the renderer still owns `TraceCell`, `trace_cells`, and `AlbumMotif`.
 
-- [ ] **Step 3: Implement pure phase geometry and short phosphor persistence.**
+- [x] **Step 3: Implement pure phase geometry and short phosphor persistence.**
 
 Delete `AlbumMotif`, `motif_palette`, `motif_cell`, `TraceCell`, `trace_y`, `trace_cells`, and `trace_glyph`. Keep `CollageTile::{index, seed, base_rect, rect, energy, shadows}` so dense deterministic layout, selection, hit testing, and real RMS/FFT transforms remain unchanged.
 
@@ -309,7 +309,7 @@ fn phase_cells(trace: &PhaseTrace, area: Rect) -> Vec<PhaseCell> {
 
 `phase_x` maps `-1.0..=1.0` to the centered canvas width and `phase_y` maps it inversely to height, clamped to `area`. `collage_layout` creates a main layer from `frame.primary_phase`, a complementary layer from `frame.secondary_phase`, then at most two dim persistence layers from the newest `history` frames. Empty phase traces render no cells; do not substitute FFT ripples or waveform columns. Preserve the existing theme vignette.
 
-- [ ] **Step 4: Render frame edges and status cores instead of album-art interiors.**
+- [x] **Step 4: Render frame edges and status cores instead of album-art interiors.**
 
 Keep the current edge rendering and state styles. Fill each frame interior with the base style, then place one one-cell core at the drawn-rectangle center. Define:
 
@@ -335,7 +335,7 @@ fn status_core(status: AgentStatus, seed: u64, frame: &VizFrame) -> (&'static st
 
 Place the existing selected `name · status` string on the nearest in-bounds row below the selected frame (or above it when the footer would collide). Do not alter its explicit-name-only gate.
 
-- [ ] **Step 5: Add App-owned low-power capture and preserve stale precedence.**
+- [x] **Step 5: Add App-owned low-power capture and preserve stale precedence.**
 
 Add `low_power_viz: Option<(VizFrame, Vec<VizFrame>)>` and `low_power_visuals: bool` to App's private state. `configure_low_power_visuals(true)` sets the policy once at startup. On the first visually audible `set_viz_frame` — RMS above the shared silence threshold with at least one non-empty phase trace — clone current frame/history into `low_power_viz`; startup-silent frames retain no capture, so rendering falls back to the live frame until audio becomes audible. Later frames still update `viz`/`viz_history` for color/edge calculations but do not replace the geometry capture. `configure_low_power_visuals(false)` clears the capture.
 
@@ -357,7 +357,7 @@ Stale always wins; unavailable renders before either capture. Add reducer tests 
 
 In `src/cli.rs`, call `app.configure_low_power_visuals(low_power)` immediately after `App::new` and before the first audio event. Add a controller test that canvas key routing is unchanged by the configuration.
 
-- [ ] **Step 6: Add recovery/dense/hit-test regression tests and run UI/controller verification.**
+- [x] **Step 6: Add recovery/dense/hit-test regression tests and run UI/controller verification.**
 
 Keep and adapt dense, hit-test, selection, stale, unavailable, and global-shortcut tests. Add:
 
@@ -384,7 +384,7 @@ cargo check
 
 Expected: every command exits 0.
 
-- [ ] **Step 7: Commit the renderer and App-policy slice.**
+- [x] **Step 7: Commit the renderer and App-policy slice.**
 
 ```bash
 but commit agent-pulse-lissajous-scope -m "feat: render Agent Pulse Lissajous scope"
@@ -406,7 +406,7 @@ but commit agent-pulse-lissajous-scope -m "feat: render Agent Pulse Lissajous sc
 - Consumes: completed Dual Phase Scope behavior and `2026-07-19-agent-pulse-lissajous-scope-design.md` as the authoritative presentation decision.
 - Produces: consistent user docs and a historical Kinetic Collage spec that preserves its integration/privacy context.
 
-- [ ] **Step 1: Write documentation assertions as exact copy targets.**
+- [x] **Step 1: Write documentation assertions as exact copy targets.**
 
 Update each current user-facing document to say all of the following:
 
@@ -419,13 +419,13 @@ A selected named agent shows only `name · status`.
 
 Record that phase data uses played stereo pairs when available and distinct real-sample lags for mono, that no trace is a scrolling waveform, and that low power/stale freeze scope/core geometry. Keep the manual checks explicitly unchecked until a human runs live mono and stereo streams, six themes, resize/dense agents, click/keyboard selection, reconnect, low power, standalone, and disabled launch.
 
-- [ ] **Step 2: Mark the Kinetic Collage presentation historical without rewriting its integration record.**
+- [x] **Step 2: Mark the Kinetic Collage presentation historical without rewriting its integration record.**
 
 At the top of `docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`, add a dated note stating that its local-only/read-only/privacy/recovery contracts remain historical context, while its waveform/FFT background and album-art tile presentation are superseded by the 2026-07-19 Lissajous Scope design. Link to the new design. Do not alter the old body or erase the design history.
 
 Update `AGENTS.md` pointers so a future agent reads the Lissajous design/plan before changing Agent Pulse presentation.
 
-- [ ] **Step 3: Inspect the documentation diff and run the full automated gate.**
+- [x] **Step 3: Inspect the documentation diff and run the full automated gate.**
 
 Run:
 

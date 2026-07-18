@@ -1,5 +1,14 @@
 # Agent Pulse Kinetic Collage redesign
 
+> **Superseded (2026-07-19):** This document's presentation decisions — the
+> scrolling waveform/FFT background trace and the abstract album-art tile
+> interiors — are superseded by the approved
+> [`2026-07-19-agent-pulse-lissajous-scope-design.md`](2026-07-19-agent-pulse-lissajous-scope-design.md)
+> (Dual Phase Scope traces and status spinner cores). The local-only,
+> read-only, same-socket, privacy, and recovery contracts recorded here
+> remain in force as historical context. The body below is preserved
+> unchanged as design history.
+
 **Status:** Approved in design review on 2026-07-18. This document supersedes
 all prior Agent Pulse presentation decisions, including the Quiet Companion,
 Status Constellation, Beat Orbit, Bioluminescent Current, and Vector Trace

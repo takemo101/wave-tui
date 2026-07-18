@@ -885,19 +885,27 @@ fn handle_key(
         return handle_signal_view_key(map_key(key, false), app, audio, persistence);
     }
 
-    // The Agent Pulse overlay is a temporary read-only modal. It is routed
-    // after Signal View (which never shows Agent Pulse) and before the normal
-    // focus-aware handling so overlay navigation is consumed before station
-    // navigation. Keys are mapped as navigation: the overlay only opens from
-    // navigation mode, and it never moves focus into the search strip.
-    if app.is_agent_overlay_open() {
-        return handle_agent_overlay_key(map_key(key, false), app);
+    // The Beat Orbit canvas gate is routed after Signal View (which never
+    // shows Agent Pulse) and before the normal focus-aware handling. Keys
+    // are mapped as navigation — the canvas only opens from navigation mode
+    // and never moves focus into the search strip — so canvas-local keys
+    // (particle selection, close) are consumed before station navigation,
+    // while every unconsumed outcome falls through to the normal handling
+    // below exactly once. That keeps the documented global player controls
+    // (playback, volume, theme, favorite, visualizer) available with their
+    // normal semantics and side effects, without recursive dispatch.
+    let orbit_open = app.is_agent_overlay_open();
+    let searching = !orbit_open && app.focus() == FocusPane::Search;
+    let outcome = map_key(key, searching);
+    if orbit_open {
+        if let Some(flow) = handle_beat_orbit_key(outcome.clone(), app) {
+            return flow;
+        }
     }
 
-    let searching = app.focus() == FocusPane::Search;
     let before = app.settings().clone();
 
-    match map_key(key, searching) {
+    match outcome {
         KeyOutcome::Quit | KeyOutcome::ExitOrBack => return Flow::Quit,
         KeyOutcome::ToggleSignalView => app.apply(Action::ToggleSignalView),
         // The reducer keeps this a no-op for standalone/ineligible launches,
@@ -1091,44 +1099,44 @@ fn handle_signal_view_key(
     Flow::Continue
 }
 
-/// Route a key while the Agent Pulse overlay is open.
+/// Route a canvas-local key while the Beat Orbit canvas is open, or return
+/// `None` to delegate the outcome to the normal handling path.
 ///
-/// The overlay is a read-only modal: `Tab`/arrows (and their `j`/`k`
-/// synonyms) move the agent selection, `Enter` keeps the information card
-/// visible, and `a`/`Esc` close it. `q`/`Ctrl+C` still quit. Every other key
-/// is consumed silently so overlay input can never play a station, move
-/// station selection, change settings or focus, or alter audio.
-fn handle_agent_overlay_key(outcome: KeyOutcome, app: &mut App) -> Flow {
+/// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the particle
+/// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
+/// Station selection (`Enter`), list jumps, and search entry are consumed so
+/// canvas input can never play a station, move station selection, or enter
+/// the search strip. Every other outcome — playback, volume, theme,
+/// favorite, visualizer, Signal View — is deliberately not handled here: the
+/// caller runs the existing non-canvas branch exactly once, so the
+/// documented global player controls keep their normal semantics and side
+/// effects without recursive dispatch.
+fn handle_beat_orbit_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
     match outcome {
-        KeyOutcome::Quit => return Flow::Quit,
-        KeyOutcome::ToggleAgentPulse => app.apply(Action::ToggleAgentOverlay),
-        KeyOutcome::ExitOrBack => app.apply(Action::CloseAgentOverlay),
-        KeyOutcome::FocusNext | KeyOutcome::SelectNext => app.apply(Action::SelectNextAgent),
-        KeyOutcome::FocusPrevious | KeyOutcome::SelectPrevious => {
-            app.apply(Action::SelectPreviousAgent)
+        KeyOutcome::Quit => Some(Flow::Quit),
+        KeyOutcome::ToggleAgentPulse | KeyOutcome::ExitOrBack => {
+            app.apply(Action::CloseAgentOverlay);
+            Some(Flow::Continue)
         }
-        // `Enter` keeps the information card visible: the selection already
-        // drives the card, so there is nothing to mutate.
-        KeyOutcome::Play => {}
-        // Everything else is consumed while the overlay is open: playback,
-        // volume, theme, visualizer, favorites, search, Signal View, and
-        // list jumps stay untouched behind the read-only overlay.
-        KeyOutcome::Ignore
-        | KeyOutcome::ToggleSignalView
-        | KeyOutcome::SelectFirst
-        | KeyOutcome::SelectLast
-        | KeyOutcome::TogglePlayback
-        | KeyOutcome::ToggleFavorite
-        | KeyOutcome::CycleTheme
-        | KeyOutcome::CycleVisualizerMode
-        | KeyOutcome::VolumeUp
-        | KeyOutcome::VolumeDown
-        | KeyOutcome::BeginSearch
+        KeyOutcome::FocusNext | KeyOutcome::SelectNext => {
+            app.apply(Action::SelectNextAgent);
+            Some(Flow::Continue)
+        }
+        KeyOutcome::FocusPrevious | KeyOutcome::SelectPrevious => {
+            app.apply(Action::SelectPreviousAgent);
+            Some(Flow::Continue)
+        }
+        // Consumed: the station list and search surfaces stay suppressed
+        // behind the canvas.
+        KeyOutcome::BeginSearch
         | KeyOutcome::SearchChar(_)
         | KeyOutcome::SearchBackspace
-        | KeyOutcome::ClearSearch => {}
+        | KeyOutcome::ClearSearch
+        | KeyOutcome::SelectFirst
+        | KeyOutcome::SelectLast
+        | KeyOutcome::Play => Some(Flow::Continue),
+        _ => None,
     }
-    Flow::Continue
 }
 
 /// Fold a typed Herdr monitor event into app state at the current time.
@@ -2158,12 +2166,69 @@ mod tests {
     }
 
     #[test]
-    fn agent_overlay_consumes_remaining_controls_read_only() {
-        // While the overlay is open, keys outside its read-only contract are
-        // consumed silently so they cannot alter audio, settings, or focus.
+    fn beat_orbit_a_and_escape_toggle_without_changing_station_focus() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        let focus = app.focus();
+
+        let flow = handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(flow, Flow::Continue);
+        assert!(app.is_agent_overlay_open());
+        assert_eq!(app.focus(), focus);
+
+        let flow = handle_key(
+            key(KeyCode::Esc),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(flow, Flow::Continue);
+        assert!(!app.is_agent_overlay_open());
+        assert_eq!(app.focus(), focus);
+    }
+
+    #[test]
+    fn beat_orbit_selection_does_not_move_station_selection() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        let station = app.selected_index();
+        app.apply(Action::ToggleAgentOverlay);
+
+        handle_key(
+            key(KeyCode::Tab),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.selected_agent().is_some());
+        assert_eq!(app.selected_index(), station);
+    }
+
+    #[test]
+    fn beat_orbit_keeps_volume_theme_playback_favorite_and_visualizer_controls() {
         let (audio, cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha"]);
+
+        // Start playback from the normal surface, then open the canvas.
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::Play { .. })));
         handle_key(
             key(KeyCode::Char('a')),
             &mut app,
@@ -2171,29 +2236,155 @@ mod tests {
             &mut debounce,
             &mut persistence,
         );
-        let settings_before = app.settings().clone();
+        assert!(app.is_agent_overlay_open());
+
+        // Theme.
+        let original_theme = app.settings().theme;
+        handle_key(
+            key(KeyCode::Char('t')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_ne!(app.settings().theme, original_theme);
+
+        // Visualizer mode.
+        let original_visualizer = app.settings().visualizer;
+        handle_key(
+            key(KeyCode::Char('v')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_ne!(app.settings().visualizer, original_visualizer);
+
+        // Volume, including the audio side effect.
+        let original_volume = app.settings().volume;
+        handle_key(
+            key(KeyCode::Char('+')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_ne!(app.settings().volume, original_volume);
+        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::SetVolume(_))));
+
+        // Favorite keeps its normal semantics (the station-list selection).
+        let favorites_before = app.settings().favorites.len();
+        handle_key(
+            key(KeyCode::Char('f')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_ne!(app.settings().favorites.len(), favorites_before);
+
+        // Playback toggle stops the connecting station.
+        handle_key(
+            key(KeyCode::Char(' ')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::Stop)));
+
+        assert!(
+            app.is_agent_overlay_open(),
+            "the canvas stays open throughout"
+        );
+    }
+
+    #[test]
+    fn beat_orbit_consumes_station_search_and_list_navigation_keys() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+        let station_before = app.selected_index();
         let focus_before = app.focus();
 
         for code in [
-            KeyCode::Char(' '),
-            KeyCode::Char('+'),
-            KeyCode::Char('-'),
-            KeyCode::Char('t'),
-            KeyCode::Char('v'),
-            KeyCode::Char('f'),
+            KeyCode::Enter,
             KeyCode::Char('/'),
-            KeyCode::Char('z'),
+            KeyCode::Home,
+            KeyCode::End,
         ] {
             let flow = handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
-            assert_eq!(flow, Flow::Continue, "{code:?} must be a silent no-op");
+            assert_eq!(flow, Flow::Continue, "{code:?} is consumed by the canvas");
         }
 
-        assert_eq!(app.settings(), &settings_before, "settings stay untouched");
-        assert_eq!(app.focus(), focus_before, "search focus stays untouched");
-        assert_eq!(app.playback(), &PlaybackState::Stopped);
-        assert!(!app.is_signal_view(), "z is consumed by the overlay");
+        assert_eq!(app.selected_index(), station_before);
+        assert_eq!(app.focus(), focus_before, "search focus is never entered");
+        assert_eq!(app.search_query(), "");
+        assert!(app.current_station().is_none(), "Enter cannot play");
         assert!(cmd_rx.try_recv().is_err(), "no audio command may be sent");
         assert!(app.is_agent_overlay_open());
+    }
+
+    #[test]
+    fn beat_orbit_delegates_signal_view_toggle_to_the_normal_path() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+
+        // `z` keeps its normal meaning; Signal View then owns the surface.
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_signal_view(), "z enters Signal View from the canvas");
+        assert!(
+            app.is_agent_overlay_open(),
+            "the canvas stays open (suppressed) underneath"
+        );
+
+        // Esc is routed by the Signal View gate first and only leaves it.
+        handle_key(
+            key(KeyCode::Esc),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(!app.is_signal_view());
+        assert!(app.is_agent_overlay_open(), "back to the open canvas");
+    }
+
+    #[test]
+    fn mouse_selects_a_beat_orbit_particle() {
+        let (mut app, _debounce, _persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        app.apply(Action::ToggleAgentOverlay);
+        let area = Rect::new(0, 0, 100, 30);
+
+        // Find a click the pure hit test maps, then route it through the
+        // event-loop path.
+        let mut hit = None;
+        'scan: for row in 0..area.height {
+            for column in 0..area.width {
+                if crate::ui::agent_pulse_hit_test(area, column, row, &app).is_some() {
+                    hit = Some((column, row));
+                    break 'scan;
+                }
+            }
+        }
+        let (column, row) = hit.expect("an open canvas exposes particle targets");
+
+        handle_mouse(left_click(column, row), area, &mut app);
+        assert!(
+            app.selected_agent().is_some(),
+            "a particle click selects that agent"
+        );
     }
 
     #[test]
@@ -2253,8 +2444,8 @@ mod tests {
         let station_before = app.selected_index();
         let area = Rect::new(0, 0, 80, 24);
 
-        // The hit test is the only source of mouse actions; while it maps no
-        // click (Task 4 owns overlay geometry), every click changes nothing.
+        // The hit test is the only source of mouse actions; a click that
+        // lands on no particle slot changes nothing.
         handle_mouse(left_click(5, 5), area, &mut app);
         assert_eq!(app.selected_index(), station_before);
         assert!(app.selected_agent().is_none());

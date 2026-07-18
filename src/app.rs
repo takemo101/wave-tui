@@ -162,6 +162,15 @@ pub(crate) enum AgentOverlay {
     Open,
 }
 
+/// The visualizer display frozen at the Connected→Stale edge: the
+/// then-current frame plus the prior frames behind it (most recent first),
+/// so the canvas can keep drawing the exact last live current and trails.
+#[derive(Debug)]
+struct StaleViz {
+    frame: VizFrame,
+    history: Vec<VizFrame>,
+}
+
 /// All Agent Pulse state owned by [`App`]: live agents only.
 ///
 /// Process-local only: nothing here is persisted, no completed history is
@@ -181,6 +190,9 @@ struct AgentPulse {
     last_success: Option<Instant>,
     /// When the current failure streak began; cleared by any success.
     first_failure: Option<Instant>,
+    /// Display snapshot captured when the connection dims to `Stale`;
+    /// cleared by a fresh agent snapshot and by `Unavailable`.
+    stale_viz: Option<StaleViz>,
 }
 
 impl AgentPulse {
@@ -193,6 +205,7 @@ impl AgentPulse {
             overlay: AgentOverlay::Closed,
             last_success: None,
             first_failure: None,
+            stale_viz: None,
         }
     }
 
@@ -919,6 +932,7 @@ impl App {
         pulse.connection = AgentPulseConnection::Connected;
         pulse.last_success = Some(now);
         pulse.first_failure = None;
+        pulse.stale_viz = None;
     }
 
     /// Record a failed poll: the first failure of a streak dims state to
@@ -926,6 +940,14 @@ impl App {
     /// integration `Unavailable`. Last-known agents are retained so the UI
     /// can dim them while stale.
     fn mark_agent_poll_failed(&mut self, now: Instant) {
+        // Capture the live display exactly once, at the Connected→Stale
+        // edge, so rendering can freeze the last current and trails.
+        if self.agent_pulse.connection == AgentPulseConnection::Connected {
+            self.agent_pulse.stale_viz = Some(StaleViz {
+                frame: self.viz.clone(),
+                history: self.viz_history.iter().skip(1).cloned().collect(),
+            });
+        }
         let pulse = &mut self.agent_pulse;
         if pulse.first_failure.is_none() {
             pulse.first_failure = Some(now);
@@ -935,6 +957,9 @@ impl App {
         } else {
             AgentPulseConnection::Stale
         };
+        if pulse.connection == AgentPulseConnection::Unavailable {
+            pulse.stale_viz = None;
+        }
     }
 
     /// Downgrade to `Unavailable` once [`herdr::STALE_AFTER`] has passed
@@ -948,6 +973,7 @@ impl App {
         }
         if Self::agent_response_overdue(pulse, now) {
             pulse.connection = AgentPulseConnection::Unavailable;
+            pulse.stale_viz = None;
         }
     }
 
@@ -1220,6 +1246,14 @@ impl App {
     /// Whether the Agent Pulse overlay is open.
     pub(crate) fn is_agent_overlay_open(&self) -> bool {
         self.agent_pulse.overlay == AgentOverlay::Open
+    }
+
+    /// The visualizer display captured when the connection dimmed to
+    /// `Stale`: the frozen current frame plus the prior trail frames.
+    /// `None` while connected, unavailable, or hidden.
+    pub(crate) fn stale_viz(&self) -> Option<(&VizFrame, &[VizFrame])> {
+        let stale = self.agent_pulse.stale_viz.as_ref()?;
+        Some((&stale.frame, stale.history.as_slice()))
     }
 }
 
@@ -2354,7 +2388,7 @@ mod tests {
         assert_eq!(app.selected_index(), 0);
     }
 
-    // --- Herdr Agent Pulse reducer state (Beat Orbit: live-only) ---------
+    // --- Herdr Agent Pulse reducer state (Current: live-only) ------------
 
     /// A typed agent entry as the Herdr adapter would deliver it.
     fn agent(
@@ -2383,6 +2417,61 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(agents, Instant::now()));
         app
+    }
+
+    #[test]
+    fn stale_viz_is_captured_at_the_stale_edge_and_cleared_on_recovery() {
+        let mut app = app_with_agents(vec![agent("ws", "p1", None, AgentStatus::Working)]);
+        let older = VizFrame::new(vec![0.2; 16], 0.2, Vec::<f32>::new());
+        let last = VizFrame::new(vec![0.8; 16], 0.9, Vec::<f32>::new());
+        app.apply(Action::Audio(AudioEvent::Viz(older.clone())));
+        app.apply(Action::Audio(AudioEvent::Viz(last.clone())));
+        assert!(app.stale_viz().is_none(), "connected keeps no snapshot");
+
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        let (frame, history) = app
+            .stale_viz()
+            .expect("the stale edge captures the display");
+        assert_eq!(frame, &last, "the frozen frame is the last live frame");
+        assert_eq!(
+            history.first(),
+            Some(&older),
+            "prior trail frames are retained"
+        );
+
+        // Later audio and repeated failures do not move the snapshot.
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.1; 16],
+            0.1,
+            Vec::<f32>::new(),
+        ))));
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        assert_eq!(app.stale_viz().unwrap().0, &last);
+
+        // A fresh snapshot recovers and clears the frozen display.
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            Instant::now(),
+        ));
+        assert!(app.stale_viz().is_none(), "recovery clears the snapshot");
+
+        // Unavailable clears it as well: no lights means no frozen field.
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        assert!(app.stale_viz().is_some());
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+        assert!(app.stale_viz().is_none(), "unavailable clears the snapshot");
     }
 
     fn active_names(app: &App) -> Vec<Option<&str>> {

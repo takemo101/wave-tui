@@ -68,8 +68,9 @@ pub(crate) fn render_splash(kind: SplashKind, theme: &Theme, tick: u16, frame: &
 /// This is the only entry point the controller/event loop calls each frame. It
 /// reads display data from `app` and draws into the frame's buffer; it performs
 /// no state mutation. `low_power` is the controller's `--low-power` flag: it
-/// fixes Beat Orbit particle positions and trails, mirroring how the splash
-/// loop receives its low-power timing, without adding persistent app state.
+/// freezes the Bioluminescent Current flow, light positions, and trails,
+/// mirroring how the splash loop receives its low-power timing, without adding
+/// persistent app state.
 pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
     render_into(
         app,
@@ -83,7 +84,8 @@ pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
 /// Pure hit test for Agent Pulse mouse input.
 ///
 /// Maps a click at (`column`, `row`) within the rendered `area` to the
-/// read-only Beat Orbit particle selection and `None` for every other click.
+/// read-only Bioluminescent Current light selection and `None` for every
+/// other click.
 /// The CLI event loop owns applying the returned action; this function never
 /// mutates `App` and never returns playback, station, search, or settings
 /// actions.
@@ -122,8 +124,9 @@ fn render_into(app: &App, low_power: bool, now: Instant, area: Rect, buf: &mut B
         LayoutTier::Compact => render_compact(app, &theme, area, buf),
     }
 
-    // The full-screen Beat Orbit canvas draws over the composed normal
-    // layout; a no-op for standalone/hidden launches and while it is closed.
+    // The full-screen Bioluminescent Current canvas draws over the composed
+    // normal layout; a no-op for standalone/hidden launches and while it is
+    // closed.
     agent_pulse::render_canvas(app, &theme, low_power, now, area, buf);
 }
 
@@ -2360,12 +2363,12 @@ mod tests {
         }
     }
 
-    // --- Agent Pulse: quiet count + full-screen Beat Orbit ----------------
+    // --- Agent Pulse: quiet count + full-screen Bioluminescent Current ----
 
     use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
     use std::time::Duration;
 
-    fn orbit_agent(
+    fn pulse_agent(
         workspace: &str,
         pane: &str,
         name: Option<&str>,
@@ -2390,7 +2393,7 @@ mod tests {
 
     #[test]
     fn normal_wide_and_medium_show_only_the_active_count() {
-        let app = app_with_agents(vec![orbit_agent(
+        let app = app_with_agents(vec![pulse_agent(
             "ws",
             "p1",
             Some("research"),
@@ -2411,7 +2414,7 @@ mod tests {
 
     #[test]
     fn compact_normal_layout_reserves_no_agent_pulse_row() {
-        let app = app_with_agents(vec![orbit_agent(
+        let app = app_with_agents(vec![pulse_agent(
             "ws",
             "p1",
             Some("research"),
@@ -2444,8 +2447,8 @@ mod tests {
     }
 
     #[test]
-    fn beat_orbit_covers_the_full_screen() {
-        let mut app = app_with_agents(vec![orbit_agent(
+    fn current_canvas_covers_the_full_screen() {
+        let mut app = app_with_agents(vec![pulse_agent(
             "ws",
             "p1",
             Some("research"),
@@ -2455,17 +2458,17 @@ mod tests {
         assert!(normal.contains("All Stations"), "sanity: {normal}");
 
         app.apply(Action::ToggleAgentOverlay);
-        let orbit = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(orbit.contains("Agent Pulse"), "canvas title: {orbit}");
+        let canvas = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(canvas.contains("Agent Pulse"), "canvas title: {canvas}");
         assert!(
-            !orbit.contains("All Stations"),
-            "the canvas replaces the whole player surface: {orbit}"
+            !canvas.contains("All Stations"),
+            "the canvas replaces the whole player surface: {canvas}"
         );
     }
 
     #[test]
-    fn beat_orbit_hides_agent_details_until_selected() {
-        let mut app = app_with_agents(vec![orbit_agent(
+    fn current_canvas_hides_agent_details_until_selected() {
+        let mut app = app_with_agents(vec![pulse_agent(
             "alpha",
             "p1",
             Some("research"),
@@ -2487,20 +2490,20 @@ mod tests {
     }
 
     #[test]
-    fn cross_workspace_agents_render_as_particles() {
+    fn cross_workspace_agents_render_as_lights() {
         let mut app = app_with_agents(vec![
-            orbit_agent("alpha", "p1", Some("research"), AgentStatus::Working),
-            orbit_agent("beta", "p1", Some("review"), AgentStatus::Idle),
+            pulse_agent("alpha", "p1", Some("research"), AgentStatus::Working),
+            pulse_agent("beta", "p1", Some("review"), AgentStatus::Idle),
         ]);
         app.apply(Action::ToggleAgentOverlay);
         let text = buffer_text(&render_buffer(&app, 120, 36));
-        assert_eq!(text.matches('●').count(), 1, "one working particle: {text}");
-        assert_eq!(text.matches('○').count(), 1, "one idle particle: {text}");
+        assert_eq!(text.matches('●').count(), 1, "one working light: {text}");
+        assert_eq!(text.matches('○').count(), 1, "one idle light: {text}");
     }
 
     #[test]
-    fn signal_view_never_shows_the_beat_orbit() {
-        let mut app = app_with_agents(vec![orbit_agent(
+    fn signal_view_never_shows_the_current_canvas() {
+        let mut app = app_with_agents(vec![pulse_agent(
             "ws",
             "p1",
             Some("research"),
@@ -2524,7 +2527,7 @@ mod tests {
 
     #[test]
     fn stale_and_unavailable_canvas_states_render_calmly() {
-        let mut app = app_with_agents(vec![orbit_agent(
+        let mut app = app_with_agents(vec![pulse_agent(
             "ws",
             "p1",
             Some("research"),
@@ -2538,7 +2541,7 @@ mod tests {
         assert!(stale.contains("reconnecting"), "stale banner: {stale}");
         assert!(
             stale.matches('●').count() == 1,
-            "stale keeps the last orbit: {stale}"
+            "stale keeps the last light: {stale}"
         );
 
         app.apply(Action::AgentPollFailed {
@@ -2551,7 +2554,7 @@ mod tests {
         );
         assert!(
             !unavailable.contains('●'),
-            "unavailable hides particles: {unavailable}"
+            "unavailable hides lights: {unavailable}"
         );
     }
 }

@@ -117,6 +117,75 @@ Implications:
 - Signal View adds no playlist, queue, search, or new selection behavior and does
   not turn compact panes into a default full-screen visualizer.
 
+### Agent Pulse: Quiet Count + Kinetic Collage
+
+The optional Herdr Agent Pulse uses a one-line **quiet count** in normal
+layouts and a full-screen, music-reactive **Kinetic Collage** canvas as its
+only rich surface. The current presentation decision is
+`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`
+(approved 2026-07-18), which supersedes the presentation decisions of the
+original `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`
+(Quiet Companion summary + Status Constellation overlay), the interim
+`docs/superpowers/specs/2026-07-18-agent-pulse-beat-orbit-design.md` (Beat
+Orbit ring canvas), and the interim
+`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`
+(Bioluminescent Current flow canvas). The earlier
+modal/list/card/completed-history surfaces are removed; the 2026-07-16
+design's local-only and read-only privacy boundaries remain in force. Agent
+Pulse presents agent activity as stable album-art tiles inside a music
+visualizer, never as a work-management dashboard.
+
+Implications:
+
+- **Quiet count.** Wide and Medium add exactly one `● n active` line to Now
+  Playing — a count of every agent on the session's socket, never names,
+  output, or prompts — using theme colors only. Stale dims the count;
+  unavailable removes the line.
+- **Compact suppression.** The Compact tier shows no Agent Pulse line to
+  preserve its Split Mini station and playback context; while the
+  integration is active, `a` still opens the canvas there. Signal View keeps
+  its restricted key contract: it never shows Agent Pulse and ignores `a`.
+- **Standalone invisibility.** Ineligible and standalone launches render
+  byte-identical to the pre-integration UI: no reserved rows, no empty slots,
+  no "not in Herdr" hints, and mouse capture stays off.
+- **Kinetic Collage canvas.** `a` opens a single full-screen view that
+  replaces the whole player surface. Every agent is one small, stable
+  abstract album-art tile: its motif (record, diagonal, stripe, or frame
+  patterns drawn with terminal glyphs such as `░`/`▒`/`╱`/`╲`/`◌`), palette
+  arrangement, and staggered base rectangle derive deterministically from
+  the agent's private identity, so tiles stay recognizable across frames.
+  Dense terminals shrink tile size and spacing rather than grouping or
+  omitting tiles.
+- **Music-driven, not timer-driven.** A low-contrast waveform/FFT trace and
+  a breathing theme-phosphor vignette sit behind the tiles: RMS drives the
+  vignette spread and tile motion, FFT bands shape the trace. RMS plus each
+  tile's assigned FFT band moves its tile with a small bounded scale/offset
+  and adds a one- or two-layer soft shadow trail drawn from real recent
+  visualizer frames; the tile art itself never morphs or swaps with audio.
+  Silence leaves the collage dim and still by construction; nothing animates
+  on a clock. Low-power mode freezes background trace positions, tile
+  geometry, and trails while state edge glow and minimal brightness still
+  update.
+- **Restrained signal color.** State is a tile edge glow only: working
+  (playing color) glows strongest and blocked uses the error color; idle,
+  done, and unknown stay muted, and done tiles stay muted/dim until their
+  snapshot removes them. Stale freezes the last live collage dimmed under a
+  single `stale · reconnecting` banner; unavailable hides every tile behind
+  one calm `agents · unavailable · retrying` line.
+- **Selected-name-only privacy.** Selecting a tile (`Tab`/`Shift+Tab`/
+  arrows/`j`/`k`, or a click on its cells) brings it forward and shows only
+  `name · status` when the agent has an explicit Herdr `name`; an unnamed
+  selection shows no label at all. Pane ids, workspace ids, working
+  directories, and agent types never render.
+- **Player-first input.** The canvas consumes search and station
+  navigation/selection keys, but the documented global player shortcuts —
+  `Space`, `+`/`-`, `f`, `t`, `v`, and `z` (Signal View) — fall through with
+  their exact normal semantics. Mouse clicks only select tiles, and
+  selection — mouse and keyboard alike — resolves only while the connection
+  is live; during stale/unavailable states the frozen composition's
+  selection cannot change (`a`/`Esc` still close the canvas) — selection
+  input should not act on possibly outdated data.
+
 ### Theme Set: High Contrast Trio
 
 Initial themes:

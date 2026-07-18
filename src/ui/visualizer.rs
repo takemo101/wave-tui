@@ -341,7 +341,7 @@ fn render_ambient_pulse(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) 
 /// An empty waveform is treated as flat silence: every column samples `0.0`, so an
 /// empty and an all-zero waveform render identically (a flat baseline), per the
 /// MIK-024 reviewer note. Returns an empty vector only for zero width.
-fn waveform_columns(waveform: &[f32], width: usize) -> Vec<(f32, f32)> {
+pub(super) fn waveform_columns(waveform: &[f32], width: usize) -> Vec<(f32, f32)> {
     if width == 0 {
         return Vec::new();
     }
@@ -381,7 +381,7 @@ fn waveform_columns(waveform: &[f32], width: usize) -> Vec<(f32, f32)> {
 ///
 /// Pure and deterministic; returns an empty vector for empty bands or zero
 /// width, so callers stay safe for tiny panes and silent/empty frames.
-fn spectrum_columns(bands: &[f32], width: usize) -> Vec<(f32, f32)> {
+pub(super) fn spectrum_columns(bands: &[f32], width: usize) -> Vec<(f32, f32)> {
     if bands.is_empty() || width == 0 {
         return Vec::new();
     }

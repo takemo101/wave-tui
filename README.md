@@ -37,6 +37,14 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   the discovery UI and shows the current station center-stage with a large
   visualizer; `z`/`Esc` return and `q` quits. It is not persisted and has no CLI
   flag.
+- **Herdr Agent Pulse (optional)** — when launched as the official Herdr
+  plugin (Herdr 0.7.0+), a quiet, read-only `● n active` count of the AI
+  coding agents on the local Herdr socket appears in Wide/Medium layouts, and
+  `a` opens a full-screen, music-reactive **Kinetic Collage** canvas that
+  renders each agent as a stable procedural album-art tile over an
+  audio-driven background. It never reads agent output, never controls panes,
+  and standalone launches are completely unchanged (see
+  [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
@@ -142,6 +150,7 @@ search controls act on the focused pane.
 | `t`         | cycle theme                  |
 | `v`         | cycle visualizer mode        |
 | `z`         | toggle Signal View           |
+| `a`         | toggle the Agent Pulse canvas (Herdr plugin launches only) |
 | `/`         | search Radio Browser         |
 | `Esc`       | clear search / return        |
 | `q` / `Esc` | quit when not searching      |
@@ -212,6 +221,146 @@ connecting, playing, and failed states instead of dropping you back to the
 normal UI. The title area includes a thin, near-full-width volume bar without
 mixing in unrelated status labels.
 
+## Herdr Agent Pulse (optional)
+
+When `wave-tui` is launched by its official Herdr plugin, it can quietly show
+the live status of the AI coding agents visible on that Herdr session's local
+control socket, across the session's workspaces. The feature is a read-only
+companion to radio playback: it never affects audio, search, settings, or
+standalone use, and it is invisible outside Herdr.
+
+### Requirements and installation
+
+- Herdr **0.7.0 or newer** (plugin manifests, plugin runtime context, and the
+  `agent.list` socket API).
+- macOS or Linux (the same platforms as the plugin manifest).
+
+The plugin manifest is [`herdr-plugin.toml`](herdr-plugin.toml) in this
+repository (plugin id `wave-tui.radio`). Install it through Herdr's plugin
+manager:
+
+```bash
+herdr plugin install takemo101/wave-tui
+```
+
+Installation builds the release binary with `cargo build --release`. For local
+development you can point Herdr's plugin link/install command at a clone of
+this repository instead (see `herdr plugin --help` for your Herdr version's
+linking syntax).
+
+### Launching the radio tab
+
+The plugin's `Open wave-tui radio tab` action opens `wave-tui` in a
+**dedicated Herdr tab**, so the player keeps enough terminal area for its
+normal Wide or Medium layout instead of being squeezed into Compact mode. The
+tab owns the audio process: closing the tab exits `wave-tui` and stops
+playback, and detaching/reattaching the Herdr session leaves the process under
+Herdr's normal pane lifecycle.
+
+### When Agent Pulse is active
+
+Agent Pulse enables itself only when **all** of the following hold:
+
+1. `--no-agent-pulse` was not passed.
+2. `HERDR_ENV` is exactly `1`.
+3. `HERDR_SOCKET_PATH` is set and non-empty.
+4. `HERDR_WORKSPACE_ID` is set and non-empty.
+
+The official plugin supplies these variables. In every other case — a
+standalone launch, a plain shell inside Herdr without trustworthy plugin
+context, or an explicit `--no-agent-pulse` — `wave-tui` keeps its exact
+pre-integration appearance and behavior: no reserved rows, no "not in Herdr"
+hints, and `a` does nothing. The injected workspace id is trusted plugin
+context used for eligibility; the display itself is not filtered to it — every
+agent reported by the session's socket is shown.
+
+### What it shows
+
+- **Wide and Medium layouts** add exactly one quiet line to Now Playing:
+  `● n active`, a count of every agent on the socket. Names never appear in
+  the normal view.
+- **Compact layout** shows no Agent Pulse line to preserve station and
+  playback context, but `a` still opens the canvas while the integration is
+  active.
+- **Signal View** never shows Agent Pulse and ignores `a`.
+- Press `a` for the **Kinetic Collage** canvas: a full-screen view that
+  replaces the whole player surface. Every agent is one small, stable
+  abstract album-art tile: its motif, palette arrangement, and staggered
+  position derive from the agent's private identity, so a tile stays
+  recognizable across frames and never morphs or swaps with the music.
+  Behind the tiles, a low-contrast waveform/FFT trace and a breathing
+  theme-phosphor vignette react to the played audio. RMS and each tile's
+  assigned FFT band move its tile with a small bounded scale/offset and add
+  a one- or two-layer soft shadow trail drawn from real recent visualizer
+  frames. Silence (or no audio) leaves the collage dim and still; nothing
+  animates on a timer. With no agents the canvas shows a calm
+  `agents · none active`.
+- Theme colors communicate state as a restrained tile edge glow: working
+  tiles glow strongest (the playing color), blocked uses the error color,
+  and idle/done/unknown stay muted; a done tile stays muted/dim until the
+  next snapshot omits it. Dense terminals shrink tile size and spacing
+  rather than hiding tiles — every agent keeps one visible tile.
+- Selecting a tile brings it forward and shows only `name · status` for
+  agents with an explicit Herdr `name`; an unnamed selection shows no label
+  at all. Pane ids, workspace ids, working directories, and agent types
+  never render.
+
+### Canvas controls
+
+| Key / input        | Action                                   |
+| ------------------ | ---------------------------------------- |
+| `a` / `Esc`        | close the canvas                         |
+| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select a tile          |
+| mouse click        | select a tile (its cells only)           |
+| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | normal player behavior |
+| `q` / `Ctrl+C`     | quit the app                             |
+
+Search (`/`) and station navigation/selection (`g`/`G`/`Home`/`End`/`Enter`)
+are suppressed while the canvas is open, so canvas input can never play a
+station or move station selection. The global player shortcuts keep their
+exact normal semantics: `Space` still toggles playback only while the station
+list is the focused pane underneath, `f` favorites the station-list selection,
+and `z` switches to Signal View (which replaces the canvas surface). Mouse
+capture is enabled only for eligible plugin launches (native terminal text
+selection may then need `Shift`+drag); standalone launches leave terminal
+mouse behavior untouched. Selection resolves only while the connection is
+live — during `stale`/`unavailable` states mouse clicks and keyboard
+selection both change nothing, though `a`/`Esc` still close the canvas;
+selection input should not act on data that may no longer be current.
+
+### Connection loss and recovery
+
+The integration polls Herdr's `agent.list` every 5 seconds over the local Unix
+socket. Failures are recoverable and never interrupt playback:
+
+- After the first failed poll, the `● n active` count dims and the canvas
+  freezes the last live collage — background, tiles, and shadow trails —
+  dimmed, under a `stale · reconnecting` banner.
+- After 15 seconds without a successful response, the summary disappears and
+  the canvas hides every tile behind `agents · unavailable · retrying`.
+- Polling continues; a fresh successful snapshot restores the live view.
+
+### Privacy and read-only limits
+
+Agent Pulse is strictly observational:
+
+- It only calls `agent.list`; it never reads pane output, prompts, files, or
+  terminal scrollback.
+- It cannot focus, create, close, send text to, or otherwise control Herdr
+  panes.
+- It shows every agent reported by the plugin invocation's local Herdr
+  socket, across that session's workspaces; it never discovers other Herdr
+  sessions or opens another socket.
+- Only a selected tile's explicit Herdr `name` is ever rendered; there is no
+  fallback label and no pane/workspace/cwd/agent-type detail on screen.
+- It never changes volume, theme, station, playback, search, or the
+  visualizer, and never emits OS notifications.
+- Nothing is persisted: agent state lives only in process memory for the
+  current run, and there is no completed-agent history.
+
+Disable the integration for one launch with `--no-agent-pulse` (never written
+to settings).
+
 ## Command-line options
 
 ```text
@@ -224,6 +373,8 @@ OPTIONS:
     --no-auto-play                Start silently even if a previous station exists
     --audio-output-device <name>  CPAL output device name
     --low-power                   Lower UI update cadence (audio unaffected)
+    --no-agent-pulse              Disable the Herdr Agent Pulse integration for
+                                  this run (never persisted)
     --search <query>              Start in search mode with this query
     -h, --help                    Print help
     -V, --version                 Print version
@@ -319,8 +470,20 @@ for findings and caveats.
 - [`docs/ui-design-decisions.md`](docs/ui-design-decisions.md) — design deck
   decisions
 - [`docs/audio-spike.md`](docs/audio-spike.md) — native audio spike results
+- [`herdr-plugin.toml`](herdr-plugin.toml) — official Herdr plugin manifest
+- [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
+  — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
+  presentation superseded by the Kinetic Collage design)
+- [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
+  — Agent Pulse Kinetic Collage design (current presentation decision)
+- [`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md)
+  — Agent Pulse Bioluminescent Current design (superseded by Kinetic Collage)
 - [`docs/superpowers/plans/2026-06-27-radio-replacement.md`](docs/superpowers/plans/2026-06-27-radio-replacement.md)
   — implementation plan
+- [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
+  — Herdr Agent Pulse implementation plan
+- [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md)
+  — Kinetic Collage implementation plan
 
 ## Verification
 
@@ -339,7 +502,10 @@ cargo run --bin audio_spike -- https://dancewave.online/dance.mp3 5
 ```
 
 Default tests do not require network, audio devices, or a real terminal; live
-audio, real streams, ICY metadata, and terminal rendering are verified manually.
+audio, real streams, ICY metadata, and terminal rendering are verified
+manually. Agent Pulse tests likewise need no Herdr process or socket; the
+live-Herdr checks are listed in the manual checklist in
+[`docs/SPEC.md`](docs/SPEC.md).
 
 ## Credits
 

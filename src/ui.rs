@@ -30,11 +30,14 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, FocusPane, ListSource, SearchStatus};
+use std::time::Instant;
+
+use crate::app::{Action, App, FocusPane, ListSource, SearchStatus};
 use crate::layout::LayoutTier;
 use crate::model::{CodecKind, PlaybackState, Station};
 use crate::theme::Theme;
 
+mod agent_pulse;
 mod splash;
 mod visualizer;
 
@@ -64,16 +67,52 @@ pub(crate) fn render_splash(kind: SplashKind, theme: &Theme, tick: u16, frame: &
 ///
 /// This is the only entry point the controller/event loop calls each frame. It
 /// reads display data from `app` and draws into the frame's buffer; it performs
-/// no state mutation.
-pub fn render(app: &App, frame: &mut Frame) {
-    render_into(app, frame.area(), frame.buffer_mut());
+/// no state mutation. `low_power` is the controller's `--low-power` flag: it
+/// freezes the Kinetic Collage background, tile geometry, and shadow trails,
+/// mirroring how the splash loop receives its low-power timing, without adding
+/// persistent app state.
+pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
+    render_into(
+        app,
+        low_power,
+        Instant::now(),
+        frame.area(),
+        frame.buffer_mut(),
+    );
+}
+
+/// Pure hit test for Agent Pulse mouse input.
+///
+/// Maps a click at (`column`, `row`) within the rendered `area` to the
+/// read-only Kinetic Collage tile selection and `None` for every
+/// other click.
+/// The CLI event loop owns applying the returned action; this function never
+/// mutates `App` and never returns playback, station, search, or settings
+/// actions.
+///
+/// Selection requires a live view, so a stale, unavailable, or hidden
+/// integration resolves no clicks either; the geometry lives in
+/// [`agent_pulse`], shared with the canvas renderer. `low_power` must be the
+/// same controller flag passed to [`render`], so clicks resolve against
+/// exactly the tile rectangles that were drawn — frozen base geometry in low
+/// power, audio-transformed geometry otherwise.
+pub(crate) fn agent_pulse_hit_test(
+    area: Rect,
+    column: u16,
+    row: u16,
+    low_power: bool,
+    app: &App,
+) -> Option<Action> {
+    agent_pulse::hit_test(area, column, row, low_power, app)
 }
 
 /// Render into an explicit area and buffer.
 ///
 /// Split out from [`render`] so tests can drive rendering with a standalone
-/// [`Buffer`], with no real terminal or backend.
-fn render_into(app: &App, area: Rect, buf: &mut Buffer) {
+/// [`Buffer`], no real terminal or backend, and an injected `now` — rendering
+/// itself never reads the clock, which keeps Agent Pulse motion deterministic
+/// under test.
+fn render_into(app: &App, low_power: bool, now: Instant, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -93,6 +132,11 @@ fn render_into(app: &App, area: Rect, buf: &mut Buffer) {
         LayoutTier::Medium => render_medium(app, &theme, area, buf),
         LayoutTier::Compact => render_compact(app, &theme, area, buf),
     }
+
+    // The full-screen Kinetic Collage canvas draws over the composed
+    // normal layout; a no-op for standalone/hidden launches and while it is
+    // closed.
+    agent_pulse::render_canvas(app, &theme, low_power, now, area, buf);
 }
 
 // --- tier layouts --------------------------------------------------------
@@ -894,6 +938,15 @@ fn now_playing_lines<'a>(app: &App, theme: &Theme, compact: bool) -> Vec<Line<'a
         app.settings().volume.get(),
         gauge_width,
     ));
+
+    // Quiet Companion: the Agent Pulse state-count summary lives in the
+    // bordered Wide/Medium panes only; the compact pane keeps its trimmed
+    // Split Mini metadata, and hidden/unavailable states reserve no row.
+    if !compact {
+        if let Some(line) = agent_pulse::summary_line(app, theme) {
+            lines.push(line);
+        }
+    }
     lines
 }
 
@@ -1119,9 +1172,21 @@ mod tests {
 
     /// Render an app into a standalone buffer of the given size — no terminal.
     fn render_buffer(app: &App, width: u16, height: u16) -> Buffer {
+        render_buffer_at(app, false, Instant::now(), width, height)
+    }
+
+    /// Render with explicit low-power and clock inputs, for deterministic
+    /// Agent Pulse motion assertions.
+    fn render_buffer_at(
+        app: &App,
+        low_power: bool,
+        now: Instant,
+        width: u16,
+        height: u16,
+    ) -> Buffer {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        render_into(app, area, &mut buf);
+        render_into(app, low_power, now, area, &mut buf);
         buf
     }
 
@@ -2328,5 +2393,225 @@ mod tests {
                 "hint pushed off-screen by long title at {w}x{h}"
             );
         }
+    }
+
+    // --- Agent Pulse: quiet count + full-screen Kinetic Collage -----------
+
+    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
+    use std::time::Duration;
+
+    fn pulse_agent(
+        workspace: &str,
+        pane: &str,
+        name: Option<&str>,
+        status: AgentStatus,
+    ) -> AgentSnapshot {
+        AgentSnapshot {
+            id: AgentId::new(workspace, pane),
+            name: name.map(str::to_string),
+            status,
+        }
+    }
+
+    /// An app that received one Agent Pulse snapshot.
+    fn app_with_agents(agents: Vec<AgentSnapshot>) -> App {
+        let mut app = base_app();
+        app.apply(Action::AgentSnapshot {
+            agents,
+            now: Instant::now(),
+        });
+        app
+    }
+
+    #[test]
+    fn normal_wide_and_medium_show_only_the_active_count() {
+        let app = app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        for (width, height) in [(120, 36), (80, 20)] {
+            let text = buffer_text(&render_buffer(&app, width, height));
+            assert!(
+                text.contains("● 1 active"),
+                "normal {width}x{height} view must show the tiny count: {text}"
+            );
+            assert!(
+                !text.contains("research"),
+                "the normal view never shows agent names: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_normal_layout_reserves_no_agent_pulse_row() {
+        let app = app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        let text = buffer_text(&render_buffer(&app, 60, 16));
+        assert!(
+            !text.contains("active"),
+            "compact keeps no Agent Pulse line: {text}"
+        );
+    }
+
+    #[test]
+    fn hidden_agent_actions_leave_standalone_render_unchanged() {
+        let sizes = [(120, 36), (80, 20), (60, 16)];
+        let mut app = base_app();
+        let before: Vec<Buffer> = sizes
+            .iter()
+            .map(|&(width, height)| render_buffer(&app, width, height))
+            .collect();
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        for (index, &(width, height)) in sizes.iter().enumerate() {
+            assert_eq!(
+                render_buffer(&app, width, height),
+                before[index],
+                "hidden Agent Pulse actions changed the render at {width}x{height}"
+            );
+        }
+    }
+
+    /// Cells drawn with tile-art glyphs anywhere in the buffer.
+    fn tile_cell_count(text: &str) -> usize {
+        ["░", "▒", "╱", "╲", "◌"]
+            .iter()
+            .map(|glyph| text.matches(glyph).count())
+            .sum()
+    }
+
+    #[test]
+    fn collage_canvas_covers_the_full_screen() {
+        let mut app = app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        let normal = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(normal.contains("All Stations"), "sanity: {normal}");
+
+        app.apply(Action::ToggleAgentOverlay);
+        let canvas = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(canvas.contains("Agent Pulse"), "canvas title: {canvas}");
+        assert!(
+            !canvas.contains("All Stations"),
+            "the canvas replaces the whole player surface: {canvas}"
+        );
+    }
+
+    #[test]
+    fn collage_canvas_hides_agent_details_until_selected() {
+        let mut app = app_with_agents(vec![pulse_agent(
+            "alpha",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        let unselected = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            !unselected.contains("research"),
+            "no label before selection: {unselected}"
+        );
+
+        app.apply(Action::SelectNextAgent);
+        let selected = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            selected.contains("research · working"),
+            "selected explicit-name label missing: {selected}"
+        );
+    }
+
+    #[test]
+    fn cross_workspace_agents_render_as_selectable_tiles() {
+        let mut app = app_with_agents(vec![
+            pulse_agent("alpha", "p1", Some("research"), AgentStatus::Working),
+            pulse_agent("beta", "p1", Some("review"), AgentStatus::Idle),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(tile_cell_count(&text) > 0, "tiles must render: {text}");
+
+        // Every agent owns its own click target, so both workspaces' tiles
+        // are present even when both share a pane id.
+        let area = Rect::new(0, 0, 120, 36);
+        let mut hit_ids = Vec::new();
+        for row in 0..36 {
+            for column in 0..120 {
+                if let Some(Action::SelectAgent(id)) =
+                    agent_pulse_hit_test(area, column, row, false, &app)
+                {
+                    if !hit_ids.contains(&id) {
+                        hit_ids.push(id);
+                    }
+                }
+            }
+        }
+        assert_eq!(hit_ids.len(), 2, "one tile hit target per agent");
+    }
+
+    #[test]
+    fn signal_view_never_shows_the_collage_canvas() {
+        let mut app = app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleSignalView);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(!text.contains("Agent Pulse"), "no canvas: {text}");
+        assert!(
+            !text.contains("● 1 active"),
+            "Signal View reserves no Pulse line: {text}"
+        );
+
+        // Even with the canvas open underneath, Signal View wins the surface.
+        app.apply(Action::LeaveSignalView);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::ToggleSignalView);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(!text.contains("Agent Pulse"), "no canvas over Signal View");
+    }
+
+    #[test]
+    fn stale_and_unavailable_canvas_states_render_calmly() {
+        let mut app = app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        let stale = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(stale.contains("reconnecting"), "stale banner: {stale}");
+        assert!(
+            tile_cell_count(&stale) > 0,
+            "stale keeps the last tile: {stale}"
+        );
+
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+        });
+        let unavailable = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            unavailable.contains("agents · unavailable · retrying"),
+            "calm unavailable copy: {unavailable}"
+        );
+        assert_eq!(
+            tile_cell_count(&unavailable),
+            0,
+            "unavailable hides tiles: {unavailable}"
+        );
     }
 }

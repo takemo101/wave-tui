@@ -465,6 +465,8 @@ MVP includes a minimal practical CLI surface:
 - `--no-auto-play`: start silently even if previous station exists
 - `--audio-output-device <name>`: CPAL output device name
 - `--low-power`: force low-power UI mode
+- `--no-agent-pulse`: disable the optional Herdr Agent Pulse integration for
+  this run only; never persisted and never applied to settings
 
 Potential optional flag if straightforward:
 
@@ -477,6 +479,157 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - `--low-power` explicitly lowers visual update cadence.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
+- The Agent Pulse Kinetic Collage renders statically in low-power mode:
+  background trace positions, tile geometry, and shadow trails are frozen
+  while state edge glow and minimal brightness updates remain.
+
+### Herdr Agent Pulse (Optional Integration)
+
+`wave-tui` ships as an official Herdr plugin and, only when launched by that
+plugin, shows a **read-only Agent Pulse**: the live status of the AI coding
+agents visible on that Herdr session's local control socket, presented as
+ambient context beside radio playback. The integration design (packaging,
+eligibility, monitoring) is
+`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; its
+presentation is superseded by the approved
+`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`.
+This section records the product behavior as implemented.
+
+This is an optional Herdr integration, not a plugin system inside `wave-tui`,
+and it does not weaken the non-goals below: there is still no daemon, no IPC
+remote control of `wave-tui`, and no way for agent activity to change audio,
+playback, search, settings, themes, or the visualizer.
+
+#### Packaging and launch
+
+- `herdr-plugin.toml` at the repository root is the official manifest: plugin
+  id `wave-tui.radio`, `min_herdr_version = "0.7.0"`, macOS and Linux, a
+  Cargo release build during plugin install, and an `open` action that opens
+  the release binary in a **dedicated Herdr tab** (placement `tab`) so the
+  player keeps its Wide/Medium layout.
+- The tab owns the audio process: closing the tab exits `wave-tui` and stops
+  playback; detach/reattach follows Herdr's normal pane lifecycle.
+
+#### Eligibility
+
+Agent Pulse is enabled if and only if all of these hold:
+
+1. `--no-agent-pulse` is absent.
+2. `HERDR_ENV` is exactly `1`.
+3. `HERDR_SOCKET_PATH` is set and non-empty.
+4. `HERDR_WORKSPACE_ID` is set and non-empty.
+
+The plugin environment is the authority for eligibility; the injected
+workspace id is trusted plugin context and is not used to filter the display.
+Every ineligible launch (standalone, incomplete environment, or explicit
+disable) keeps the exact pre-integration appearance and behavior — no
+reserved rows, no hints, `a` is a silent no-op, and mouse capture is not
+enabled.
+
+#### Monitoring and data flow
+
+- A focused `herdr` adapter module owns environment parsing, the Unix socket
+  transport, newline-delimited JSON-RPC framing, and `agent.list` payload
+  normalization; nothing else in the app sees raw JSON or sockets.
+- A background thread polls `agent.list` every 5 seconds with a 3-second
+  socket I/O timeout and forwards typed snapshot/failure events into the
+  existing event loop; the reducer in `app` owns all lifecycle state.
+- Every agent returned by the current socket is normalized — across all of
+  that Herdr session's workspaces — under a private workspace-qualified
+  identity, so identical pane ids in different workspaces stay distinct. No
+  other Herdr sessions or sockets are ever discovered or opened.
+- Statuses `working`, `blocked`, `done`, and `idle` are mapped explicitly;
+  anything else (or a missing status) becomes `unknown`. Entries missing
+  required ids and malformed payloads are dropped/rejected without crashing.
+- The observed-at timestamp is internal reducer state (preserved while an
+  agent's identity and status are unchanged); no duration is displayed.
+
+#### Lifecycle and history
+
+- Each successful snapshot replaces the live view. Agents sort working,
+  blocked, idle, done, then unknown.
+- A `done` agent stays in the live view, rendered faded, until a later
+  snapshot omits it; then it disappears.
+- There is no completed-agent history and no agent detail store: live
+  snapshot, selection, and connection state are the only Agent Pulse state,
+  all process-local.
+
+#### Connection states and recovery
+
+| Condition | Wide/Medium summary | Canvas (`a`) |
+| --- | --- | --- |
+| Connected | `● n active` count | Live Kinetic Collage (`agents · none active` when empty) |
+| First failed poll | Count dims | Last live collage (background/tiles/trails) frozen, dimmed, `stale · reconnecting` banner |
+| ≥ 15 seconds without success | Summary disappears | Tiles hidden behind `agents · unavailable · retrying` |
+| Fresh snapshot | Live count | Live collage |
+
+Socket errors, malformed replies, and timeouts are recoverable: they never
+panic the TUI or interrupt playback, and polling continues. A per-loop timer
+tick advances the 15-second unavailable threshold even when no further monitor
+event arrives. The stale freeze uses the visualizer frames captured at the
+Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
+
+#### UI and input contract
+
+- Wide and Medium add exactly one `● n active` line to Now Playing — a count
+  only, never names. Compact shows no Agent Pulse line (but `a` still opens
+  the canvas while the integration is active); Signal View never shows Agent
+  Pulse and ignores `a`.
+- `a` opens the full-screen **Kinetic Collage** canvas, replacing the whole
+  player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit.
+- The canvas renders one small, stable abstract album-art tile per agent.
+  Each tile's motif (record, diagonal, stripe, or frame patterns drawn with
+  terminal glyphs), palette arrangement, and staggered base rectangle derive
+  deterministically from the agent's private workspace-qualified identity,
+  so tiles stay recognizable across frames and never morph or swap with the
+  music. Behind the tiles, a low-contrast waveform/FFT trace and a breathing
+  theme-phosphor vignette react to the played audio: RMS drives the vignette
+  spread and tile motion, FFT bands shape the trace. RMS combined with each
+  tile's assigned FFT band moves its tile with a small bounded scale/offset
+  and adds a one- or two-layer soft shadow trail drawn from real recent
+  visualizer frames. Silence leaves the collage dim and still — nothing
+  animates on a timer. Dense terminals shrink tile size and spacing rather
+  than omitting tiles; every agent keeps one visible tile.
+- State colors come from the active theme only, as a restrained tile edge
+  glow: working strongest (the playing color), blocked the error color;
+  idle/done/unknown stay muted and a done tile stays muted/dim until its
+  snapshot omits it. In `--low-power`, background trace positions, tile
+  geometry, and shadow trails are frozen while state edge glow and minimal
+  brightness still update.
+- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a tile, bringing it forward.
+  Selection shows only `name · status` for an explicitly named agent; an
+  unnamed selection shows no label. Search (`/`) and station
+  navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed, so
+  canvas input can never play a station or move station selection.
+- The documented global player shortcuts fall through with their exact normal
+  semantics and side effects: `Space` (playback toggle, still conditional on
+  the station list being the focused pane underneath), `+`/`-` (volume), `f`
+  (favorite for the station-list selection), `t` (theme), `v` (visualizer
+  mode), and `z` (Signal View, which replaces the canvas surface).
+- Mouse capture is enabled only for eligible plugin launches, solely to feed
+  tile-selection clicks; background trace, vignette, and shadow cells
+  resolve nothing. Clicks resolve against the tile geometry actually drawn
+  (including low-power frozen geometry) and only while the connection is
+  `Connected`. During stale/unavailable states selection is frozen entirely —
+  mouse clicks and keyboard selection both change nothing, while `a`/`Esc`
+  still close the canvas. Selection input, from either device, must not act
+  on data that may no longer be current.
+
+#### Privacy and read-only guarantees
+
+- Only `agent.list` is ever called. Pane output, prompts, files, and
+  scrollback are never read; panes are never focused, created, closed, sent
+  text, or otherwise controlled.
+- Every agent reported by the plugin invocation's local Herdr socket is
+  shown, across that session's workspaces; other Herdr sessions are never
+  discovered.
+- Only a selected tile's explicit Herdr `name` is ever rendered. There is no
+  fallback label; pane ids, workspace ids, working directories, and agent
+  types never appear on screen.
+- Agent activity changes colors/low-rate rendering only — never audio,
+  playback, search, settings, theme, visualizer, or OS notifications.
+- Nothing is persisted: agent state exists only in process memory, and
+  `--no-agent-pulse` is never written to settings.
 
 ### Implementation Principles
 
@@ -513,6 +666,10 @@ Use automated tests for core logic:
 - FFT normalization/band mapping where deterministic
 - domain primitive smart constructors and parse boundaries
 - first-class collection behavior such as favorite deduplication and failed-station filtering
+- Herdr Agent Pulse logic without a live Herdr process, socket, or terminal:
+  plugin-environment eligibility, cross-workspace `agent.list` payload
+  normalization, lifecycle/stale reducers, key/mouse routing, and
+  summary/Kinetic Collage canvas rendering
 
 Use manual verification for:
 
@@ -520,6 +677,7 @@ Use manual verification for:
 - terminal rendering quality
 - ICY metadata behavior against live stations
 - device selection
+- live Herdr plugin behavior (see the Agent Pulse manual checklist below)
 
 ## Non-Goals for MVP
 
@@ -534,6 +692,11 @@ Use manual verification for:
 - lyrics
 - remote daemon / IPC control
 - user-editable custom theme files
+
+The optional Herdr Agent Pulse integration does not change these non-goals:
+`wave-tui` ships *as* a Herdr plugin but has no plugin system of its own, runs
+no daemon, and accepts no remote control — its Herdr socket use is outbound,
+read-only `agent.list` monitoring only.
 
 ## Success Criteria
 
@@ -599,3 +762,78 @@ tier, and built-in retry candidates stay visible
   entries apply their corresponding station filters. When a successful search
   result population exists, those section/category sources filter the current
   search results; otherwise they fall back to the curated catalog.
+
+### Herdr Agent Pulse — Verification Status
+
+Status as of the Kinetic Collage documentation pass (2026-07-19).
+
+**Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
+`cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
+The suite covers, without any live Herdr process, socket, audio, or terminal:
+
+- exact plugin-environment eligibility and every ineligible/disabled case
+  (`herdr` module tests);
+- `agent.list` request framing, cross-workspace payload normalization with
+  workspace-qualified identity, status mapping, and malformed-payload
+  rejection (`herdr`);
+- monitor failure reporting and clean shutdown against a nonexistent socket
+  (`herdr`);
+- snapshot/lifecycle reducers: sort order, cross-workspace identity
+  distinctness and selection, done agents staying until a snapshot omits
+  them, the stale-edge visualizer freeze capture, stale → unavailable
+  (15 s) → recovery transitions, and the per-loop staleness tick (`app`);
+- `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
+  the canvas key gate (tile selection, suppressed search/station
+  navigation, preserved global player shortcuts, Signal View delegation),
+  and monitor/mouse-capture/click routing including the low-power geometry
+  path (`cli`);
+- summary visibility per tier and connection state, full-screen canvas
+  coverage, deterministic per-identity tile motifs/layout, one-tile-per-agent
+  density, RMS/FFT-driven tile motion and shadow trails, background
+  trace/vignette reactivity, silence stillness, low-power frozen geometry,
+  state edge glow, selected-name-only privacy, stale freeze/unavailable
+  rendering, and tile-only hit testing (`ui`, `ui::agent_pulse`).
+
+**Manual checklist (NOT run in this pass).** This documentation pass was
+performed without a Herdr 0.7.0+ installation, a real terminal session, or
+audio output, so none of the following live checks were executed here. They
+are recorded as environment-dependent residual verification and should be
+run on macOS and/or Linux with a real Herdr 0.7.0+ session before treating
+the release as fully validated:
+
+- [ ] Install or link the plugin locally and confirm the Cargo release build
+      runs during `herdr plugin install`/link.
+- [ ] Open the `Open wave-tui radio tab` action; confirm a dedicated tab with
+      the Wide or Medium layout and working playback.
+- [ ] Play a real stream with the canvas open and judge live composition and
+      cadence: the background trace and vignette follow the music, tiles
+      breathe with RMS/band energy and grow soft shadow trails, tile art
+      stays stable, and silence leaves a dim, still collage with no timer
+      motion.
+- [ ] Cycle all six themes on the canvas and confirm background, tile
+      motifs, and state edge glow stay legible on each.
+- [ ] With agents across multiple workspaces of the same Herdr session,
+      confirm `● n active` counts them all and the canvas keeps one
+      recognizable tile per agent at stable positions, including dense
+      agent counts.
+- [ ] Select tiles with keyboard and mouse clicks; confirm clicks land only
+      on tile cells, the selected tile comes forward, only explicit
+      `name · status` labels render, and unnamed agents show no label.
+- [ ] Resize the tab through Wide/Medium/Compact; confirm the summary hides
+      in Compact while `a` still opens the full-screen canvas, and the
+      canvas redraws cleanly across sizes.
+- [ ] Temporarily remove socket access; confirm the dimmed count and frozen
+      `stale · reconnecting` canvas, the 15-second
+      `agents · unavailable · retrying` state, and full recovery when the
+      socket returns — with playback unaffected throughout, and mouse clicks
+      and keyboard selection changing nothing while stale/unavailable.
+- [ ] Detach and reattach the Herdr session; confirm the tab process and
+      playback follow Herdr's normal pane lifecycle.
+- [ ] Run `wave-tui --low-power` inside Herdr and confirm static background
+      trace positions, tile geometry, and trails while state edge glow
+      remains — and that clicks still select against the frozen geometry.
+- [ ] Run standalone `wave-tui --no-auto-play` outside Herdr and inside a
+      plain Herdr shell pane (no plugin env); confirm zero Agent Pulse UI,
+      inert `a`, and unchanged terminal mouse behavior.
+- [ ] Launch via the plugin with `--no-agent-pulse` and confirm the
+      integration stays fully disabled for that run.

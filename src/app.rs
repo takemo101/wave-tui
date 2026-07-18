@@ -18,12 +18,14 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
+use crate::herdr::{self, AgentId, AgentSnapshot, AgentStatus};
 use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
 use crate::theme::ThemeName;
 
 use std::collections::VecDeque;
+use std::time::Instant;
 
 /// Step applied to the volume for a single `VolumeUp`/`VolumeDown` action.
 const VOLUME_STEP: i32 = 5;
@@ -97,6 +99,138 @@ pub enum DisplayMode {
     Normal,
     /// Opt-in visual-player surface for the current station.
     SignalView,
+}
+
+/// Connection state of the optional Herdr Agent Pulse integration.
+///
+/// `Hidden` is the standalone/ineligible default: no Agent Pulse UI exists
+/// and every Agent Pulse action is a no-op, so pre-integration behavior is
+/// exactly unchanged. The other states follow the design's recovery ladder:
+/// `Connected` after a successful snapshot, `Stale` after the first failed
+/// poll, and `Unavailable` once [`herdr::STALE_AFTER`] passes without a
+/// success. A fresh snapshot always recovers to `Connected`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPulseConnection {
+    Hidden,
+    Connected,
+    Stale,
+    Unavailable,
+}
+
+/// One live agent as Agent Pulse displays it.
+///
+/// `observed_at` is when this app first saw the agent in its current status —
+/// a locally derived estimate, not an assertion about the agent's true
+/// process start time. The view deliberately carries no pane id, cwd, or
+/// agent type: the explicit `name` is the only displayable label, and the
+/// private [`AgentId`] exists solely for identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentView {
+    pub(crate) id: AgentId,
+    /// Explicit Herdr agent name; the only label the UI may ever show.
+    pub(crate) name: Option<String>,
+    pub(crate) status: AgentStatus,
+    pub(crate) observed_at: Instant,
+}
+
+impl AgentView {
+    /// Sort rank per the design: working, blocked, idle, done, then unknown.
+    fn status_rank(&self) -> u8 {
+        match self.status {
+            AgentStatus::Working => 0,
+            AgentStatus::Blocked => 1,
+            AgentStatus::Idle => 2,
+            AgentStatus::Done => 3,
+            AgentStatus::Unknown => 4,
+        }
+    }
+}
+
+/// Visibility of the temporary Agent Pulse overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentOverlay {
+    Closed,
+    Open,
+}
+
+/// The visualizer display frozen at the Connected→Stale edge: the
+/// then-current frame plus the prior frames behind it (most recent first),
+/// so the canvas can keep drawing the exact last live current and trails.
+#[derive(Debug)]
+struct StaleViz {
+    frame: VizFrame,
+    history: Vec<VizFrame>,
+}
+
+/// All Agent Pulse state owned by [`App`]: live agents only.
+///
+/// Process-local only: nothing here is persisted, no completed history is
+/// kept, and the reducer never touches the Herdr socket — typed snapshots
+/// and failures arrive as [`Action`]s from the controller over the existing
+/// event-loop boundary.
+#[derive(Debug)]
+struct AgentPulse {
+    connection: AgentPulseConnection,
+    /// Live agents across the current socket's workspaces, in display
+    /// (sorted) order.
+    active: Vec<AgentView>,
+    /// Identity of the selected active agent.
+    selected: Option<AgentId>,
+    overlay: AgentOverlay,
+    /// When the last successful snapshot arrived.
+    last_success: Option<Instant>,
+    /// When the current failure streak began; cleared by any success.
+    first_failure: Option<Instant>,
+    /// Display snapshot captured when the connection dims to `Stale`;
+    /// cleared by a fresh agent snapshot and by `Unavailable`.
+    stale_viz: Option<StaleViz>,
+}
+
+impl AgentPulse {
+    /// The standalone default: hidden and inert.
+    fn hidden() -> Self {
+        Self {
+            connection: AgentPulseConnection::Hidden,
+            active: Vec::new(),
+            selected: None,
+            overlay: AgentOverlay::Closed,
+            last_success: None,
+            first_failure: None,
+            stale_viz: None,
+        }
+    }
+
+    /// Index of the selected agent in the sorted active list, when it is
+    /// still an active agent.
+    fn selected_index(&self) -> Option<usize> {
+        let selected = self.selected.as_ref()?;
+        self.active.iter().position(|view| &view.id == selected)
+    }
+
+    /// Drop the selection when its agent left the active list.
+    fn clamp_selection(&mut self) {
+        if self.selected_index().is_none() {
+            self.selected = None;
+        }
+    }
+}
+
+/// Sort active agents by state (working, blocked, idle, done, unknown), then
+/// by explicit name (named agents before unnamed ones), with the stable
+/// identity as the final tiebreaker so equal entries keep a deterministic
+/// order across snapshots.
+fn sort_active_agents(agents: &mut [AgentView]) {
+    agents.sort_by(|a, b| {
+        a.status_rank()
+            .cmp(&b.status_rank())
+            .then_with(|| match (&a.name, &b.name) {
+                (Some(a_name), Some(b_name)) => a_name.cmp(b_name),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 /// Status of the online search, shown in the search strip.
@@ -257,6 +391,28 @@ pub enum Action {
     LeaveSignalView,
     /// Toggle favorite state of the current station shown in Signal View (`f`).
     ToggleCurrentFavorite,
+    /// Apply a fresh Herdr `agent.list` snapshot covering every workspace
+    /// served by the current control socket.
+    AgentSnapshot {
+        agents: Vec<AgentSnapshot>,
+        now: Instant,
+    },
+    /// Record a failed Herdr poll (socket error, timeout, malformed reply).
+    AgentPollFailed { now: Instant },
+    /// Re-evaluate the stale/unavailable threshold without a monitor event.
+    AgentTick { now: Instant },
+    /// Toggle the Agent Pulse overlay (`a`); a no-op while the integration is
+    /// hidden or Signal View is active.
+    ToggleAgentOverlay,
+    /// Close the Agent Pulse overlay (`Esc` while it is open).
+    CloseAgentOverlay,
+    /// Move the overlay selection down the sorted active-agent list.
+    SelectNextAgent,
+    /// Move the overlay selection up the sorted active-agent list.
+    SelectPreviousAgent,
+    /// Select an active agent by its stable identity (mouse/particle
+    /// selection).
+    SelectAgent(AgentId),
 }
 
 /// The application state.
@@ -286,6 +442,7 @@ pub struct App {
     search_status: SearchStatus,
     now_playing_title: Option<String>,
     display_mode: DisplayMode,
+    agent_pulse: AgentPulse,
 }
 
 impl App {
@@ -320,6 +477,7 @@ impl App {
             search_status: SearchStatus::Idle,
             now_playing_title: None,
             display_mode: DisplayMode::Normal,
+            agent_pulse: AgentPulse::hidden(),
         }
     }
 
@@ -363,6 +521,14 @@ impl App {
             Action::ToggleSignalView => self.toggle_signal_view(),
             Action::LeaveSignalView => self.display_mode = DisplayMode::Normal,
             Action::ToggleCurrentFavorite => self.toggle_current_favorite(),
+            Action::AgentSnapshot { agents, now } => self.apply_agent_snapshot(agents, now),
+            Action::AgentPollFailed { now } => self.mark_agent_poll_failed(now),
+            Action::AgentTick { now } => self.refresh_agent_staleness(now),
+            Action::ToggleAgentOverlay => self.toggle_agent_overlay(),
+            Action::CloseAgentOverlay => self.close_agent_overlay(),
+            Action::SelectNextAgent => self.select_next_agent(),
+            Action::SelectPreviousAgent => self.select_previous_agent(),
+            Action::SelectAgent(id) => self.select_agent(id),
         }
     }
 
@@ -724,6 +890,169 @@ impl App {
         self.show_source(source);
     }
 
+    // --- agent pulse (Herdr integration) ---------------------------------
+
+    /// Fold a successful `agent.list` snapshot into Agent Pulse state.
+    ///
+    /// Live-only reconciliation: the snapshot fully replaces the active
+    /// view. Agents keep their `observed_at` while their identity and status
+    /// are unchanged and reset it on a status change. A `done` agent stays
+    /// in the active list (so the UI can dim it) until a later snapshot
+    /// omits it; nothing is recorded once an agent disappears. A success
+    /// always recovers the connection to `Connected`.
+    fn apply_agent_snapshot(&mut self, agents: Vec<AgentSnapshot>, now: Instant) {
+        let pulse = &mut self.agent_pulse;
+        let previous = std::mem::take(&mut pulse.active);
+        let mut active: Vec<AgentView> = agents
+            .into_iter()
+            .map(|snapshot| {
+                let carried = previous
+                    .iter()
+                    .find(|view| view.id == snapshot.id && view.status == snapshot.status);
+                AgentView {
+                    observed_at: carried.map_or(now, |view| view.observed_at),
+                    id: snapshot.id,
+                    name: snapshot.name,
+                    status: snapshot.status,
+                }
+            })
+            .collect();
+        sort_active_agents(&mut active);
+        pulse.active = active;
+        pulse.clamp_selection();
+        pulse.connection = AgentPulseConnection::Connected;
+        pulse.last_success = Some(now);
+        pulse.first_failure = None;
+        pulse.stale_viz = None;
+    }
+
+    /// Record a failed poll: the first failure of a streak dims state to
+    /// `Stale`, and [`herdr::STALE_AFTER`] without a success makes the
+    /// integration `Unavailable`. Last-known agents are retained so the UI
+    /// can dim them while stale.
+    fn mark_agent_poll_failed(&mut self, now: Instant) {
+        // Capture the live display exactly once, at the Connected→Stale
+        // edge, so rendering can freeze the last current and trails.
+        if self.agent_pulse.connection == AgentPulseConnection::Connected {
+            self.agent_pulse.stale_viz = Some(StaleViz {
+                frame: self.viz.clone(),
+                history: self.viz_history.iter().skip(1).cloned().collect(),
+            });
+        }
+        let pulse = &mut self.agent_pulse;
+        if pulse.first_failure.is_none() {
+            pulse.first_failure = Some(now);
+        }
+        pulse.connection = if Self::agent_response_overdue(pulse, now) {
+            AgentPulseConnection::Unavailable
+        } else {
+            AgentPulseConnection::Stale
+        };
+        if pulse.connection == AgentPulseConnection::Unavailable {
+            pulse.stale_viz = None;
+        }
+    }
+
+    /// Downgrade to `Unavailable` once [`herdr::STALE_AFTER`] has passed
+    /// without a successful snapshot. Called on a timer by the controller so
+    /// the threshold applies even when no further monitor event arrives; it
+    /// never upgrades state and never reveals a hidden integration.
+    fn refresh_agent_staleness(&mut self, now: Instant) {
+        let pulse = &mut self.agent_pulse;
+        if pulse.connection == AgentPulseConnection::Hidden {
+            return;
+        }
+        if Self::agent_response_overdue(pulse, now) {
+            pulse.connection = AgentPulseConnection::Unavailable;
+            pulse.stale_viz = None;
+        }
+    }
+
+    /// Whether the reference point (the last success, or else the start of
+    /// the current failure streak) is at least [`herdr::STALE_AFTER`] old.
+    fn agent_response_overdue(pulse: &AgentPulse, now: Instant) -> bool {
+        let Some(reference) = pulse.last_success.or(pulse.first_failure) else {
+            return false;
+        };
+        now.duration_since(reference) >= herdr::STALE_AFTER
+    }
+
+    /// Whether Agent Pulse actions may run at all: the integration must have
+    /// shown evidence of life (not `Hidden`), and Signal View must not be
+    /// active — Signal View keeps its restricted key contract and never
+    /// shows or opens Agent Pulse.
+    fn agent_pulse_interactive(&self) -> bool {
+        self.agent_pulse.connection != AgentPulseConnection::Hidden
+            && self.display_mode != DisplayMode::SignalView
+    }
+
+    /// Whether selection actions may run: the canvas must be open and the
+    /// connection `Connected`, matching the mouse hit-test gate — stale and
+    /// unavailable freeze the last composition, selection included, so no
+    /// input may act on data that may no longer be current. Close/toggle
+    /// stay on [`Self::agent_pulse_interactive`].
+    fn agent_selection_interactive(&self) -> bool {
+        self.agent_pulse_interactive()
+            && self.agent_pulse.overlay == AgentOverlay::Open
+            && self.agent_pulse.connection == AgentPulseConnection::Connected
+    }
+
+    fn toggle_agent_overlay(&mut self) {
+        if !self.agent_pulse_interactive() {
+            return;
+        }
+        self.agent_pulse.overlay = match self.agent_pulse.overlay {
+            AgentOverlay::Closed => AgentOverlay::Open,
+            AgentOverlay::Open => AgentOverlay::Closed,
+        };
+    }
+
+    fn close_agent_overlay(&mut self) {
+        if !self.agent_pulse_interactive() {
+            return;
+        }
+        self.agent_pulse.overlay = AgentOverlay::Closed;
+    }
+
+    /// Move the overlay selection down one row, never past the last agent;
+    /// with no selection it starts at the first sorted agent.
+    fn select_next_agent(&mut self) {
+        if !self.agent_selection_interactive() {
+            return;
+        }
+        let pulse = &mut self.agent_pulse;
+        let index = match pulse.selected_index() {
+            Some(index) => (index + 1).min(pulse.active.len().saturating_sub(1)),
+            None => 0,
+        };
+        pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
+    }
+
+    /// Move the overlay selection up one row, never above the first agent;
+    /// with no selection it starts at the last sorted agent.
+    fn select_previous_agent(&mut self) {
+        if !self.agent_selection_interactive() {
+            return;
+        }
+        let pulse = &mut self.agent_pulse;
+        let index = match pulse.selected_index() {
+            Some(index) => index.saturating_sub(1),
+            None => pulse.active.len().saturating_sub(1),
+        };
+        pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
+    }
+
+    /// Select an active agent by its identity; unknown agents change nothing.
+    fn select_agent(&mut self, id: AgentId) {
+        if !self.agent_selection_interactive() {
+            return;
+        }
+        let pulse = &mut self.agent_pulse;
+        if pulse.active.iter().any(|view| view.id == id) {
+            pulse.selected = Some(id);
+        }
+    }
+
     // --- queries (read-only, for UI/controller) -------------------------
 
     /// The currently focused pane.
@@ -886,15 +1215,53 @@ impl App {
     }
 }
 
+/// Agent Pulse queries (read-only, for UI/controller).
+///
+/// These accessors are the only way UI and CLI observe Agent Pulse state;
+/// mutation goes through [`App::apply`] like every other state transition.
+impl App {
+    /// The Agent Pulse connection state; `Hidden` for standalone launches.
+    pub(crate) fn agent_pulse_connection(&self) -> AgentPulseConnection {
+        self.agent_pulse.connection
+    }
+
+    /// Live agents across the current socket's workspaces, in display
+    /// (sorted) order.
+    pub(crate) fn active_agents(&self) -> &[AgentView] {
+        &self.agent_pulse.active
+    }
+
+    /// The selected active agent, if one is still active.
+    pub(crate) fn selected_agent(&self) -> Option<&AgentView> {
+        let index = self.agent_pulse.selected_index()?;
+        self.agent_pulse.active.get(index)
+    }
+
+    /// Whether the Agent Pulse overlay is open.
+    pub(crate) fn is_agent_overlay_open(&self) -> bool {
+        self.agent_pulse.overlay == AgentOverlay::Open
+    }
+
+    /// The visualizer display captured when the connection dimmed to
+    /// `Stale`: the frozen current frame plus the prior trail frames.
+    /// `None` while connected, unavailable, or hidden.
+    pub(crate) fn stale_viz(&self) -> Option<(&VizFrame, &[VizFrame])> {
+        let stale = self.agent_pulse.stale_viz.as_ref()?;
+        Some((&stale.frame, stale.history.as_slice()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
     use crate::model::{
         BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl, VisualizerMode,
         VolumePercent,
     };
     use crate::settings::Favorites;
     use crate::theme::ThemeName;
+    use std::time::{Duration, Instant};
 
     fn station(id: &str, url: &str) -> Station {
         Station {
@@ -2013,5 +2380,666 @@ mod tests {
         assert_eq!(app.settings().favorites.len(), 2);
         assert_eq!(visible_ids(&app), vec!["a", "c"]);
         assert_eq!(app.selected_index(), 0);
+    }
+
+    // --- Herdr Agent Pulse reducer state (Current: live-only) ------------
+
+    /// A typed agent entry as the Herdr adapter would deliver it.
+    fn agent(
+        workspace: &str,
+        pane: &str,
+        name: Option<&str>,
+        status: AgentStatus,
+    ) -> AgentSnapshot {
+        AgentSnapshot {
+            id: AgentId::new(workspace, pane),
+            name: name.map(str::to_string),
+            status,
+        }
+    }
+
+    fn agent_id(workspace: &str, pane: &str) -> AgentId {
+        AgentId::new(workspace, pane)
+    }
+
+    fn agent_snapshot(agents: Vec<AgentSnapshot>, now: Instant) -> Action {
+        Action::AgentSnapshot { agents, now }
+    }
+
+    /// An app that received one Agent Pulse snapshot.
+    fn app_with_agents(agents: Vec<AgentSnapshot>) -> App {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(agents, Instant::now()));
+        app
+    }
+
+    #[test]
+    fn stale_viz_is_captured_at_the_stale_edge_and_cleared_on_recovery() {
+        let mut app = app_with_agents(vec![agent("ws", "p1", None, AgentStatus::Working)]);
+        let older = VizFrame::new(vec![0.2; 16], 0.2, Vec::<f32>::new());
+        let last = VizFrame::new(vec![0.8; 16], 0.9, Vec::<f32>::new());
+        app.apply(Action::Audio(AudioEvent::Viz(older.clone())));
+        app.apply(Action::Audio(AudioEvent::Viz(last.clone())));
+        assert!(app.stale_viz().is_none(), "connected keeps no snapshot");
+
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        let (frame, history) = app
+            .stale_viz()
+            .expect("the stale edge captures the display");
+        assert_eq!(frame, &last, "the frozen frame is the last live frame");
+        assert_eq!(
+            history.first(),
+            Some(&older),
+            "prior trail frames are retained"
+        );
+
+        // Later audio and repeated failures do not move the snapshot.
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.1; 16],
+            0.1,
+            Vec::<f32>::new(),
+        ))));
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        assert_eq!(app.stale_viz().unwrap().0, &last);
+
+        // A fresh snapshot recovers and clears the frozen display.
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            Instant::now(),
+        ));
+        assert!(app.stale_viz().is_none(), "recovery clears the snapshot");
+
+        // Unavailable clears it as well: no lights means no frozen field.
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        assert!(app.stale_viz().is_some());
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+        assert!(app.stale_viz().is_none(), "unavailable clears the snapshot");
+    }
+
+    fn active_names(app: &App) -> Vec<Option<&str>> {
+        app.active_agents()
+            .iter()
+            .map(|view| view.name.as_deref())
+            .collect()
+    }
+
+    #[test]
+    fn agent_pulse_defaults_to_hidden_and_empty() {
+        // Standalone launches must keep the exact pre-integration appearance:
+        // no connection, no agents, no overlay, no selection.
+        let app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Hidden);
+        assert!(app.active_agents().is_empty());
+        assert!(!app.is_agent_overlay_open());
+        assert!(app.selected_agent().is_none());
+    }
+
+    #[test]
+    fn agent_snapshot_connects_and_sorts_working_blocked_idle_done_unknown() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let now = Instant::now();
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "p1", Some("unknown"), AgentStatus::Unknown),
+                agent("ws", "p2", Some("done"), AgentStatus::Done),
+                agent("ws", "p3", Some("idle"), AgentStatus::Idle),
+                agent("ws", "p4", Some("blocked"), AgentStatus::Blocked),
+                agent("ws", "p5", Some("w-z"), AgentStatus::Working),
+                agent("ws", "p6", Some("w-a"), AgentStatus::Working),
+            ],
+            now,
+        ));
+
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        assert_eq!(
+            active_names(&app),
+            vec![
+                Some("w-a"),
+                Some("w-z"),
+                Some("blocked"),
+                Some("idle"),
+                Some("done"),
+                Some("unknown"),
+            ]
+        );
+    }
+
+    #[test]
+    fn agents_with_equal_status_sort_named_first_then_by_stable_identity() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "b-pane", None, AgentStatus::Working),
+                agent("ws", "z-pane", Some("aaa"), AgentStatus::Working),
+                agent("ws", "a-pane", None, AgentStatus::Working),
+                agent("ws", "y-pane", Some("bbb"), AgentStatus::Working),
+            ],
+            Instant::now(),
+        ));
+
+        // Named agents sort alphabetically before unnamed ones; unnamed
+        // agents keep a deterministic order via their stable identity.
+        assert_eq!(
+            active_names(&app),
+            vec![Some("aaa"), Some("bbb"), None, None]
+        );
+        assert_eq!(app.active_agents()[2].id, agent_id("ws", "a-pane"));
+        assert_eq!(app.active_agents()[3].id, agent_id("ws", "b-pane"));
+    }
+
+    #[test]
+    fn identical_pane_ids_from_two_workspaces_remain_distinct_and_selectable() {
+        let mut app = app_with_agents(vec![
+            agent("alpha", "p1", Some("research"), AgentStatus::Working),
+            agent("beta", "p1", Some("review"), AgentStatus::Idle),
+        ]);
+        assert_eq!(app.active_agents().len(), 2, "one particle per agent");
+
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("beta", "p1")));
+        assert_eq!(
+            app.selected_agent().unwrap().name.as_deref(),
+            Some("review")
+        );
+    }
+
+    #[test]
+    fn done_agent_remains_live_until_the_next_snapshot_omits_it() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::AgentSnapshot {
+            agents: vec![agent("alpha", "p1", Some("research"), AgentStatus::Done)],
+            now: t0,
+        });
+        assert_eq!(app.active_agents().len(), 1);
+        assert_eq!(app.active_agents()[0].status, AgentStatus::Done);
+
+        // Unchanged polling snapshots keep the done agent (and its observed
+        // time) in the live view so the UI can render it dimmed.
+        app.apply(Action::AgentSnapshot {
+            agents: vec![agent("alpha", "p1", Some("research"), AgentStatus::Done)],
+            now: t0 + Duration::from_secs(2),
+        });
+        assert_eq!(app.active_agents().len(), 1);
+        assert_eq!(app.active_agents()[0].observed_at, t0);
+
+        // The next snapshot that omits it removes it; nothing is retained.
+        app.apply(Action::AgentSnapshot {
+            agents: vec![],
+            now: t0 + Duration::from_secs(5),
+        });
+        assert!(app.active_agents().is_empty());
+    }
+
+    #[test]
+    fn observed_time_is_kept_while_status_is_unchanged_and_reset_on_change() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t0,
+        ));
+
+        // Same status in a later snapshot keeps the first observation time.
+        let t1 = t0 + Duration::from_secs(5);
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t1,
+        ));
+        let view = &app.active_agents()[0];
+        assert_eq!(view.observed_at, t0);
+        assert_eq!(t1.duration_since(view.observed_at), Duration::from_secs(5));
+
+        // A status change resets the local observation time.
+        let t2 = t0 + Duration::from_secs(9);
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Blocked)],
+            t2,
+        ));
+        assert_eq!(app.active_agents()[0].observed_at, t2);
+    }
+
+    #[test]
+    fn observed_time_is_tracked_per_workspace_qualified_identity() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        app.apply(agent_snapshot(
+            vec![agent("alpha", "p1", Some("research"), AgentStatus::Working)],
+            t0,
+        ));
+
+        // A same-pane agent from another workspace is a new identity: it gets
+        // its own observation time without disturbing the first agent's.
+        let t1 = t0 + Duration::from_secs(5);
+        app.apply(agent_snapshot(
+            vec![
+                agent("alpha", "p1", Some("research"), AgentStatus::Working),
+                agent("beta", "p1", Some("review"), AgentStatus::Working),
+            ],
+            t1,
+        ));
+        let research = app
+            .active_agents()
+            .iter()
+            .find(|view| view.id == agent_id("alpha", "p1"))
+            .unwrap();
+        let review = app
+            .active_agents()
+            .iter()
+            .find(|view| view.id == agent_id("beta", "p1"))
+            .unwrap();
+        assert_eq!(research.observed_at, t0);
+        assert_eq!(review.observed_at, t1);
+    }
+
+    #[test]
+    fn first_poll_failure_is_stale_and_fifteen_seconds_without_success_is_unavailable() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", Some("alpha"), AgentStatus::Working)],
+            t0,
+        ));
+
+        // First failure dims to stale; the last known agents are retained.
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(5),
+        });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+        assert_eq!(active_names(&app), vec![Some("alpha")]);
+
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(14),
+        });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+
+        // Fifteen seconds without a success makes it unavailable.
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(15),
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+    }
+
+    #[test]
+    fn poll_failure_before_any_snapshot_is_stale_then_unavailable() {
+        // The first event proving the integration is alive may be a failure;
+        // the 15-second window then runs from the start of the failure streak.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        app.apply(Action::AgentPollFailed { now: t0 });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+        assert!(app.active_agents().is_empty());
+
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(15),
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+    }
+
+    #[test]
+    fn agent_tick_downgrades_to_unavailable_without_new_events() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+
+        // A tick never reveals a hidden integration.
+        app.apply(Action::AgentTick { now: t0 });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Hidden);
+
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t0,
+        ));
+        app.apply(Action::AgentTick {
+            now: t0 + Duration::from_secs(5),
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(6),
+        });
+        app.apply(Action::AgentTick {
+            now: t0 + Duration::from_secs(14),
+        });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+
+        // The 15-second threshold applies even when no further monitor event
+        // arrives — only the tick observes it.
+        app.apply(Action::AgentTick {
+            now: t0 + Duration::from_secs(15),
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+
+        // A monitor that goes completely silent (no failure event at all)
+        // also times out via ticks.
+        let mut quiet = App::new(Settings::default(), Catalog::curated());
+        quiet.apply(agent_snapshot(vec![], t0));
+        quiet.apply(Action::AgentTick {
+            now: t0 + Duration::from_secs(15),
+        });
+        assert_eq!(
+            quiet.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+    }
+
+    #[test]
+    fn a_fresh_snapshot_recovers_from_stale_and_unavailable() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", Some("one"), AgentStatus::Working)],
+            t0,
+        ));
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(5),
+        });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+
+        // Fresh state replaces stale state.
+        let t1 = t0 + Duration::from_secs(7);
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p2", Some("two"), AgentStatus::Working)],
+            t1,
+        ));
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        assert_eq!(active_names(&app), vec![Some("two")]);
+
+        // Recovery also works from unavailable.
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(8),
+        });
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(23),
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p3", Some("three"), AgentStatus::Idle)],
+            t0 + Duration::from_secs(25),
+        ));
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        assert_eq!(active_names(&app), vec![Some("three")]);
+    }
+
+    #[test]
+    fn an_empty_snapshot_is_connected_with_no_active_agents() {
+        // Connected-with-none-active is a real state, distinct from hidden
+        // and from unavailable.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(vec![], Instant::now()));
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        assert!(app.active_agents().is_empty());
+
+        // Selection on an empty list stays cleared even with the overlay open.
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(app.is_agent_overlay_open());
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectPreviousAgent);
+        assert!(app.selected_agent().is_none());
+    }
+
+    #[test]
+    fn overlay_toggle_is_a_noop_while_agent_pulse_is_hidden() {
+        // Standalone/ineligible launches: `a` does nothing, and no overlay
+        // state can be reached.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(!app.is_agent_overlay_open());
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
+        assert!(app.selected_agent().is_none());
+    }
+
+    #[test]
+    fn overlay_opens_and_closes_without_touching_radio_state() {
+        let mut app = app_with(&["a", "b"]);
+        app.apply(Action::PlaySelected);
+        app.apply(Action::SetSearchQuery("jazz".to_string()));
+        app.apply(Action::SetFocus(FocusPane::Search));
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            Instant::now(),
+        ));
+        let visible_before = visible_ids(&app);
+        let selected_before = app.selected_index();
+
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(app.is_agent_overlay_open());
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(!app.is_agent_overlay_open());
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::CloseAgentOverlay);
+        assert!(!app.is_agent_overlay_open());
+
+        // Station selection, focus, search, and playback are untouched.
+        assert_eq!(visible_ids(&app), visible_before);
+        assert_eq!(app.selected_index(), selected_before);
+        assert_eq!(app.focus(), FocusPane::Search);
+        assert_eq!(app.search_query(), "jazz");
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+        assert_eq!(app.current_station().unwrap().id.as_str(), "a");
+        assert_eq!(app.display_mode(), DisplayMode::Normal);
+    }
+
+    #[test]
+    fn signal_view_suppresses_all_agent_overlay_actions() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            ],
+            Instant::now(),
+        ));
+
+        app.apply(Action::ToggleSignalView);
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(!app.is_agent_overlay_open(), "Signal View suppresses `a`");
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
+        assert!(app.selected_agent().is_none());
+        assert!(app.is_signal_view(), "Signal View itself is unaffected");
+
+        // Leaving Signal View restores the toggle.
+        app.apply(Action::LeaveSignalView);
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(app.is_agent_overlay_open());
+
+        // Entering Signal View with the overlay open suppresses everything
+        // too, including close.
+        app.apply(Action::ToggleSignalView);
+        app.apply(Action::CloseAgentOverlay);
+        assert!(app.is_agent_overlay_open());
+    }
+
+    #[test]
+    fn overlay_selection_moves_and_clamps_within_the_sorted_active_list() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "p1", Some("gamma"), AgentStatus::Working),
+                agent("ws", "p2", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p3", Some("beta"), AgentStatus::Working),
+            ],
+            Instant::now(),
+        ));
+        app.apply(Action::ToggleAgentOverlay);
+
+        let selected_name = |app: &App| app.selected_agent().and_then(|view| view.name.clone());
+
+        // Next with no selection starts at the first sorted agent.
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(selected_name(&app).as_deref(), Some("beta"));
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
+        // Down at the end stays put.
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
+
+        // Selecting an unknown identity changes nothing.
+        app.apply(Action::SelectAgent(agent_id("ws", "missing")));
+        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
+
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(selected_name(&app).as_deref(), Some("beta"));
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
+        // Up at the top stays put.
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
+
+        // Direct selection by identity (mouse path).
+        app.apply(Action::SelectAgent(agent_id("ws", "p3")));
+        assert_eq!(selected_name(&app).as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn select_previous_with_no_selection_starts_from_the_last_agent() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            ],
+            Instant::now(),
+        ));
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn agent_selection_requires_an_open_overlay() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", Some("alpha"), AgentStatus::Working)],
+            Instant::now(),
+        ));
+
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
+        assert!(app.selected_agent().is_none());
+    }
+
+    #[test]
+    fn stale_freezes_the_agent_selection_until_recovery() {
+        // Selection matches the mouse hit-test gate: it changes only while
+        // `Connected`. Stale keeps the frozen composition's selection intact
+        // and ignores every selection action, while close/toggle still work.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        let two_agents = || {
+            vec![
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            ]
+        };
+        app.apply(agent_snapshot(two_agents(), t0));
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(5),
+        });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+
+        // Stale: keyboard movement and identity selection are all inert.
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectPreviousAgent);
+        app.apply(Action::SelectAgent(agent_id("ws", "p2")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+
+        // Close and toggle keep working while stale.
+        app.apply(Action::CloseAgentOverlay);
+        assert!(!app.is_agent_overlay_open());
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(app.is_agent_overlay_open());
+
+        // A fresh snapshot recovers the connection and re-enables selection.
+        app.apply(agent_snapshot(two_agents(), t0 + Duration::from_secs(10)));
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn selection_is_cleared_when_the_selected_agent_disappears() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            ],
+            t0,
+        ));
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("ws", "p2")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("beta"));
+
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", Some("alpha"), AgentStatus::Working)],
+            t0 + Duration::from_secs(5),
+        ));
+        assert!(app.selected_agent().is_none());
+
+        // Selecting again over the fresh list works.
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn selected_agent_exposes_only_the_explicit_name() {
+        // An unnamed agent stays selectable, but there is nothing else to
+        // show: the view carries no pane id, cwd, or agent-type fallback.
+        let mut app = app_with_agents(vec![agent("ws", "p1", None, AgentStatus::Working)]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        let selected = app.selected_agent().expect("unnamed agent is selectable");
+        assert_eq!(selected.name, None);
     }
 }

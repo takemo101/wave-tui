@@ -1,0 +1,23 @@
+# Official Herdr plugin manifest for wave-tui.
+# Opens the radio player in a dedicated tab so Wide/Medium layouts stay usable.
+
+id = "wave-tui.radio"
+name = "wave-tui"
+version = "0.1.4"
+description = "Terminal internet radio for work-session BGM with a read-only Agent Pulse companion."
+min_herdr_version = "0.7.0"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[panes]]
+id = "radio"
+title = "wave-tui radio"
+placement = "tab"
+command = ["./target/release/wave-tui"]
+
+[[actions]]
+id = "open"
+title = "Open wave-tui radio tab"
+command = ["sh", "-c", "$HERDR_BIN_PATH plugin pane open --plugin wave-tui.radio --entrypoint radio --placement tab --focus"]

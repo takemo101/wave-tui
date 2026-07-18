@@ -337,7 +337,7 @@ Place the existing selected `name · status` string on the nearest in-bounds row
 
 - [ ] **Step 5: Add App-owned low-power capture and preserve stale precedence.**
 
-Add `low_power_viz: Option<(VizFrame, Vec<VizFrame>)>` and `low_power_visuals: bool` to App's private state. `configure_low_power_visuals(true)` sets the policy once at startup. On the first `set_viz_frame`, clone current frame/history into `low_power_viz`; later frames still update `viz`/`viz_history` for color/edge calculations but do not replace the geometry capture. `configure_low_power_visuals(false)` clears the capture.
+Add `low_power_viz: Option<(VizFrame, Vec<VizFrame>)>` and `low_power_visuals: bool` to App's private state. `configure_low_power_visuals(true)` sets the policy once at startup. On the first visually audible `set_viz_frame` — RMS above the shared silence threshold with at least one non-empty phase trace — clone current frame/history into `low_power_viz`; startup-silent frames retain no capture, so rendering falls back to the live frame until audio becomes audible. Later frames still update `viz`/`viz_history` for color/edge calculations but do not replace the geometry capture. `configure_low_power_visuals(false)` clears the capture.
 
 Expose `pub(crate) fn low_power_viz(&self) -> Option<(&VizFrame, &[VizFrame])>`. In `render_canvas`, bind the live history before selecting geometry so no branch borrows a temporary; use this exact precedence:
 
@@ -353,7 +353,7 @@ let (frame, history) = if stale {
 };
 ```
 
-Stale always wins; unavailable renders before either capture. Add reducer tests showing first low-power visual frame remains the geometry source after a later `AudioEvent::Viz`, while `app.viz()` still updates.
+Stale always wins; unavailable renders before either capture. Add reducer tests showing silent startup frames capture nothing and the first audible visual frame remains the geometry source after a later `AudioEvent::Viz`, while `app.viz()` still updates.
 
 In `src/cli.rs`, call `app.configure_low_power_visuals(low_power)` immediately after `App::new` and before the first audio event. Add a controller test that canvas key routing is unchanged by the configuration.
 

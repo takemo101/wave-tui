@@ -664,6 +664,9 @@ fn run_app(args: CliArgs) -> Result<()> {
     let settings = apply_overrides(saved, &args);
 
     let mut app = App::new(settings, Catalog::curated());
+    // Low-power visual policy: configured exactly once, before the first
+    // audio event, so the App can freeze the first visual frame's geometry.
+    app.configure_low_power_visuals(args.low_power);
 
     // Agent Pulse monitor: created only when the official Herdr plugin
     // environment is eligible and `--no-agent-pulse` is absent. `None` keeps
@@ -2451,9 +2454,21 @@ mod tests {
     #[test]
     fn collage_low_power_mouse_path_uses_frozen_tile_geometry() {
         let mut app = connected_collage_app();
+        app.configure_low_power_visuals(true);
         app.apply(Action::ToggleAgentOverlay);
-        // A loud frame moves normal-power tiles off their base rectangles,
-        // while low power keeps drawing the frozen base geometry.
+        // The first audible frame — quiet enough to sit on base geometry —
+        // becomes the App-captured frozen low-power geometry; the later loud
+        // frame moves normal-power tiles off their base rectangles while low
+        // power keeps drawing the capture.
+        app.apply(Action::Audio(AudioEvent::Viz(
+            crate::model::VizFrame::with_phase(
+                vec![0.0; 16],
+                0.1,
+                Vec::<f32>::new(),
+                crate::model::PhaseTrace::new([0.1], [0.1]),
+                crate::model::PhaseTrace::empty(),
+            ),
+        )));
         app.apply(Action::Audio(AudioEvent::Viz(crate::model::VizFrame::new(
             vec![0.9; 16],
             0.9,
@@ -2476,6 +2491,32 @@ mod tests {
             app.selected_agent().is_none(),
             "a low-power click resolves only the frozen drawn tiles"
         );
+    }
+
+    #[test]
+    fn collage_key_routing_is_unchanged_by_low_power_visual_configuration() {
+        // `run_app` configures the low-power visual policy once at startup;
+        // the canvas keys must behave exactly as without the configuration.
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        app.configure_low_power_visuals(true);
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        let mut press = |app: &mut App, code| {
+            handle_key(key(code), app, &audio, &mut debounce, &mut persistence)
+        };
+
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.is_agent_overlay_open(), "a still opens the canvas");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
+            Some("alpha"),
+            "Tab still selects the first agent"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.is_agent_overlay_open(), "Esc still closes the canvas");
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.is_agent_overlay_open(), "a still reopens the canvas");
     }
 
     #[test]

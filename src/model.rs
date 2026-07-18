@@ -508,6 +508,10 @@ impl PhaseTrace {
     }
 }
 
+/// RMS at or below this threshold counts as visual silence: renderers keep
+/// the display calm and still, and visual captures skip such frames.
+pub const SILENCE_RMS: f32 = 0.05;
+
 /// A single visualizer frame: normalized spectrum bands, an RMS level, a
 /// low-resolution time-domain waveform, and two phase-portrait traces.
 ///
@@ -573,6 +577,15 @@ impl VizFrame {
             primary_phase: PhaseTrace::empty(),
             secondary_phase: PhaseTrace::empty(),
         }
+    }
+
+    /// Whether this frame is visually audible: RMS above [`SILENCE_RMS`]
+    /// with at least one non-empty phase trace, so a display capture of it
+    /// can actually draw a phase scope. Analyzer silence carries all-zero
+    /// traces and zero RMS, so it is never audible.
+    pub fn is_audible(&self) -> bool {
+        self.rms > SILENCE_RMS
+            && (!self.primary_phase.x.is_empty() || !self.secondary_phase.x.is_empty())
     }
 }
 
@@ -836,6 +849,35 @@ mod tests {
         assert_eq!(frame.primary_phase.y, vec![0.2, -1.0]);
         assert_eq!(frame.secondary_phase.x, vec![0.3]);
         assert_eq!(frame.secondary_phase.y, vec![0.4]);
+    }
+
+    #[test]
+    fn viz_frame_is_audible_requires_rms_and_a_phase_trace() {
+        assert!(!VizFrame::silent(4).is_audible(), "silence is not audible");
+        let zero_traces = VizFrame::with_phase(
+            [0.0],
+            0.0,
+            [],
+            PhaseTrace::new([0.0, 0.0], [0.0, 0.0]),
+            PhaseTrace::empty(),
+        );
+        assert!(
+            !zero_traces.is_audible(),
+            "zero RMS stays silent even with non-empty traces"
+        );
+        let loud_without_phase = VizFrame::new([0.5], 0.5, []);
+        assert!(
+            !loud_without_phase.is_audible(),
+            "a frame without phase data cannot draw a scope"
+        );
+        let audible = VizFrame::with_phase(
+            [0.5],
+            0.5,
+            [],
+            PhaseTrace::new([0.1], [0.2]),
+            PhaseTrace::empty(),
+        );
+        assert!(audible.is_audible());
     }
 
     #[test]

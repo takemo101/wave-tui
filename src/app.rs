@@ -437,6 +437,13 @@ pub struct App {
     current: Option<Station>,
     viz: VizFrame,
     viz_history: VecDeque<VizFrame>,
+    /// Whether the low-power visual policy is active; configured exactly once
+    /// by the controller at startup, before the first audio event.
+    low_power_visuals: bool,
+    /// The first visual frame (plus its trail) captured under the low-power
+    /// policy, so low-power rendering keeps stable geometry while the live
+    /// frame keeps updating for colors.
+    low_power_viz: Option<(VizFrame, Vec<VizFrame>)>,
     offline: bool,
     search_query: String,
     search_status: SearchStatus,
@@ -472,6 +479,8 @@ impl App {
             current,
             viz,
             viz_history,
+            low_power_visuals: false,
+            low_power_viz: None,
             offline: false,
             search_query: String::new(),
             search_status: SearchStatus::Idle,
@@ -815,10 +824,22 @@ impl App {
 
     /// Store the latest visualizer frame and retain the short history used by
     /// PeakDots to render real, audio-frame-driven trails.
+    ///
+    /// Under the low-power visual policy the first visually audible frame
+    /// (plus its trail) is captured once as the frozen low-power geometry
+    /// source; startup-silent frames retain no capture, so rendering falls
+    /// back to the live frame until real audio arrives. Later frames keep
+    /// updating `viz`/`viz_history` for colors without replacing the capture.
     fn set_viz_frame(&mut self, frame: VizFrame) {
         self.viz = frame.clone();
         self.viz_history.push_front(frame);
         self.viz_history.truncate(VIZ_HISTORY_FRAMES);
+        if self.low_power_visuals && self.low_power_viz.is_none() && self.viz.is_audible() {
+            self.low_power_viz = Some((
+                self.viz.clone(),
+                self.viz_history.iter().skip(1).cloned().collect(),
+            ));
+        }
     }
 
     /// Apply an ICY title, but only when it belongs to the current station.
@@ -1249,6 +1270,24 @@ impl App {
         let stale = self.agent_pulse.stale_viz.as_ref()?;
         Some((&stale.frame, stale.history.as_slice()))
     }
+
+    /// Set the low-power visual policy. The controller calls this exactly
+    /// once at startup, before the first audio event; disabling it clears any
+    /// captured frame so normal rendering never sees stale geometry.
+    pub(crate) fn configure_low_power_visuals(&mut self, enabled: bool) {
+        self.low_power_visuals = enabled;
+        if !enabled {
+            self.low_power_viz = None;
+        }
+    }
+
+    /// The visual frame (plus trail) captured under the low-power policy:
+    /// the frozen geometry source for low-power rendering. `None` until the
+    /// first visually audible frame arrives or while the policy is off.
+    pub(crate) fn low_power_viz(&self) -> Option<(&VizFrame, &[VizFrame])> {
+        let (frame, history) = self.low_power_viz.as_ref()?;
+        Some((frame, history.as_slice()))
+    }
 }
 
 #[cfg(test)]
@@ -1256,8 +1295,8 @@ mod tests {
     use super::*;
     use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
     use crate::model::{
-        BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl, VisualizerMode,
-        VolumePercent,
+        BitrateKbps, CodecKind, PhaseTrace, StationId, StationName, StationSource, StreamUrl,
+        VisualizerMode, VolumePercent,
     };
     use crate::settings::Favorites;
     use crate::theme::ThemeName;
@@ -2466,6 +2505,87 @@ mod tests {
             AgentPulseConnection::Unavailable
         );
         assert!(app.stale_viz().is_none(), "unavailable clears the snapshot");
+    }
+
+    /// A visually audible frame: RMS above the silence threshold with real
+    /// phase data, so a low-power capture of it can draw a scope.
+    fn audible_frame(level: f32) -> VizFrame {
+        VizFrame::with_phase(
+            vec![level; 16],
+            level,
+            Vec::<f32>::new(),
+            PhaseTrace::new([level, -level], [-level, level]),
+            PhaseTrace::new([level / 2.0], [level / 3.0]),
+        )
+    }
+
+    #[test]
+    fn low_power_visuals_skip_silence_and_capture_the_first_audible_frame() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.configure_low_power_visuals(true);
+        assert!(app.low_power_viz().is_none(), "no capture before any frame");
+
+        // Startup silence — even the analyzer's non-empty all-zero phase
+        // shape — must not become the permanent geometry capture.
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::with_phase(
+            vec![0.0; 16],
+            0.0,
+            Vec::<f32>::new(),
+            PhaseTrace::new([0.0, 0.0], [0.0, 0.0]),
+            PhaseTrace::new([0.0], [0.0]),
+        ))));
+        assert!(
+            app.low_power_viz().is_none(),
+            "silent frames retain no capture"
+        );
+
+        // Loud but phase-less frames are not visually audible either.
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![0.5; 16],
+            0.5,
+            Vec::<f32>::new(),
+        ))));
+        assert!(
+            app.low_power_viz().is_none(),
+            "a frame without phase data retains no capture"
+        );
+
+        let audible = audible_frame(0.4);
+        app.apply(Action::Audio(AudioEvent::Viz(audible.clone())));
+        let (frame, history) = app
+            .low_power_viz()
+            .expect("the first audible frame is captured");
+        assert_eq!(frame, &audible, "the capture holds the audible frame");
+        assert_eq!(history.len(), 3, "the earlier frames trail the capture");
+
+        let later = audible_frame(0.9);
+        app.apply(Action::Audio(AudioEvent::Viz(later.clone())));
+        assert_eq!(
+            app.low_power_viz().unwrap().0,
+            &audible,
+            "later frames never replace the geometry capture"
+        );
+        assert_eq!(app.viz(), &later, "the live frame still updates for colors");
+    }
+
+    #[test]
+    fn low_power_visuals_default_off_and_disabling_clears_the_capture() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::Audio(AudioEvent::Viz(audible_frame(0.5))));
+        assert!(
+            app.low_power_viz().is_none(),
+            "the default policy captures nothing"
+        );
+
+        app.configure_low_power_visuals(true);
+        app.apply(Action::Audio(AudioEvent::Viz(audible_frame(0.6))));
+        assert!(app.low_power_viz().is_some());
+
+        app.configure_low_power_visuals(false);
+        assert!(
+            app.low_power_viz().is_none(),
+            "disabling the policy clears the capture"
+        );
     }
 
     fn active_names(app: &App) -> Vec<Option<&str>> {

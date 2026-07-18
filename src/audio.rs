@@ -32,11 +32,13 @@ use crate::model::{Station, StationId, VizFrame, VolumePercent};
 
 use self::decoder::StreamDecoder;
 use self::output::SharedVolume;
+use self::played_sample::PlayedSample;
 
 pub(crate) mod analyzer;
 mod decoder;
 pub(crate) mod icy;
 mod output;
+mod played_sample;
 
 /// FFT window size used by the streaming analyzer. Matches the spike.
 const FFT_SIZE: usize = 1024;
@@ -236,8 +238,8 @@ fn start_playback(
     let queue_capacity = sample_rate as usize * source_channels.max(1) * 2;
     let (queue_tx, queue_rx) = HeapRb::<f32>::new(queue_capacity).split();
     // Bounded mirror channel: a slow analyzer drops samples rather than stalling
-    // the realtime output callback.
-    let (played_tx, played_rx) = mpsc::sync_channel::<f32>(sample_rate as usize / 2);
+    // the realtime output callback. One typed sample per played source frame.
+    let (played_tx, played_rx) = mpsc::sync_channel::<PlayedSample>(sample_rate as usize / 2);
     let stop = Arc::new(AtomicBool::new(false));
 
     // Build the output stream (the last fallible step) *before* spawning any

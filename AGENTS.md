@@ -21,9 +21,14 @@ Start here:
 6. [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
    and [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
    — original design and plan for the optional Herdr Agent Pulse integration
-   (packaging, eligibility, monitoring); its presentation is superseded by
+   (packaging, eligibility, monitoring); its presentation — and the interim
    [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
-   and [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md).
+   / [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md)
+   presentation — is superseded by
+   [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
+   and [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md).
+   Read the Lissajous Scope design and plan before changing Agent Pulse
+   presentation.
 
 Before changing playback, search, persistence, themes, layout, module
 boundaries, or user-facing controls, re-read the relevant doc first.
@@ -47,7 +52,7 @@ Stay inside the MVP unless the user explicitly expands scope:
 - Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes;
 - the optional, read-only Herdr Agent Pulse companion when launched as the
   official Herdr plugin (current design:
-  `docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`).
+  `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`).
   It only observes agent status via `agent.list` on the plugin's local Herdr
   socket (across that session's workspaces); it is not a daemon, remote
   control, or an internal plugin system.
@@ -300,6 +305,8 @@ Update docs when changing:
 - audio architecture findings or spike conclusions: `docs/audio-spike.md`;
 - Herdr plugin packaging or Agent Pulse behavior: `README.md`, `docs/SPEC.md`,
   and `docs/ui-design-decisions.md` (presentation design record:
+  `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`;
+  historical presentation record:
   `docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`;
   integration design record:
   `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`);

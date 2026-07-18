@@ -479,9 +479,12 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - `--low-power` explicitly lowers visual update cadence.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
-- The Agent Pulse Kinetic Collage renders statically in low-power mode:
-  background trace positions, tile geometry, and shadow trails are frozen
-  while state edge glow and minimal brightness updates remain.
+- The Agent Pulse Dual Phase Scope renders statically in low-power mode:
+  phase-trace/persistence positions, frame geometry, shadow trails, and the
+  Working spinner orientation are frozen while state edge/core colors still
+  refresh. The frozen geometry is captured from the first *audible*
+  visualizer frame after startup (RMS above the silence threshold with real
+  phase data); until such a frame arrives, low power renders the live frame.
 
 ### Herdr Agent Pulse (Optional Integration)
 
@@ -492,7 +495,9 @@ ambient context beside radio playback. The integration design (packaging,
 eligibility, monitoring) is
 `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; its
 presentation is superseded by the approved
-`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`.
+`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
+(which in turn supersedes the interim Kinetic Collage presentation in
+`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`).
 This section records the product behavior as implemented.
 
 This is an optional Herdr integration, not a plugin system inside `wave-tui`,
@@ -558,10 +563,10 @@ enabled.
 
 | Condition | Wide/Medium summary | Canvas (`a`) |
 | --- | --- | --- |
-| Connected | `● n active` count | Live Kinetic Collage (`agents · none active` when empty) |
-| First failed poll | Count dims | Last live collage (background/tiles/trails) frozen, dimmed, `stale · reconnecting` banner |
-| ≥ 15 seconds without success | Summary disappears | Tiles hidden behind `agents · unavailable · retrying` |
-| Fresh snapshot | Live count | Live collage |
+| Connected | `● n active` count | Live Dual Phase Scope (`agents · none active` when empty) |
+| First failed poll | Count dims | Last live scope (traces/persistence/frames/cores/trails) frozen, dimmed, `stale · reconnecting` banner |
+| ≥ 15 seconds without success | Summary disappears | Frames and traces hidden behind `agents · unavailable · retrying` |
+| Fresh snapshot | Live count | Live scope |
 
 Socket errors, malformed replies, and timeouts are recoverable: they never
 panic the TUI or interrupt playback, and polling continues. A per-loop timer
@@ -575,30 +580,39 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   only, never names. Compact shows no Agent Pulse line (but `a` still opens
   the canvas while the integration is active); Signal View never shows Agent
   Pulse and ignores `a`.
-- `a` opens the full-screen **Kinetic Collage** canvas, replacing the whole
-  player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit.
-- The canvas renders one small, stable abstract album-art tile per agent.
-  Each tile's motif (record, diagonal, stripe, or frame patterns drawn with
-  terminal glyphs), palette arrangement, and staggered base rectangle derive
-  deterministically from the agent's private workspace-qualified identity,
-  so tiles stay recognizable across frames and never morph or swap with the
-  music. Behind the tiles, a low-contrast waveform/FFT trace and a breathing
-  theme-phosphor vignette react to the played audio: RMS drives the vignette
-  spread and tile motion, FFT bands shape the trace. RMS combined with each
-  tile's assigned FFT band moves its tile with a small bounded scale/offset
-  and adds a one- or two-layer soft shadow trail drawn from real recent
-  visualizer frames. Silence leaves the collage dim and still — nothing
-  animates on a timer. Dense terminals shrink tile size and spacing rather
-  than omitting tiles; every agent keeps one visible tile.
-- State colors come from the active theme only, as a restrained tile edge
-  glow: working strongest (the playing color), blocked the error color;
-  idle/done/unknown stay muted and a done tile stays muted/dim until its
-  snapshot omits it. In `--low-power`, background trace positions, tile
-  geometry, and shadow trails are frozen while state edge glow and minimal
-  brightness still update.
-- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a tile, bringing it forward.
-  Selection shows only `name · status` for an explicitly named agent; an
-  unnamed selection shows no label. Search (`/`) and station
+- `a` opens the full-screen **Dual Phase Scope** canvas, replacing the whole
+  player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit. Agent
+  Pulse opens a full-screen Dual Phase Scope with two real-audio Lissajous
+  traces: overlapping phase portraits of paired played samples, never a
+  scrolling amplitude-over-time waveform. With stereo output the primary
+  trace plots the played left/right sample pairs; mono streams pair the
+  played mono mix with the same mix at a documented 29-sample lag, and the
+  secondary trace always uses a distinct 97-sample mono lag. Up to two dim
+  phosphor-persistence layers echo recent real visualizer frames, and a
+  breathing theme-phosphor vignette spreads with RMS. Nothing advances from
+  wall-clock time: identical visualizer data renders identical cells, and
+  silence leaves the scope dim and still.
+- The canvas renders one small, stable frame rectangle per agent, laid out
+  deterministically from the agent's private workspace-qualified identity so
+  frames stay recognizable and never swap positions. Agent frames keep
+  state-colored edges; Working has an audio-driven spinner core (`◜◝◞◟`,
+  whose orientation advances only from newly received played-audio phase
+  data), while Idle (`◌`), Blocked (`×`), and Done (`·`) remain stationary.
+  RMS combined with each frame's assigned FFT band moves its rectangle with
+  a small bounded scale/offset and adds a one- or two-layer soft shadow
+  trail drawn from real recent visualizer frames. Dense terminals shrink
+  frame size and spacing rather than omitting frames; every agent keeps one
+  visible frame.
+- State colors come from the active theme only: working edges glow strongest
+  (the playing color), blocked uses the error color for edge and core;
+  idle/done/unknown stay muted and a done frame stays muted/dim until its
+  snapshot omits it. In `--low-power`, phase-trace/persistence positions,
+  frame geometry, shadow trails, and spinner orientation are frozen (from
+  the first audible frame captured after startup) while state edge/core
+  colors still update.
+- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a frame, bringing it forward.
+  A selected named agent shows only `name · status`, placed near its frame;
+  an unnamed selection shows no label. Search (`/`) and station
   navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed, so
   canvas input can never play a station or move station selection.
 - The documented global player shortcuts fall through with their exact normal
@@ -607,8 +621,8 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   (favorite for the station-list selection), `t` (theme), `v` (visualizer
   mode), and `z` (Signal View, which replaces the canvas surface).
 - Mouse capture is enabled only for eligible plugin launches, solely to feed
-  tile-selection clicks; background trace, vignette, and shadow cells
-  resolve nothing. Clicks resolve against the tile geometry actually drawn
+  frame-selection clicks; background trace, vignette, and shadow cells
+  resolve nothing. Clicks resolve against the frame geometry actually drawn
   (including low-power frozen geometry) and only while the connection is
   `Connected`. During stale/unavailable states selection is frozen entirely —
   mouse clicks and keyboard selection both change nothing, while `a`/`Esc`
@@ -623,8 +637,8 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 - Every agent reported by the plugin invocation's local Herdr socket is
   shown, across that session's workspaces; other Herdr sessions are never
   discovered.
-- Only a selected tile's explicit Herdr `name` is ever rendered. There is no
-  fallback label; pane ids, workspace ids, working directories, and agent
+- Only a selected frame's explicit Herdr `name` is ever rendered. There is
+  no fallback label; pane ids, workspace ids, working directories, and agent
   types never appear on screen.
 - Agent activity changes colors/low-rate rendering only — never audio,
   playback, search, settings, theme, visualizer, or OS notifications.
@@ -669,7 +683,7 @@ Use automated tests for core logic:
 - Herdr Agent Pulse logic without a live Herdr process, socket, or terminal:
   plugin-environment eligibility, cross-workspace `agent.list` payload
   normalization, lifecycle/stale reducers, key/mouse routing, and
-  summary/Kinetic Collage canvas rendering
+  summary/Dual Phase Scope canvas rendering
 
 Use manual verification for:
 
@@ -765,7 +779,7 @@ tier, and built-in retry candidates stay visible
 
 ### Herdr Agent Pulse — Verification Status
 
-Status as of the Kinetic Collage documentation pass (2026-07-19).
+Status as of the Lissajous Scope documentation pass (2026-07-19).
 
 **Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
 `cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
@@ -782,17 +796,30 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   distinctness and selection, done agents staying until a snapshot omits
   them, the stale-edge visualizer freeze capture, stale → unavailable
   (15 s) → recovery transitions, and the per-loop staleness tick (`app`);
+- normalized `PhaseTrace` clamping/pairing, typed `PlayedSample` stereo/mono
+  boundaries, and analyzer phase traces built from real played samples —
+  stereo left/right primary pairs plus distinct documented mono lags
+  (29-sample primary fallback, 97-sample secondary) — with no scrolling
+  waveform substitution (`model`, `audio::output`, `audio::analyzer`);
 - `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
-  the canvas key gate (tile selection, suppressed search/station
+  the canvas key gate (frame selection, suppressed search/station
   navigation, preserved global player shortcuts, Signal View delegation),
   and monitor/mouse-capture/click routing including the low-power geometry
   path (`cli`);
+- the App-owned low-power visual capture: silent startup frames capture
+  nothing, the first audible frame (RMS above the silence threshold with
+  real phase data) becomes the frozen geometry source while live frames
+  still update colors, and disabling the policy clears the capture (`app`);
 - summary visibility per tier and connection state, full-screen canvas
-  coverage, deterministic per-identity tile motifs/layout, one-tile-per-agent
-  density, RMS/FFT-driven tile motion and shadow trails, background
-  trace/vignette reactivity, silence stillness, low-power frozen geometry,
-  state edge glow, selected-name-only privacy, stale freeze/unavailable
-  rendering, and tile-only hit testing (`ui`, `ui::agent_pulse`).
+  coverage, two centered clock-free Dual Phase Scope traces with dim
+  phosphor persistence, deterministic per-identity frame layout,
+  one-frame-per-agent density, RMS/FFT-driven frame motion and shadow
+  trails, silence stillness, audio-driven Working spinner cores versus
+  stationary Idle/Blocked/Done/Unknown cores, stale/low-power frozen
+  geometry, state edge glow and `theme.error` Blocked cores,
+  selected-name-only privacy with near-frame label placement, stale
+  freeze/unavailable rendering, and frame-only hit testing (`ui`,
+  `ui::agent_pulse`).
 
 **Manual checklist (NOT run in this pass).** This documentation pass was
 performed without a Herdr 0.7.0+ installation, a real terminal session, or
@@ -805,33 +832,43 @@ the release as fully validated:
       runs during `herdr plugin install`/link.
 - [ ] Open the `Open wave-tui radio tab` action; confirm a dedicated tab with
       the Wide or Medium layout and working playback.
-- [ ] Play a real stream with the canvas open and judge live composition and
-      cadence: the background trace and vignette follow the music, tiles
-      breathe with RMS/band energy and grow soft shadow trails, tile art
-      stays stable, and silence leaves a dim, still collage with no timer
-      motion.
-- [ ] Cycle all six themes on the canvas and confirm background, tile
-      motifs, and state edge glow stay legible on each.
+- [ ] Play a real **stereo** stream with the canvas open and judge the live
+      Dual Phase Scope: the primary trace draws a left/right phase portrait,
+      the secondary trace differs from it, dim phosphor persistence echoes
+      recent motion, frames breathe with RMS/band energy and grow soft
+      shadow trails, Working spinner cores advance with the music, and
+      silence leaves a dim, still scope with no timer motion — never a
+      scrolling waveform.
+- [ ] Play a real **mono** stream and confirm both lagged-mono traces stay
+      non-diagonal, distinct oscilloscope figures rather than a flat line or
+      a scrolling waveform.
+- [ ] Cycle all six themes on the canvas and confirm traces, vignette, frame
+      edges, and status cores stay legible on each.
 - [ ] With agents across multiple workspaces of the same Herdr session,
       confirm `● n active` counts them all and the canvas keeps one
-      recognizable tile per agent at stable positions, including dense
-      agent counts.
-- [ ] Select tiles with keyboard and mouse clicks; confirm clicks land only
-      on tile cells, the selected tile comes forward, only explicit
-      `name · status` labels render, and unnamed agents show no label.
+      recognizable frame per agent at stable positions, including dense
+      agent counts and after resizes.
+- [ ] Select frames with keyboard and mouse clicks; confirm clicks land only
+      on frame cells, the selected frame comes forward, only explicit
+      `name · status` labels render near the frame, and unnamed agents show
+      no label.
 - [ ] Resize the tab through Wide/Medium/Compact; confirm the summary hides
       in Compact while `a` still opens the full-screen canvas, and the
       canvas redraws cleanly across sizes.
 - [ ] Temporarily remove socket access; confirm the dimmed count and frozen
-      `stale · reconnecting` canvas, the 15-second
-      `agents · unavailable · retrying` state, and full recovery when the
-      socket returns — with playback unaffected throughout, and mouse clicks
-      and keyboard selection changing nothing while stale/unavailable.
+      `stale · reconnecting` canvas (traces, frames, cores, and trails
+      frozen and dimmed), the 15-second `agents · unavailable · retrying`
+      state hiding every frame and trace, and full recovery when the socket
+      returns — with playback unaffected throughout, and mouse clicks and
+      keyboard selection changing nothing while stale/unavailable.
 - [ ] Detach and reattach the Herdr session; confirm the tab process and
       playback follow Herdr's normal pane lifecycle.
-- [ ] Run `wave-tui --low-power` inside Herdr and confirm static background
-      trace positions, tile geometry, and trails while state edge glow
-      remains — and that clicks still select against the frozen geometry.
+- [ ] Run `wave-tui --low-power` inside Herdr and confirm frozen trace,
+      persistence, frame, shadow, and spinner geometry while state
+      edge/core colors still refresh — including that a launch into silence
+      renders the live frame until audio becomes audible, after which the
+      first audible frame stays the frozen geometry — and that clicks still
+      select against the frozen geometry.
 - [ ] Run standalone `wave-tui --no-auto-play` outside Herdr and inside a
       plain Herdr shell pane (no plugin env); confirm zero Agent Pulse UI,
       inert `a`, and unchanged terminal mouse behavior.

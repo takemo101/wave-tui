@@ -465,6 +465,8 @@ MVP includes a minimal practical CLI surface:
 - `--no-auto-play`: start silently even if previous station exists
 - `--audio-output-device <name>`: CPAL output device name
 - `--low-power`: force low-power UI mode
+- `--no-agent-pulse`: disable the optional Herdr Agent Pulse integration for
+  this run only; never persisted and never applied to settings
 
 Potential optional flag if straightforward:
 
@@ -477,6 +479,122 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - `--low-power` explicitly lowers visual update cadence.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
+- Agent Pulse constellation nodes render statically (no pulse animation) in
+  low-power mode; the one-shot status-change acknowledgement still applies.
+
+### Herdr Agent Pulse (Optional Integration)
+
+`wave-tui` ships as an official Herdr plugin and, only when launched by that
+plugin, shows a **read-only Agent Pulse**: the live status of AI coding agents
+in the current Herdr workspace, presented as ambient context beside radio
+playback. The approved design is
+`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; this section
+records the product behavior as implemented.
+
+This is an optional Herdr integration, not a plugin system inside `wave-tui`,
+and it does not weaken the non-goals below: there is still no daemon, no IPC
+remote control of `wave-tui`, and no way for agent activity to change audio,
+playback, search, settings, themes, or the visualizer.
+
+#### Packaging and launch
+
+- `herdr-plugin.toml` at the repository root is the official manifest: plugin
+  id `wave-tui.radio`, `min_herdr_version = "0.7.0"`, macOS and Linux, a
+  Cargo release build during plugin install, and an `open` action that opens
+  the release binary in a **dedicated Herdr tab** (placement `tab`) so the
+  player keeps its Wide/Medium layout.
+- The tab owns the audio process: closing the tab exits `wave-tui` and stops
+  playback; detach/reattach follows Herdr's normal pane lifecycle.
+
+#### Eligibility
+
+Agent Pulse is enabled if and only if all of these hold:
+
+1. `--no-agent-pulse` is absent.
+2. `HERDR_ENV` is exactly `1`.
+3. `HERDR_SOCKET_PATH` is set and non-empty.
+4. `HERDR_WORKSPACE_ID` is set and non-empty.
+
+The plugin environment is the authority for the current workspace; the app
+never guesses a workspace. Every ineligible launch (standalone, incomplete
+environment, or explicit disable) keeps the exact pre-integration appearance
+and behavior — no reserved rows, no hints, `a` is a silent no-op, and mouse
+capture is not enabled.
+
+#### Monitoring and data flow
+
+- A focused `herdr` adapter module owns environment parsing, the Unix socket
+  transport, newline-delimited JSON-RPC framing, and `agent.list` payload
+  normalization; nothing else in the app sees raw JSON or sockets.
+- A background thread polls `agent.list` every 5 seconds with a 3-second
+  socket I/O timeout and forwards typed snapshot/failure events into the
+  existing event loop; the reducer in `app` owns all lifecycle state.
+- Responses are filtered strictly to the injected current workspace. Statuses
+  `working`, `blocked`, `done`, and `idle` are mapped explicitly; anything
+  else (or a missing status) becomes `unknown`. Entries missing required ids
+  and malformed payloads are dropped/rejected without crashing.
+- Displayed durations (`<1m`, `~12m`, `~2h`) are estimates since `wave-tui`
+  first observed the agent in its current status, not process start times.
+
+#### Lifecycle and history
+
+- Each successful snapshot replaces the active view. Agents sort working,
+  blocked, idle, done, then unknown; `observed_at` is preserved while a
+  pane's status is unchanged and resets on a status change.
+- An agent moves to completed history when Herdr reports `done` or when a
+  previously live pane disappears from a later snapshot — exactly once per
+  status episode (no duplicates across unchanged polls).
+- Completed history is process-local only, newest first, capped at 20 entries.
+
+#### Connection states and recovery
+
+| Condition | Wide/Medium summary | Overlay |
+| --- | --- | --- |
+| Connected, active agents | `● 2 working · ○ 1 idle` state counts | Constellation + active list |
+| Connected, no agents | `agents · none active` | Calm empty state |
+| First failed poll | Dimmed last state + `stale · reconnecting` | Last state, dimmed, stale banner |
+| ≥ 15 seconds without success | Summary disappears | `agents · unavailable · retrying` |
+| Fresh snapshot | Live state replaces stale state | Live state |
+
+Socket errors, malformed replies, and timeouts are recoverable: they never
+panic the TUI or interrupt playback, and polling continues. A per-loop timer
+tick advances the 15-second unavailable threshold even when no further monitor
+event arrives.
+
+#### UI and input contract
+
+- Wide and Medium add the one-line summary to Now Playing; Compact hides the
+  summary (but `a` still opens the overlay while the integration is active);
+  Signal View never shows Agent Pulse and ignores `a`.
+- `a` toggles the Status Constellation overlay; `Esc` also closes it. The
+  overlay contains state-colored nodes, a short active list (windowed to keep
+  the selection visible), an information card for the selected agent, and a
+  `Completed (n)` disclosure. On small overlay areas it falls back to the
+  readable list and disclosure without constellation/card.
+- Overlay keys: `Tab`/arrows/`j`/`k` select, `Enter` keeps the card visible,
+  `q`/`Ctrl+C` still quit. All other keys are consumed while the overlay is
+  open so overlay input can never play a station, move station selection,
+  change settings or focus, or alter audio.
+- Mouse capture is enabled only for eligible plugin launches, solely to feed
+  overlay clicks (node/list selection and the disclosure toggle). Clicks
+  resolve only while the connection is `Connected`; during stale/unavailable
+  states mouse clicks select nothing while keyboard selection over the last
+  known list keeps working. This asymmetry is intentional: pointer input
+  should not act on data that may no longer be current.
+- A status change gets one restrained visual acknowledgement (a brief bold
+  highlight derived from the observed-at timestamp); no toasts, no sounds.
+  Working nodes pulse slowly; low-power rendering is static.
+
+#### Privacy and read-only guarantees
+
+- Only `agent.list` is ever called. Pane output, prompts, files, and
+  scrollback are never read; panes are never focused, created, closed, sent
+  text, or otherwise controlled.
+- Only the current workspace's agents are shown; no cross-workspace view.
+- Agent activity changes colors/low-rate animation only — never audio,
+  playback, search, settings, theme, visualizer, or OS notifications.
+- Nothing is persisted: agent state and completed history exist only in
+  process memory, and `--no-agent-pulse` is never written to settings.
 
 ### Implementation Principles
 
@@ -513,6 +631,10 @@ Use automated tests for core logic:
 - FFT normalization/band mapping where deterministic
 - domain primitive smart constructors and parse boundaries
 - first-class collection behavior such as favorite deduplication and failed-station filtering
+- Herdr Agent Pulse logic without a live Herdr process, socket, or terminal:
+  plugin-environment eligibility, `agent.list` payload
+  normalization/filtering, lifecycle/history/stale reducers, key/mouse
+  routing, and summary/overlay rendering
 
 Use manual verification for:
 
@@ -520,6 +642,7 @@ Use manual verification for:
 - terminal rendering quality
 - ICY metadata behavior against live stations
 - device selection
+- live Herdr plugin behavior (see the Agent Pulse manual checklist below)
 
 ## Non-Goals for MVP
 
@@ -534,6 +657,11 @@ Use manual verification for:
 - lyrics
 - remote daemon / IPC control
 - user-editable custom theme files
+
+The optional Herdr Agent Pulse integration does not change these non-goals:
+`wave-tui` ships *as* a Herdr plugin but has no plugin system of its own, runs
+no daemon, and accepts no remote control — its Herdr socket use is outbound,
+read-only `agent.list` monitoring only.
 
 ## Success Criteria
 
@@ -599,3 +727,61 @@ tier, and built-in retry candidates stay visible
   entries apply their corresponding station filters. When a successful search
   result population exists, those section/category sources filter the current
   search results; otherwise they fall back to the curated catalog.
+
+### Herdr Agent Pulse — Verification Status
+
+Status as of the MIK-060 documentation pass (2026-07-18).
+
+**Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
+`cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
+The suite covers, without any live Herdr process, socket, audio, or terminal:
+
+- exact plugin-environment eligibility and every ineligible/disabled case
+  (`herdr` module tests);
+- `agent.list` request framing, payload normalization, status mapping,
+  workspace filtering, and malformed-payload rejection (`herdr`);
+- monitor failure reporting and clean shutdown against a nonexistent socket
+  (`herdr`);
+- snapshot/lifecycle reducers: sort order, observed-duration reset only on
+  status change, done/disappeared panes completing exactly once, the
+  20-entry history cap, stale → unavailable (15 s) → recovery transitions,
+  and the per-loop staleness tick (`app`);
+- `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
+  overlay key consumption, and monitor/mouse event routing (`cli`);
+- summary visibility per tier and connection state, overlay/hit-test
+  geometry, low-power static motion, and the one-shot status-change
+  acknowledgement (`ui`, `ui::agent_pulse`).
+
+**Manual checklist (NOT run in this pass).** This documentation pass was
+performed without a Herdr 0.7.0+ installation, a real terminal session, or
+audio output, so none of the following live checks were executed here. They
+are recorded as environment-dependent residual verification and should be
+run on macOS and/or Linux with a real Herdr 0.7.0+ session before treating
+the release as fully validated:
+
+- [ ] Install or link the plugin locally and confirm the Cargo release build
+      runs during `herdr plugin install`/link.
+- [ ] Open the `Open wave-tui radio tab` action; confirm a dedicated tab with
+      the Wide or Medium layout and working playback.
+- [ ] With live agents in the current workspace, confirm the Now Playing
+      summary counts and the `a` overlay (constellation, list, information
+      card, keyboard and mouse selection).
+- [ ] Drive agent status changes (working/blocked/idle/done) and confirm the
+      one-shot acknowledgement and sort order; let an agent finish and a pane
+      close, and confirm both appear once under `Completed (n)`.
+- [ ] Temporarily remove socket access; confirm `stale · reconnecting`, the
+      15-second `agents · unavailable · retrying` state, and full recovery
+      when the socket returns — with playback unaffected throughout.
+- [ ] Resize the tab through Wide/Medium/Compact; confirm the summary hides
+      in Compact while `a` still opens the overlay.
+- [ ] Detach and reattach the Herdr session; confirm the tab process and
+      playback follow Herdr's normal pane lifecycle.
+- [ ] Confirm mouse clicks select nothing while stale/unavailable and that
+      terminal text selection works with `Shift`+drag under mouse capture.
+- [ ] Run `wave-tui --low-power` inside Herdr and confirm static (non-pulsing)
+      constellation nodes.
+- [ ] Run standalone `wave-tui --no-auto-play` outside Herdr and inside a
+      plain Herdr shell pane (no plugin env); confirm zero Agent Pulse UI,
+      inert `a`, and unchanged terminal mouse behavior.
+- [ ] Launch via the plugin with `--no-agent-pulse` and confirm the
+      integration stays fully disabled for that run.

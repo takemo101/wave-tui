@@ -18,6 +18,9 @@ Start here:
    playback caveats.
 5. [`docs/superpowers/plans/2026-06-27-radio-replacement.md`](docs/superpowers/plans/2026-06-27-radio-replacement.md)
    — implementation plan for the replacement.
+6. [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
+   and [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
+   — approved design and plan for the optional Herdr Agent Pulse integration.
 
 Before changing playback, search, persistence, themes, layout, module
 boundaries, or user-facing controls, re-read the relevant doc first.
@@ -38,7 +41,12 @@ Stay inside the MVP unless the user explicitly expands scope:
 - previous station, volume, favorites, and theme persistence;
 - ICY/Shoutcast now-playing metadata when available;
 - three responsive layout tiers;
-- Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes.
+- Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes;
+- the optional, read-only Herdr Agent Pulse companion when launched as the
+  official Herdr plugin (approved design:
+  `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`). It only
+  observes current-workspace agent status via `agent.list`; it is not a
+  daemon, remote control, or an internal plugin system.
 
 Do not add these in MVP without an explicit design update:
 
@@ -71,6 +79,8 @@ Expected responsibility boundaries:
 - `catalog`: curated stations, station ranking, validation state.
 - `search`: Radio Browser client, normalization, query cache.
 - `audio`: native playback facade, decoder/output/analyzer/ICY events.
+- `herdr`: Herdr plugin environment eligibility, Unix socket protocol, and the
+  read-only `agent.list` monitor thread; the only module that sees Herdr JSON.
 - `theme`: theme names and palette definitions.
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.
@@ -284,6 +294,9 @@ Update docs when changing:
 - UI direction, themes, or responsive layout decisions:
   `docs/ui-design-decisions.md`;
 - audio architecture findings or spike conclusions: `docs/audio-spike.md`;
+- Herdr plugin packaging or Agent Pulse behavior: `README.md`, `docs/SPEC.md`,
+  and `docs/ui-design-decisions.md` (design record:
+  `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`);
 - task order or implementation contracts:
   `docs/superpowers/plans/2026-06-27-radio-replacement.md`.
 

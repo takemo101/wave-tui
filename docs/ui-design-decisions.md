@@ -117,6 +117,52 @@ Implications:
 - Signal View adds no playlist, queue, search, or new selection behavior and does
   not turn compact panes into a default full-screen visualizer.
 
+### Agent Pulse: Quiet Companion + Status Constellation
+
+The optional Herdr Agent Pulse (design:
+`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`) uses the
+**Quiet Companion** direction for normal layouts and a **Status Constellation
+plus short list** for its overlay. It presents agent activity as ambient
+context beside playback, never as a work-management dashboard.
+
+Implications:
+
+- **Quiet Companion summary.** Wide and Medium add exactly one state-count
+  line to Now Playing (`● 2 working · ○ 1 idle`, or `agents · none active`).
+  It reports counts, never agent output or prompts, and reuses theme colors
+  only.
+- **Compact suppression.** The Compact tier hides the summary to preserve its
+  Split Mini station and playback context; while the integration is active,
+  `a` still opens the overlay there. Signal View keeps its restricted key
+  contract: it never shows Agent Pulse and ignores `a`.
+- **Standalone invisibility.** Ineligible and standalone launches render
+  byte-identical to the pre-integration UI: no reserved rows, no empty slots,
+  no "not in Herdr" hints, and mouse capture stays off.
+- **Status Constellation overlay.** `a` opens a centered, temporary, read-only
+  overlay: state-colored nodes (`●` working, `◆` blocked, `○` idle, `✓` done,
+  `?` unknown), a short active list windowed to five rows so the selection
+  stays visible, an information card for the selected agent, and a
+  `Completed (n)` disclosure showing up to four history rows with `… n more`
+  markers. Below roughly 60×20 the overlay drops the constellation and card
+  and keeps the readable list and disclosure.
+- **Restrained signal color.** Only working (playing color) and blocked
+  (error color) get strong color; idle, done, and unknown stay muted, and done
+  nodes dim. Stale state dims the whole overlay and summary and adds a single
+  `stale · reconnecting` line; unavailable shows one calm
+  `agents · unavailable · retrying` line.
+- **Quiet motion.** Working nodes pulse on a slow four-second cycle. A status
+  change earns one restrained acknowledgement — a brief (~2 s) bold highlight
+  derived from the observed-at timestamp, so it expires on its own — never a
+  toast, sound, or layout shift. Low-power mode renders all nodes statically
+  while keeping the same visual language; the acknowledgement still applies.
+- **Read-only interaction.** Keyboard (`Tab`/arrows/`j`/`k`, `Enter`,
+  `a`/`Esc`) and mouse clicks only select and disclose; nothing in the overlay
+  can control panes or change playback, settings, focus, or search. Mouse
+  clicks intentionally resolve only while the connection is live, while
+  keyboard selection over the last known (dimmed) list keeps working during
+  stale/unavailable states — pointer input should not act on possibly outdated
+  rows.
+
 ### Theme Set: High Contrast Trio
 
 Initial themes:

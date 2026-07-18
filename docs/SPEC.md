@@ -610,10 +610,10 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   tile-selection clicks; background trace, vignette, and shadow cells
   resolve nothing. Clicks resolve against the tile geometry actually drawn
   (including low-power frozen geometry) and only while the connection is
-  `Connected`; during stale/unavailable states mouse clicks select nothing
-  while keyboard selection over the last known tiles keeps working. This
-  asymmetry is intentional: pointer input should not act on data that may no
-  longer be current.
+  `Connected`. During stale/unavailable states selection is frozen entirely —
+  mouse clicks and keyboard selection both change nothing, while `a`/`Esc`
+  still close the canvas. Selection input, from either device, must not act
+  on data that may no longer be current.
 
 #### Privacy and read-only guarantees
 
@@ -826,7 +826,7 @@ the release as fully validated:
       `stale · reconnecting` canvas, the 15-second
       `agents · unavailable · retrying` state, and full recovery when the
       socket returns — with playback unaffected throughout, and mouse clicks
-      selecting nothing while stale/unavailable.
+      and keyboard selection changing nothing while stale/unavailable.
 - [ ] Detach and reattach the Herdr session; confirm the tab process and
       playback follow Herdr's normal pane lifecycle.
 - [ ] Run `wave-tui --low-power` inside Herdr and confirm static background

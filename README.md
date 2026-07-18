@@ -323,10 +323,10 @@ list is the focused pane underneath, `f` favorites the station-list selection,
 and `z` switches to Signal View (which replaces the canvas surface). Mouse
 capture is enabled only for eligible plugin launches (native terminal text
 selection may then need `Shift`+drag); standalone launches leave terminal
-mouse behavior untouched. Clicks resolve only while the connection is live —
-during `stale`/`unavailable` states clicks select nothing, while keyboard
-selection over the last known tiles keeps working; this asymmetry is
-intentional (clicks should not act on data that may no longer be current).
+mouse behavior untouched. Selection resolves only while the connection is
+live — during `stale`/`unavailable` states mouse clicks and keyboard
+selection both change nothing, though `a`/`Esc` still close the canvas;
+selection input should not act on data that may no longer be current.
 
 ### Connection loss and recovery
 

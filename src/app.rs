@@ -986,9 +986,15 @@ impl App {
             && self.display_mode != DisplayMode::SignalView
     }
 
-    /// Whether overlay-internal actions (selection) may run.
-    fn agent_overlay_interactive(&self) -> bool {
-        self.agent_pulse_interactive() && self.agent_pulse.overlay == AgentOverlay::Open
+    /// Whether selection actions may run: the canvas must be open and the
+    /// connection `Connected`, matching the mouse hit-test gate — stale and
+    /// unavailable freeze the last composition, selection included, so no
+    /// input may act on data that may no longer be current. Close/toggle
+    /// stay on [`Self::agent_pulse_interactive`].
+    fn agent_selection_interactive(&self) -> bool {
+        self.agent_pulse_interactive()
+            && self.agent_pulse.overlay == AgentOverlay::Open
+            && self.agent_pulse.connection == AgentPulseConnection::Connected
     }
 
     fn toggle_agent_overlay(&mut self) {
@@ -1011,7 +1017,7 @@ impl App {
     /// Move the overlay selection down one row, never past the last agent;
     /// with no selection it starts at the first sorted agent.
     fn select_next_agent(&mut self) {
-        if !self.agent_overlay_interactive() {
+        if !self.agent_selection_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
@@ -1025,7 +1031,7 @@ impl App {
     /// Move the overlay selection up one row, never above the first agent;
     /// with no selection it starts at the last sorted agent.
     fn select_previous_agent(&mut self) {
-        if !self.agent_overlay_interactive() {
+        if !self.agent_selection_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
@@ -1038,7 +1044,7 @@ impl App {
 
     /// Select an active agent by its identity; unknown agents change nothing.
     fn select_agent(&mut self, id: AgentId) {
-        if !self.agent_overlay_interactive() {
+        if !self.agent_selection_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
@@ -2953,6 +2959,51 @@ mod tests {
         app.apply(Action::SelectNextAgent);
         app.apply(Action::SelectAgent(agent_id("ws", "p1")));
         assert!(app.selected_agent().is_none());
+    }
+
+    #[test]
+    fn stale_freezes_the_agent_selection_until_recovery() {
+        // Selection matches the mouse hit-test gate: it changes only while
+        // `Connected`. Stale keeps the frozen composition's selection intact
+        // and ignores every selection action, while close/toggle still work.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let t0 = Instant::now();
+        let two_agents = || {
+            vec![
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            ]
+        };
+        app.apply(agent_snapshot(two_agents(), t0));
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(5),
+        });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+
+        // Stale: keyboard movement and identity selection are all inert.
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectPreviousAgent);
+        app.apply(Action::SelectAgent(agent_id("ws", "p2")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+
+        // Close and toggle keep working while stale.
+        app.apply(Action::CloseAgentOverlay);
+        assert!(!app.is_agent_overlay_open());
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(app.is_agent_overlay_open());
+
+        // A fresh snapshot recovers the connection and re-enables selection.
+        app.apply(agent_snapshot(two_agents(), t0 + Duration::from_secs(10)));
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("beta"));
     }
 
     #[test]

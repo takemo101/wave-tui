@@ -2223,6 +2223,36 @@ mod tests {
         assert_eq!(app.selected_index(), station);
     }
 
+    #[test]
+    fn collage_stale_keys_cannot_change_the_selection_but_still_close() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        app.apply(Action::ToggleAgentOverlay);
+        let mut press = |app: &mut App, code| {
+            handle_key(key(code), app, &audio, &mut debounce, &mut persistence)
+        };
+
+        press(&mut app, KeyCode::Tab);
+        let selected = app.selected_agent().map(|view| view.id.clone());
+        assert!(selected.is_some(), "connected selection works");
+
+        apply_monitor_event(&mut app, MonitorEvent::Failed, Instant::now());
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+
+        // Stale: selection keys are inert, matching the mouse hit-test gate.
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_agent().map(|view| view.id.clone()), selected);
+
+        // `Esc` still closes and `a` still reopens the canvas while stale.
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.is_agent_overlay_open());
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.is_agent_overlay_open());
+    }
+
     /// Drive every documented global player shortcut through `handle_key`
     /// while the Kinetic Collage canvas is open, asserting each keeps its
     /// normal semantics and side effects: the canvas consumes none of them.

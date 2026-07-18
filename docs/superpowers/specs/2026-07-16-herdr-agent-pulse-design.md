@@ -1,6 +1,16 @@
 # Herdr Agent Pulse Design
 
-**Status:** Approved for implementation
+**Status:** Historical record — integration current, presentation superseded
+(original status: Approved for implementation)
+
+> **Historical note (2026-07-19):** The integration and privacy record in this
+> document remains current — plugin packaging, eligibility, the read-only
+> `agent.list` socket contract, connection-loss handling, and the
+> privacy/read-only guarantees still describe the implementation. All
+> presentation decisions here (summary strip, overlay, Status Constellation,
+> agent list, information card, completed history) are superseded by the
+> Kinetic Collage design:
+> [`2026-07-18-agent-pulse-kinetic-collage-design.md`](2026-07-18-agent-pulse-kinetic-collage-design.md).
 
 ## Goal
 

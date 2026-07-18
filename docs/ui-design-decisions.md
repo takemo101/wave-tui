@@ -180,10 +180,11 @@ Implications:
 - **Player-first input.** The canvas consumes search and station
   navigation/selection keys, but the documented global player shortcuts —
   `Space`, `+`/`-`, `f`, `t`, `v`, and `z` (Signal View) — fall through with
-  their exact normal semantics. Mouse clicks only select tiles and resolve
-  only while the connection is live; keyboard selection over the last known
-  tiles keeps working during stale/unavailable states — pointer input
-  should not act on possibly outdated data.
+  their exact normal semantics. Mouse clicks only select tiles, and
+  selection — mouse and keyboard alike — resolves only while the connection
+  is live; during stale/unavailable states the frozen composition's
+  selection cannot change (`a`/`Esc` still close the canvas) — selection
+  input should not act on possibly outdated data.
 
 ### Theme Set: High Contrast Trio
 

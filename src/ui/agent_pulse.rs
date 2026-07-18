@@ -463,8 +463,16 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 /// integration is hidden, the connection is stale or unavailable, Signal View
 /// is active, or the click misses every tile. Background trace, vignette, and
 /// shadow cells resolve nothing. Overlapping tiles resolve topmost-first, with
-/// the selected tile in front, matching draw order.
-pub(super) fn hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<Action> {
+/// the selected tile in front, matching draw order. `low_power` must mirror
+/// the render flag: it freezes hit geometry on the base rectangles exactly as
+/// [`render_canvas`] freezes the drawn tiles.
+pub(super) fn hit_test(
+    area: Rect,
+    column: u16,
+    row: u16,
+    low_power: bool,
+    app: &App,
+) -> Option<Action> {
     if app.agent_pulse_connection() != AgentPulseConnection::Connected {
         return None;
     }
@@ -475,7 +483,7 @@ pub(super) fn hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<A
     if agents.is_empty() || !rect_contains(area, column, row) {
         return None;
     }
-    let layout = collage_layout(agents, app.viz(), &[], collage_area(area), false);
+    let layout = collage_layout(agents, app.viz(), &[], collage_area(area), low_power);
     let selected_index = app
         .selected_agent()
         .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
@@ -1360,7 +1368,7 @@ mod tests {
         let x = tile.rect.x + tile.rect.width / 2;
         let y = tile.rect.y + tile.rect.height / 2;
 
-        let action = hit_test(CANVAS, x, y, &app).expect("a tile click selects");
+        let action = hit_test(CANVAS, x, y, false, &app).expect("a tile click selects");
         app.apply(action);
         assert_eq!(
             app.selected_agent().unwrap().name.as_deref(),
@@ -1386,7 +1394,7 @@ mod tests {
         for cell in &layout.background.trace {
             if !inside_a_tile(cell.x, cell.y) {
                 assert!(
-                    hit_test(CANVAS, cell.x, cell.y, &app).is_none(),
+                    hit_test(CANVAS, cell.x, cell.y, false, &app).is_none(),
                     "a background trace cell at ({}, {}) must resolve nothing",
                     cell.x,
                     cell.y
@@ -1401,7 +1409,7 @@ mod tests {
                         if !inside_a_tile(x, y) {
                             checked_shadow = true;
                             assert!(
-                                hit_test(CANVAS, x, y, &app).is_none(),
+                                hit_test(CANVAS, x, y, false, &app).is_none(),
                                 "a shadow cell at ({x}, {y}) must resolve nothing"
                             );
                         }
@@ -1415,7 +1423,7 @@ mod tests {
     #[test]
     fn clicks_resolve_nothing_when_missed_stale_or_closed() {
         let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
-        assert!(hit_test(CANVAS, 0, 0, &app).is_none(), "corner miss");
+        assert!(hit_test(CANVAS, 0, 0, false, &app).is_none(), "corner miss");
 
         let layout = collage_layout(
             app.active_agents(),
@@ -1433,16 +1441,52 @@ mod tests {
             now: Instant::now(),
         });
         assert!(
-            hit_test(CANVAS, x, y, &app).is_none(),
+            hit_test(CANVAS, x, y, false, &app).is_none(),
             "stale ignores clicks"
         );
 
         let mut closed = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         closed.apply(Action::CloseAgentOverlay);
         assert!(
-            hit_test(CANVAS, x, y, &closed).is_none(),
+            hit_test(CANVAS, x, y, false, &closed).is_none(),
             "closed canvas ignores clicks"
         );
+    }
+
+    #[test]
+    fn low_power_hit_testing_matches_the_frozen_drawn_tiles() {
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        push_frame(&mut app, frame(0.9, vec![0.9; 16]));
+        let canvas = collage_area(CANVAS);
+        let moved =
+            collage_layout(app.active_agents(), app.viz(), &[], canvas, false).tiles[0].rect;
+        let frozen = &collage_layout(app.active_agents(), app.viz(), &[], canvas, true).tiles[0];
+        let base = frozen.rect;
+        assert_eq!(base, frozen.base_rect, "low power draws base geometry");
+        assert_ne!(moved, base, "sanity: a loud frame moves the tile off base");
+
+        // The frozen tile's own cells still select in low power.
+        let (x, y) = (base.x + base.width / 2, base.y + base.height / 2);
+        assert!(
+            hit_test(CANVAS, x, y, true, &app).is_some(),
+            "a drawn low-power tile cell selects"
+        );
+
+        // A cell only the audio-moved rectangle covers holds no drawn tile in
+        // low power, so it must resolve nothing there.
+        let mut checked = false;
+        for y in moved.y..moved.y + moved.height {
+            for x in moved.x..moved.x + moved.width {
+                if !rect_contains(base, x, y) {
+                    checked = true;
+                    assert!(
+                        hit_test(CANVAS, x, y, true, &app).is_none(),
+                        "an undrawn cell ({x}, {y}) must resolve nothing in low power"
+                    );
+                }
+            }
+        }
+        assert!(checked, "sanity: the moved rect exposes cells off base");
     }
 
     // --- quiet summary ------------------------------------------------------

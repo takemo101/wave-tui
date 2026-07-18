@@ -92,9 +92,18 @@ pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
 ///
 /// Selection requires a live view, so a stale, unavailable, or hidden
 /// integration resolves no clicks either; the geometry lives in
-/// [`agent_pulse`], shared with the canvas renderer.
-pub(crate) fn agent_pulse_hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<Action> {
-    agent_pulse::hit_test(area, column, row, app)
+/// [`agent_pulse`], shared with the canvas renderer. `low_power` must be the
+/// same controller flag passed to [`render`], so clicks resolve against
+/// exactly the tile rectangles that were drawn — frozen base geometry in low
+/// power, audio-transformed geometry otherwise.
+pub(crate) fn agent_pulse_hit_test(
+    area: Rect,
+    column: u16,
+    row: u16,
+    low_power: bool,
+    app: &App,
+) -> Option<Action> {
+    agent_pulse::hit_test(area, column, row, low_power, app)
 }
 
 /// Render into an explicit area and buffer.
@@ -2513,7 +2522,8 @@ mod tests {
         let mut hit_ids = Vec::new();
         for row in 0..36 {
             for column in 0..120 {
-                if let Some(Action::SelectAgent(id)) = agent_pulse_hit_test(area, column, row, &app)
+                if let Some(Action::SelectAgent(id)) =
+                    agent_pulse_hit_test(area, column, row, false, &app)
                 {
                     if !hit_ids.contains(&id) {
                         hit_ids.push(id);

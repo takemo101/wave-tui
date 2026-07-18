@@ -814,7 +814,12 @@ fn event_loop(
                 }
                 Event::Mouse(mouse) => {
                     let size = terminal.size()?;
-                    handle_mouse(mouse, Rect::new(0, 0, size.width, size.height), app);
+                    handle_mouse(
+                        mouse,
+                        Rect::new(0, 0, size.width, size.height),
+                        low_power,
+                        app,
+                    );
                 }
                 _ => {}
             }
@@ -885,11 +890,11 @@ fn handle_key(
         return handle_signal_view_key(map_key(key, false), app, audio, persistence);
     }
 
-    // The Bioluminescent Current canvas gate is routed after Signal View
+    // The Kinetic Collage canvas gate is routed after Signal View
     // (which never shows Agent Pulse) and before the normal focus-aware
     // handling. Keys are mapped as navigation — the canvas only opens from
     // navigation mode and never moves focus into the search strip — so
-    // canvas-local keys (light selection, close) are consumed before station
+    // canvas-local keys (tile selection, close) are consumed before station
     // navigation, while every unconsumed outcome falls through to the normal
     // handling below exactly once. That keeps the documented global player
     // controls (playback, volume, theme, favorite, visualizer) available with
@@ -1099,10 +1104,10 @@ fn handle_signal_view_key(
     Flow::Continue
 }
 
-/// Route a canvas-local key while the Bioluminescent Current canvas is open,
+/// Route a canvas-local key while the Kinetic Collage canvas is open,
 /// or return `None` to delegate the outcome to the normal handling path.
 ///
-/// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the light
+/// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the tile
 /// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
 /// Station selection (`Enter`), list jumps, and search entry are consumed so
 /// canvas input can never play a station, move station selection, or enter
@@ -1153,13 +1158,17 @@ fn apply_monitor_event(app: &mut App, event: MonitorEvent, now: Instant) {
 /// Route a mouse event through the pure UI hit test.
 ///
 /// Only actions returned by [`crate::ui::agent_pulse_hit_test`] are applied —
-/// read-only Bioluminescent Current light selection by contract — so every
-/// click outside the canvas keeps its current behavior: none.
-fn handle_mouse(mouse: MouseEvent, area: Rect, app: &mut App) {
+/// read-only Kinetic Collage tile selection by contract — so every click
+/// outside the canvas keeps its current behavior: none. `low_power` is the
+/// same controller flag the render call uses, so clicks resolve against the
+/// tile geometry that was actually drawn.
+fn handle_mouse(mouse: MouseEvent, area: Rect, low_power: bool, app: &mut App) {
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
         return;
     }
-    if let Some(action) = crate::ui::agent_pulse_hit_test(area, mouse.column, mouse.row, app) {
+    if let Some(action) =
+        crate::ui::agent_pulse_hit_test(area, mouse.column, mouse.row, low_power, app)
+    {
         app.apply(action);
     }
 }
@@ -2166,7 +2175,7 @@ mod tests {
     }
 
     #[test]
-    fn current_a_and_escape_toggle_without_changing_station_focus() {
+    fn collage_a_and_escape_toggle_without_changing_station_focus() {
         let (audio, _cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha"]);
@@ -2196,7 +2205,7 @@ mod tests {
     }
 
     #[test]
-    fn current_light_selection_does_not_move_station_selection() {
+    fn collage_tile_selection_does_not_move_station_selection() {
         let (audio, _cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha", "beta"]);
@@ -2214,11 +2223,102 @@ mod tests {
         assert_eq!(app.selected_index(), station);
     }
 
+    /// Drive every documented global player shortcut through `handle_key`
+    /// while the Kinetic Collage canvas is open, asserting each keeps its
+    /// normal semantics and side effects: the canvas consumes none of them.
+    fn assert_global_shortcuts_work(app: &mut App) {
+        let (audio, cmd_rx) = fake_audio();
+        let (_, mut debounce, mut persistence) = controller();
+        let mut press = |app: &mut App, code| {
+            handle_key(key(code), app, &audio, &mut debounce, &mut persistence)
+        };
+
+        // Theme.
+        let theme_before = app.settings().theme;
+        press(app, KeyCode::Char('t'));
+        assert_ne!(app.settings().theme, theme_before, "t cycles the theme");
+
+        // Visualizer mode.
+        let visualizer_before = app.settings().visualizer;
+        press(app, KeyCode::Char('v'));
+        assert_ne!(
+            app.settings().visualizer,
+            visualizer_before,
+            "v cycles the visualizer"
+        );
+
+        // Volume, including the audio side effect.
+        let volume_before = app.settings().volume;
+        press(app, KeyCode::Char('+'));
+        assert_ne!(app.settings().volume, volume_before, "+ raises the volume");
+        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::SetVolume(_))));
+
+        // Favorite keeps its normal semantics (the station-list selection).
+        let favorites_before = app.settings().favorites.len();
+        press(app, KeyCode::Char('f'));
+        assert_ne!(
+            app.settings().favorites.len(),
+            favorites_before,
+            "f toggles the selected favorite"
+        );
+
+        // The Space transport toggle keeps its normal semantics and audio
+        // side effects: it stops the connecting station, then reconnects it.
+        press(app, KeyCode::Char(' '));
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::Stop)));
+        press(app, KeyCode::Char(' '));
+        assert!(
+            matches!(cmd_rx.try_recv(), Ok(AudioCommand::Play { .. })),
+            "Space reconnects the current station from the canvas"
+        );
+
+        assert!(
+            app.is_agent_overlay_open(),
+            "the canvas stays open throughout"
+        );
+    }
+
+    /// Press the station-list, search, and jump keys while the Kinetic
+    /// Collage canvas is open and assert the canvas consumes them: station
+    /// selection, focus, query, playback, and the audio channel all stay
+    /// untouched and the canvas stays open.
+    fn assert_search_and_station_navigation_are_inert(app: &mut App) {
+        let (audio, cmd_rx) = fake_audio();
+        let (_, mut debounce, mut persistence) = controller();
+        let station_before = app.selected_index();
+        let focus_before = app.focus();
+        let query_before = app.search_query().to_string();
+        let playback_before = app.playback().clone();
+        let playing_before = app.current_station().map(|station| station.id.clone());
+
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Char('/'),
+            KeyCode::Home,
+            KeyCode::End,
+        ] {
+            let flow = handle_key(key(code), app, &audio, &mut debounce, &mut persistence);
+            assert_eq!(flow, Flow::Continue, "{code:?} is consumed by the canvas");
+        }
+
+        assert_eq!(app.selected_index(), station_before);
+        assert_eq!(app.focus(), focus_before, "search focus is never entered");
+        assert_eq!(app.search_query(), query_before);
+        assert_eq!(app.playback(), &playback_before, "Enter cannot play");
+        assert_eq!(
+            app.current_station().map(|station| station.id.clone()),
+            playing_before
+        );
+        assert!(cmd_rx.try_recv().is_err(), "no audio command may be sent");
+        assert!(app.is_agent_overlay_open());
+    }
+
     #[test]
-    fn current_keeps_volume_theme_playback_favorite_and_visualizer_controls() {
+    fn collage_keeps_global_shortcuts_and_suppresses_search_navigation() {
         let (audio, cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
-        connect_agent_pulse(&mut app, &["alpha"]);
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
 
         // Start playback from the normal surface, then open the canvas.
         handle_key(
@@ -2229,106 +2329,14 @@ mod tests {
             &mut persistence,
         );
         assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::Play { .. })));
-        handle_key(
-            key(KeyCode::Char('a')),
-            &mut app,
-            &audio,
-            &mut debounce,
-            &mut persistence,
-        );
-        assert!(app.is_agent_overlay_open());
-
-        // Theme.
-        let original_theme = app.settings().theme;
-        handle_key(
-            key(KeyCode::Char('t')),
-            &mut app,
-            &audio,
-            &mut debounce,
-            &mut persistence,
-        );
-        assert_ne!(app.settings().theme, original_theme);
-
-        // Visualizer mode.
-        let original_visualizer = app.settings().visualizer;
-        handle_key(
-            key(KeyCode::Char('v')),
-            &mut app,
-            &audio,
-            &mut debounce,
-            &mut persistence,
-        );
-        assert_ne!(app.settings().visualizer, original_visualizer);
-
-        // Volume, including the audio side effect.
-        let original_volume = app.settings().volume;
-        handle_key(
-            key(KeyCode::Char('+')),
-            &mut app,
-            &audio,
-            &mut debounce,
-            &mut persistence,
-        );
-        assert_ne!(app.settings().volume, original_volume);
-        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::SetVolume(_))));
-
-        // Favorite keeps its normal semantics (the station-list selection).
-        let favorites_before = app.settings().favorites.len();
-        handle_key(
-            key(KeyCode::Char('f')),
-            &mut app,
-            &audio,
-            &mut debounce,
-            &mut persistence,
-        );
-        assert_ne!(app.settings().favorites.len(), favorites_before);
-
-        // Playback toggle stops the connecting station.
-        handle_key(
-            key(KeyCode::Char(' ')),
-            &mut app,
-            &audio,
-            &mut debounce,
-            &mut persistence,
-        );
-        assert_eq!(app.playback(), &PlaybackState::Stopped);
-        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::Stop)));
-
-        assert!(
-            app.is_agent_overlay_open(),
-            "the canvas stays open throughout"
-        );
-    }
-
-    #[test]
-    fn current_consumes_station_search_and_list_navigation_keys() {
-        let (audio, cmd_rx) = fake_audio();
-        let (mut app, mut debounce, mut persistence) = controller();
-        connect_agent_pulse(&mut app, &["alpha"]);
         app.apply(Action::ToggleAgentOverlay);
-        let station_before = app.selected_index();
-        let focus_before = app.focus();
 
-        for code in [
-            KeyCode::Enter,
-            KeyCode::Char('/'),
-            KeyCode::Home,
-            KeyCode::End,
-        ] {
-            let flow = handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
-            assert_eq!(flow, Flow::Continue, "{code:?} is consumed by the canvas");
-        }
-
-        assert_eq!(app.selected_index(), station_before);
-        assert_eq!(app.focus(), focus_before, "search focus is never entered");
-        assert_eq!(app.search_query(), "");
-        assert!(app.current_station().is_none(), "Enter cannot play");
-        assert!(cmd_rx.try_recv().is_err(), "no audio command may be sent");
-        assert!(app.is_agent_overlay_open());
+        assert_global_shortcuts_work(&mut app);
+        assert_search_and_station_navigation_are_inert(&mut app);
     }
 
     #[test]
-    fn current_delegates_signal_view_toggle_to_the_normal_path() {
+    fn collage_delegates_signal_view_toggle_to_the_normal_path() {
         let (audio, _cmd_rx) = fake_audio();
         let (mut app, mut debounce, mut persistence) = controller();
         connect_agent_pulse(&mut app, &["alpha"]);
@@ -2360,41 +2368,83 @@ mod tests {
         assert!(app.is_agent_overlay_open(), "back to the open canvas");
     }
 
-    /// Scan the open Bioluminescent Current canvas for the first cell the
-    /// pure hit test resolves to a light, so mouse tests target real Current
-    /// geometry instead of assuming any particular flow shape.
-    fn first_current_light_hit(area: Rect, app: &App) -> (u16, u16) {
+    /// The canvas-sized terminal area the collage mouse tests click within.
+    fn canvas_area() -> Rect {
+        Rect::new(0, 0, 100, 30)
+    }
+
+    /// A controller app whose Agent Pulse integration is live with two
+    /// agents, the way an eligible plugin launch would produce it.
+    fn connected_collage_app() -> App {
+        let (mut app, _debounce, _persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        app
+    }
+
+    /// Scan the open Kinetic Collage canvas for the first cell the pure hit
+    /// test resolves to a tile, so mouse tests target the actual drawn tile
+    /// rectangles instead of assuming any particular collage shape.
+    fn first_collage_tile_hit(app: &App) -> (u16, u16) {
+        let area = canvas_area();
         for row in 0..area.height {
             for column in 0..area.width {
-                if crate::ui::agent_pulse_hit_test(area, column, row, app).is_some() {
+                if crate::ui::agent_pulse_hit_test(area, column, row, false, app).is_some() {
                     return (column, row);
                 }
             }
         }
-        panic!("an open canvas exposes light targets");
+        panic!("an open canvas exposes tile targets");
     }
 
     #[test]
-    fn current_click_selects_a_light_without_moving_station_selection() {
-        let (mut app, _debounce, _persistence) = controller();
-        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+    fn collage_click_selects_a_tile_without_moving_station_selection() {
+        let mut app = connected_collage_app();
         app.apply(Action::ToggleAgentOverlay);
-        let station_before = app.selected_index();
-        let area = Rect::new(0, 0, 100, 30);
+        let station_index = app.selected_index();
 
         // Find a click the pure hit test maps, then route it through the
         // event-loop path.
-        let (column, row) = first_current_light_hit(area, &app);
+        let (x, y) = first_collage_tile_hit(&app);
 
-        handle_mouse(left_click(column, row), area, &mut app);
+        handle_mouse(left_click(x, y), canvas_area(), false, &mut app);
         assert!(
             app.selected_agent().is_some(),
-            "a light click selects that agent"
+            "a tile click selects that agent"
         );
         assert_eq!(
             app.selected_index(),
-            station_before,
-            "a light click must not move station selection"
+            station_index,
+            "a tile click must not move station selection"
+        );
+    }
+
+    #[test]
+    fn collage_low_power_mouse_path_uses_frozen_tile_geometry() {
+        let mut app = connected_collage_app();
+        app.apply(Action::ToggleAgentOverlay);
+        // A loud frame moves normal-power tiles off their base rectangles,
+        // while low power keeps drawing the frozen base geometry.
+        app.apply(Action::Audio(AudioEvent::Viz(crate::model::VizFrame::new(
+            vec![0.9; 16],
+            0.9,
+            Vec::<f32>::new(),
+        ))));
+        let area = canvas_area();
+
+        // A discriminating cell: covered by an audio-moved tile, but empty in
+        // the frozen low-power collage.
+        let moved_only = (0..area.height)
+            .flat_map(|row| (0..area.width).map(move |column| (column, row)))
+            .find(|&(column, row)| {
+                crate::ui::agent_pulse_hit_test(area, column, row, false, &app).is_some()
+                    && crate::ui::agent_pulse_hit_test(area, column, row, true, &app).is_none()
+            });
+        let (x, y) = moved_only.expect("a loud frame moves some tile cell off its base rect");
+
+        handle_mouse(left_click(x, y), area, true, &mut app);
+        assert!(
+            app.selected_agent().is_none(),
+            "a low-power click resolves only the frozen drawn tiles"
         );
     }
 
@@ -2456,8 +2506,8 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
 
         // The hit test is the only source of mouse actions; a click that
-        // lands on no light cell changes nothing.
-        handle_mouse(left_click(5, 5), area, &mut app);
+        // lands on no tile cell changes nothing.
+        handle_mouse(left_click(5, 5), area, false, &mut app);
         assert_eq!(app.selected_index(), station_before);
         assert!(app.selected_agent().is_none());
         assert_eq!(app.playback(), &PlaybackState::Stopped);
@@ -2470,7 +2520,7 @@ mod tests {
             row: 5,
             modifiers: KeyModifiers::NONE,
         };
-        handle_mouse(moved, area, &mut app);
+        handle_mouse(moved, area, false, &mut app);
         assert_eq!(app.selected_index(), station_before);
         assert!(app.selected_agent().is_none());
     }

@@ -68,7 +68,7 @@ pub(crate) fn render_splash(kind: SplashKind, theme: &Theme, tick: u16, frame: &
 /// This is the only entry point the controller/event loop calls each frame. It
 /// reads display data from `app` and draws into the frame's buffer; it performs
 /// no state mutation. `low_power` is the controller's `--low-power` flag: it
-/// freezes the Bioluminescent Current flow, light positions, and trails,
+/// freezes the Kinetic Collage background, tile geometry, and shadow trails,
 /// mirroring how the splash loop receives its low-power timing, without adding
 /// persistent app state.
 pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
@@ -84,7 +84,7 @@ pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
 /// Pure hit test for Agent Pulse mouse input.
 ///
 /// Maps a click at (`column`, `row`) within the rendered `area` to the
-/// read-only Bioluminescent Current light selection and `None` for every
+/// read-only Kinetic Collage tile selection and `None` for every
 /// other click.
 /// The CLI event loop owns applying the returned action; this function never
 /// mutates `App` and never returns playback, station, search, or settings
@@ -124,7 +124,7 @@ fn render_into(app: &App, low_power: bool, now: Instant, area: Rect, buf: &mut B
         LayoutTier::Compact => render_compact(app, &theme, area, buf),
     }
 
-    // The full-screen Bioluminescent Current canvas draws over the composed
+    // The full-screen Kinetic Collage canvas draws over the composed
     // normal layout; a no-op for standalone/hidden launches and while it is
     // closed.
     agent_pulse::render_canvas(app, &theme, low_power, now, area, buf);
@@ -2363,7 +2363,7 @@ mod tests {
         }
     }
 
-    // --- Agent Pulse: quiet count + full-screen Bioluminescent Current ----
+    // --- Agent Pulse: quiet count + full-screen Kinetic Collage -----------
 
     use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
     use std::time::Duration;
@@ -2446,8 +2446,16 @@ mod tests {
         }
     }
 
+    /// Cells drawn with tile-art glyphs anywhere in the buffer.
+    fn tile_cell_count(text: &str) -> usize {
+        ["░", "▒", "╱", "╲", "◌"]
+            .iter()
+            .map(|glyph| text.matches(glyph).count())
+            .sum()
+    }
+
     #[test]
-    fn current_canvas_covers_the_full_screen() {
+    fn collage_canvas_covers_the_full_screen() {
         let mut app = app_with_agents(vec![pulse_agent(
             "ws",
             "p1",
@@ -2467,7 +2475,7 @@ mod tests {
     }
 
     #[test]
-    fn current_canvas_hides_agent_details_until_selected() {
+    fn collage_canvas_hides_agent_details_until_selected() {
         let mut app = app_with_agents(vec![pulse_agent(
             "alpha",
             "p1",
@@ -2490,19 +2498,34 @@ mod tests {
     }
 
     #[test]
-    fn cross_workspace_agents_render_as_lights() {
+    fn cross_workspace_agents_render_as_selectable_tiles() {
         let mut app = app_with_agents(vec![
             pulse_agent("alpha", "p1", Some("research"), AgentStatus::Working),
             pulse_agent("beta", "p1", Some("review"), AgentStatus::Idle),
         ]);
         app.apply(Action::ToggleAgentOverlay);
         let text = buffer_text(&render_buffer(&app, 120, 36));
-        assert_eq!(text.matches('●').count(), 1, "one working light: {text}");
-        assert_eq!(text.matches('○').count(), 1, "one idle light: {text}");
+        assert!(tile_cell_count(&text) > 0, "tiles must render: {text}");
+
+        // Every agent owns its own click target, so both workspaces' tiles
+        // are present even when both share a pane id.
+        let area = Rect::new(0, 0, 120, 36);
+        let mut hit_ids = Vec::new();
+        for row in 0..36 {
+            for column in 0..120 {
+                if let Some(Action::SelectAgent(id)) = agent_pulse_hit_test(area, column, row, &app)
+                {
+                    if !hit_ids.contains(&id) {
+                        hit_ids.push(id);
+                    }
+                }
+            }
+        }
+        assert_eq!(hit_ids.len(), 2, "one tile hit target per agent");
     }
 
     #[test]
-    fn signal_view_never_shows_the_current_canvas() {
+    fn signal_view_never_shows_the_collage_canvas() {
         let mut app = app_with_agents(vec![pulse_agent(
             "ws",
             "p1",
@@ -2540,8 +2563,8 @@ mod tests {
         let stale = buffer_text(&render_buffer(&app, 120, 36));
         assert!(stale.contains("reconnecting"), "stale banner: {stale}");
         assert!(
-            stale.matches('●').count() == 1,
-            "stale keeps the last light: {stale}"
+            tile_cell_count(&stale) > 0,
+            "stale keeps the last tile: {stale}"
         );
 
         app.apply(Action::AgentPollFailed {
@@ -2552,9 +2575,10 @@ mod tests {
             unavailable.contains("agents · unavailable · retrying"),
             "calm unavailable copy: {unavailable}"
         );
-        assert!(
-            !unavailable.contains('●'),
-            "unavailable hides lights: {unavailable}"
+        assert_eq!(
+            tile_cell_count(&unavailable),
+            0,
+            "unavailable hides tiles: {unavailable}"
         );
     }
 }

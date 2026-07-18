@@ -1,29 +1,34 @@
 //! Agent Pulse rendering: the tiny `● n active` summary and the full-screen,
-//! music-reactive Bioluminescent Current canvas.
+//! music-reactive Kinetic Collage canvas.
 //!
 //! Everything here is read-only presentation over the Agent Pulse display
 //! accessors on [`App`]: this module never calls the Herdr adapter, opens
-//! sockets, or mutates app state. The canvas derives a continuous flow line
-//! from the actual played-sample [`crate::model::VizFrame`] FFT bands, places
-//! one stable light per agent along that current, and drives each light's
-//! glow, size, and short upstream trail from RMS, its assigned band, and the
-//! real recent frames in `App::viz_history()` — never from a timer. Silence
-//! leaves a dim, still current; `--low-power` freezes flow, light positions,
-//! and trails while state colors and minimal brightness still update.
+//! sockets, or mutates app state. The canvas gives every agent one stable,
+//! procedurally generated album-art tile whose motif, palette arrangement, and
+//! staggered base rectangle derive only from the private agent identity hash.
+//! The actual played-sample [`crate::model::VizFrame`] drives everything that
+//! moves: RMS plus each tile's assigned FFT band scale and offset the tile and
+//! grow up to two soft shadow trails from the real prior frames in
+//! `App::viz_history()`; behind the tiles a low-contrast waveform/FFT trace
+//! and a breathing theme-phosphor vignette follow the same frame — never a
+//! timer. Silence leaves a dim, still collage; `--low-power` freezes tile
+//! geometry, trails, trace, and vignette while state edge colors and minimal
+//! brightness still update.
 //!
-//! Mouse input flows through [`hit_test`], which shares [`current_layout`]
-//! with rendering so a click resolves against the same light cells that were
-//! drawn, and returns only the read-only selection [`Action`]; the CLI event
-//! loop owns applying it.
+//! Mouse input flows through [`hit_test`], which shares [`collage_layout`]
+//! with rendering so a click resolves against exactly the tile rectangles that
+//! were drawn (background, vignette, and shadow cells resolve nothing), and
+//! returns only the read-only selection [`Action`]; the CLI event loop owns
+//! applying it.
 //!
-//! Privacy: a selected light may show the explicit Herdr agent `name` only.
-//! No pane id, workspace id, cwd, or agent type is ever rendered. All colors
-//! come from the active [`Theme`]; no palette values are added.
+//! Privacy: a selected tile may show the explicit Herdr agent `name` only. No
+//! pane id, workspace id, cwd, or agent type is ever rendered. All colors come
+//! from the active [`Theme`]; no palette values are added.
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Widget},
 };
@@ -36,19 +41,27 @@ use crate::herdr::AgentStatus;
 use crate::model::VizFrame;
 use crate::theme::Theme;
 
-/// Fraction of the flow region's half-height a full-magnitude band may swing.
-const FLOW_SWING: f32 = 0.8;
-/// Spatial undulation cycles across the canvas width; a pure function of the
-/// column position, so the current meanders without any clock input.
-const FLOW_WAVES: f32 = 1.5;
-/// Below this energy/magnitude the field counts as silent: dim and still.
+/// Below this energy/magnitude the collage counts as silent: dim and still.
 const SILENCE_ENERGY: f32 = 0.05;
-/// Above this energy a working light brightens to bold.
+/// Above this energy a working tile's edge glow brightens to bold.
 const BRIGHT_ENERGY: f32 = 0.6;
-/// A light leaves upstream trail cells above this energy.
-const TRAIL_ENERGY: f32 = 0.1;
-/// Maximum prior frames contributing one trail cell each per light.
-const TRAIL_CELLS: usize = 3;
+/// A tile grows a shadow layer from a prior frame above this energy.
+const SHADOW_ENERGY: f32 = 0.1;
+/// Maximum soft shadow trail layers taken from recent history frames.
+const SHADOW_LAYERS: usize = 2;
+/// Upper bound on a tile's base width so sparse collages stay tile-like.
+const TILE_MAX_W: u16 = 18;
+/// Upper bound on a tile's base height so sparse collages stay tile-like.
+const TILE_MAX_H: u16 = 9;
+/// Spatial undulation cycles of the FFT trace across the canvas width; a pure
+/// function of column position, so the trace meanders without any clock input.
+const TRACE_WAVES: f32 = 1.5;
+/// Normalized breathing vignette ring radius at silence.
+const VIGNETTE_BASE: f32 = 0.62;
+/// How far full RMS pushes the vignette ring outward.
+const VIGNETTE_SWING: f32 = 0.3;
+/// Half-thickness of the vignette ring in normalized distance.
+const VIGNETTE_BAND: f32 = 0.05;
 
 // --- quiet normal-layout summary -------------------------------------------
 
@@ -79,7 +92,7 @@ pub(super) fn summary_line<'a>(app: &App, theme: &Theme) -> Option<Line<'a>> {
 
 // --- status presentation helpers -------------------------------------------
 
-/// Short lowercase state label for the selected-light line.
+/// Short lowercase state label for the selected-tile line.
 fn status_label(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "working",
@@ -90,20 +103,9 @@ fn status_label(status: AgentStatus) -> &'static str {
     }
 }
 
-/// Light glyph per status.
-fn status_glyph(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Working => "●",
-        AgentStatus::Blocked => "◆",
-        AgentStatus::Idle => "○",
-        AgentStatus::Done => "✓",
-        AgentStatus::Unknown => "?",
-    }
-}
-
 /// Theme color per status: working is strongest, blocked demands attention,
 /// idle/done/unknown stay muted.
-fn status_color(status: AgentStatus, theme: &Theme) -> ratatui::style::Color {
+fn status_color(status: AgentStatus, theme: &Theme) -> Color {
     match status {
         AgentStatus::Working => theme.playing,
         AgentStatus::Blocked => theme.error,
@@ -111,133 +113,201 @@ fn status_color(status: AgentStatus, theme: &Theme) -> ratatui::style::Color {
     }
 }
 
-// --- pure current geometry --------------------------------------------------
+// --- pure collage geometry --------------------------------------------------
 
-/// One column of the flow polyline: its cell plus the interpolated band
-/// magnitude and normalized position used for glyph weight and gradient color.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct FlowCell {
-    pub(super) x: u16,
-    pub(super) y: u16,
-    pub(super) magnitude: f32,
-    pub(super) position: f32,
+/// Abstract album-art motif families. Which one an agent gets — and how its
+/// palette is arranged — comes only from the stable identity hash, so the art
+/// never morphs or swaps with audio or status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlbumMotif {
+    /// Concentric record-like rings around a center hole.
+    Record,
+    /// One asymmetric diagonal band across the tile.
+    Diagonal,
+    /// Alternating vertical stripes.
+    Stripe,
+    /// A frame-within-a-frame inset border.
+    Frame,
 }
 
-/// One placed agent light: the index into `App::active_agents()`, its stable
-/// identity seed and flow column, the drawn cell, its music-driven halo
-/// radius and energy, and the upstream trail cells derived from real prior
-/// frames.
-pub(super) struct CurrentLight {
-    pub(super) index: usize,
-    /// The identity hash behind the anchor: rendering only needs the derived
-    /// `anchor_x`, but the seed is the stability contract tests pin down.
-    #[allow(dead_code)]
-    pub(super) anchor_seed: u64,
-    pub(super) anchor_x: u16,
-    pub(super) cell: (u16, u16),
-    pub(super) radius: u16,
-    pub(super) energy: f32,
-    pub(super) trail_cells: Vec<(u16, u16)>,
+impl AlbumMotif {
+    const ALL: [AlbumMotif; 4] = [
+        AlbumMotif::Record,
+        AlbumMotif::Diagonal,
+        AlbumMotif::Stripe,
+        AlbumMotif::Frame,
+    ];
 }
 
-/// Pure Bioluminescent Current geometry shared by rendering and hit testing.
-pub(super) struct CurrentLayout {
-    pub(super) flow_cells: Vec<FlowCell>,
-    pub(super) lights: Vec<CurrentLight>,
+/// One placed agent tile: the index into `App::active_agents()`, its stable
+/// identity seed, motif, and staggered base rectangle, the audio-transformed
+/// drawn rectangle, its energy, and up to two soft shadow trail rectangles
+/// derived from real prior frames.
+struct CollageTile {
+    index: usize,
+    seed: u64,
+    motif: AlbumMotif,
+    base_rect: Rect,
+    rect: Rect,
+    energy: f32,
+    shadows: Vec<Rect>,
+}
+
+/// One column of the background waveform/FFT trace.
+struct TraceCell {
+    x: u16,
+    y: u16,
+    magnitude: f32,
+    position: f32,
+}
+
+/// The music background behind the tiles: the trace polyline and the
+/// normalized breathing vignette ring radius.
+struct CollageBackground {
+    trace: Vec<TraceCell>,
+    vignette: f32,
+}
+
+/// Pure Kinetic Collage geometry shared by rendering and hit testing.
+struct CollageLayout {
+    background: CollageBackground,
+    tiles: Vec<CollageTile>,
 }
 
 /// Stable placement seed for an agent: a hash of its private identity, so a
-/// status change never moves a light and no pane detail is exposed.
+/// status change never moves a tile and no pane detail is exposed.
 fn seed_of(view: &AgentView) -> u64 {
     let mut hasher = DefaultHasher::new();
     view.id.hash(&mut hasher);
     hasher.finish()
 }
 
-/// One `(magnitude, position)` flow column per cell of `width`.
-///
-/// Reuses the shared Spectrum Stack resampler; an empty/missing frame yields
-/// zero-magnitude columns so the current still renders as a flat, dim line.
-fn flow_columns(bands: &[f32], width: usize) -> Vec<(f32, f32)> {
-    let columns = super::visualizer::spectrum_columns(bands, width);
-    if !columns.is_empty() {
-        return columns;
+/// The agent's assigned FFT band, by identity; zero when the frame is empty.
+fn band_of(seed: u64, bands: &[f32]) -> f32 {
+    if bands.is_empty() {
+        0.0
+    } else {
+        bands[seed as usize % bands.len()]
     }
-    let last = width.saturating_sub(1).max(1) as f32;
-    (0..width).map(|col| (0.0, col as f32 / last)).collect()
 }
 
-/// Flow y-coordinate for a column: the vertical middle displaced by the band
-/// magnitude riding a fixed spatial undulation. Zero magnitude is exactly the
-/// flat middle line, so silence and low power are still by construction.
-fn flow_y(area: Rect, magnitude: f32, position: f32) -> u16 {
+/// Deterministic -1/+1 motion direction from one identity bit.
+fn tile_dir(seed: u64, bit: u32) -> i32 {
+    if (seed >> bit) & 1 == 0 {
+        1
+    } else {
+        -1
+    }
+}
+
+/// Clamp a proposed rectangle into `area`, keeping at least one cell.
+fn clamp_rect(x: i32, y: i32, width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.clamp(1, area.width);
+    let height = height.clamp(1, area.height);
+    let x = x.clamp(area.x as i32, (area.x + area.width - width) as i32) as u16;
+    let y = y.clamp(area.y as i32, (area.y + area.height - height) as i32) as u16;
+    Rect::new(x, y, width, height)
+}
+
+/// Trace y-coordinate for a signed displacement in `-1.0..=1.0`. Zero is
+/// exactly the vertical middle, so silence and low power are flat by
+/// construction.
+fn trace_y(area: Rect, displacement: f32) -> u16 {
     let cy = area.y as f32 + area.height.saturating_sub(1) as f32 / 2.0;
-    let amp = area.height.saturating_sub(1) as f32 / 2.0 * FLOW_SWING;
-    let ripple = (position * std::f32::consts::TAU * FLOW_WAVES).sin();
-    let y = (cy - magnitude * amp * ripple).round() as i32;
+    let amp = area.height.saturating_sub(1) as f32 / 2.0 * 0.9;
+    let y = (cy - displacement * amp).round() as i32;
     y.clamp(
         area.y as i32,
         (area.y + area.height).saturating_sub(1) as i32,
     ) as u16
 }
 
-/// Local flow direction at `col` as a -1/0/1 slope sign, used to nudge an
-/// energetic light along its current rather than straight off it.
-fn flow_tangent(flow: &[FlowCell], col: usize) -> i32 {
-    if flow.is_empty() {
-        return 0;
-    }
-    let left = flow[col.saturating_sub(1)].y as i32;
-    let right = flow[(col + 1).min(flow.len() - 1)].y as i32;
-    (right - left).signum()
+/// One background trace column per cell of `area`'s width.
+///
+/// Uses the actual time-domain waveform when the frame carries one, otherwise
+/// the FFT bands riding a fixed spatial undulation. `low_power` freezes the
+/// trace to a flat, dim baseline.
+fn trace_cells(frame: &VizFrame, area: Rect, low_power: bool) -> Vec<TraceCell> {
+    let width = area.width as usize;
+    let columns: Vec<(f32, f32, f32)> = if !frame.waveform.is_empty() {
+        super::visualizer::waveform_columns(&frame.waveform, width)
+            .into_iter()
+            .map(|(sample, position)| (sample, sample.abs(), position))
+            .collect()
+    } else {
+        let spectrum = super::visualizer::spectrum_columns(&frame.bands, width);
+        if spectrum.is_empty() {
+            let last = width.saturating_sub(1).max(1) as f32;
+            (0..width)
+                .map(|col| (0.0, 0.0, col as f32 / last))
+                .collect()
+        } else {
+            spectrum
+                .into_iter()
+                .map(|(magnitude, position)| {
+                    let ripple = (position * std::f32::consts::TAU * TRACE_WAVES).sin();
+                    (magnitude * ripple, magnitude, position)
+                })
+                .collect()
+        }
+    };
+    columns
+        .into_iter()
+        .enumerate()
+        .map(|(col, (displacement, magnitude, position))| {
+            let (displacement, magnitude) = if low_power {
+                (0.0, 0.0)
+            } else {
+                (displacement, magnitude)
+            };
+            TraceCell {
+                x: area.x + col as u16,
+                y: trace_y(area, displacement),
+                magnitude,
+                position,
+            }
+        })
+        .collect()
 }
 
-/// Compute the full Current geometry for `agents` inside `area`.
+/// Compute the full Collage geometry for `agents` inside `area`.
 ///
-/// Deterministic and clock-free: the flow polyline comes only from the frame's
-/// FFT bands, every agent gets exactly one light at a stable, status-independent
-/// column (dense terminals shrink spacing rather than omitting lights), and
-/// trail cells come only from `history` (most recent first). `low_power`
-/// returns the flat baseline geometry with no trails; callers keep using the
-/// frame for color and brightness only.
-pub(super) fn current_layout(
+/// Deterministic and clock-free: each agent's motif and staggered base
+/// rectangle come only from its identity hash and the collage grid (dense
+/// terminals shrink tile size and spacing rather than omitting tiles), the
+/// audio transform comes only from the frame's RMS and the tile's assigned
+/// band, and shadow trails come only from `history` (most recent first).
+/// `low_power` keeps every tile on its base rectangle with no shadows and a
+/// frozen background; callers keep using the frame for color and brightness
+/// only.
+fn collage_layout(
     agents: &[AgentView],
     frame: &VizFrame,
     history: &[VizFrame],
     area: Rect,
     low_power: bool,
-) -> CurrentLayout {
+) -> CollageLayout {
     if area.width == 0 || area.height == 0 {
-        return CurrentLayout {
-            flow_cells: Vec::new(),
-            lights: Vec::new(),
+        return CollageLayout {
+            background: CollageBackground {
+                trace: Vec::new(),
+                vignette: VIGNETTE_BASE,
+            },
+            tiles: Vec::new(),
         };
     }
 
-    let width = area.width as usize;
-    let columns = flow_columns(&frame.bands, width);
-    let flow_cells: Vec<FlowCell> = columns
-        .iter()
-        .enumerate()
-        .map(|(col, &(magnitude, position))| {
-            let displacement = if low_power { 0.0 } else { magnitude };
-            FlowCell {
-                x: area.x + col as u16,
-                y: flow_y(area, displacement, position),
-                magnitude,
-                position,
-            }
-        })
-        .collect();
+    let vignette = if low_power {
+        VIGNETTE_BASE
+    } else {
+        VIGNETTE_BASE + frame.rms.clamp(0.0, 1.0) * VIGNETTE_SWING
+    };
+    let background = CollageBackground {
+        trace: trace_cells(frame, area, low_power),
+        vignette,
+    };
 
-    // Prior-frame flow columns, resampled once per frame, for trail cells.
-    let history_columns: Vec<Vec<(f32, f32)>> = history
-        .iter()
-        .take(TRAIL_CELLS)
-        .map(|old| flow_columns(&old.bands, width))
-        .collect();
-
-    // Stable, status-independent placement order along the current.
+    // Stable, status-independent slot order across the collage grid.
     let mut order: Vec<(u64, usize)> = (0..agents.len())
         .map(|index| (seed_of(&agents[index]), index))
         .collect();
@@ -246,70 +316,115 @@ pub(super) fn current_layout(
             .then_with(|| agents[a.1].id.cmp(&agents[b.1].id))
     });
 
-    let n = order.len().max(1);
-    let baseline = flow_y(area, 0.0, 0.0);
-    let lights = order
+    let n = order.len();
+    if n == 0 {
+        return CollageLayout {
+            background,
+            tiles: Vec::new(),
+        };
+    }
+
+    // Grid shape targeting roughly square-looking (2:1 cell aspect) tiles;
+    // dense counts shrink cells before anything else. Overlap only appears
+    // when agents outnumber cells entirely.
+    let w = area.width as usize;
+    let h = area.height as usize;
+    let mut rows = ((n as f32 * 2.0 * h as f32 / w as f32).sqrt().ceil() as usize)
+        .clamp(1, h)
+        .min(n);
+    let mut cols = n.div_ceil(rows);
+    if cols > w {
+        cols = w;
+        rows = n.div_ceil(cols).clamp(1, h);
+    }
+    let cell_x = |col: usize| area.x as usize + col * w / cols;
+    let cell_y = |row: usize| area.y as usize + row * h / rows;
+
+    let tiles = order
         .into_iter()
         .enumerate()
         .map(|(slot, (seed, index))| {
-            // Even spread plus a tiny identity jitter keeps every agent its
-            // own column while staying deterministic; dense fields only
-            // shrink spacing, never drop a light.
-            let base = (slot * width + width / 2) / n;
-            let jitter = (seed % 3) as i32 - 1;
-            let anchor_x = (area.x as i32 + base as i32 + jitter)
-                .clamp(area.x as i32, (area.x + area.width - 1) as i32)
-                as u16;
-            let col = (anchor_x - area.x) as usize;
-            let band = columns.get(col).map_or(0.0, |column| column.0);
+            let motif = AlbumMotif::ALL[seed as usize % AlbumMotif::ALL.len()];
+            let row = (slot / cols).min(rows - 1);
+            let col = slot % cols;
+            let cw = (cell_x(col + 1) - cell_x(col)).max(1);
+            let ch = (cell_y(row + 1) - cell_y(row)).max(1);
+            let tile_w = ((cw * 2 / 3).max(1) as u16).min(TILE_MAX_W);
+            let tile_h = ((ch * 2 / 3).max(1) as u16).min(TILE_MAX_H);
+            // Staggered collage placement: odd rows shift like brickwork and a
+            // tiny identity jitter keeps the grid asymmetric, all clamped so
+            // no tile ever leaves the canvas.
+            let brick = if row % 2 == 1 { (cw / 3) as i32 } else { 0 };
+            let jitter_x = (seed % 3) as i32 - 1;
+            let jitter_y = ((seed >> 3) % 3) as i32 - 1;
+            let base_rect = clamp_rect(
+                cell_x(col) as i32 + (cw as i32 - tile_w as i32) / 2 + brick + jitter_x,
+                cell_y(row) as i32 + (ch as i32 - tile_h as i32) / 2 + jitter_y,
+                tile_w,
+                tile_h,
+                area,
+            );
+
+            let band = band_of(seed, &frame.bands);
             let energy = (frame.rms * 0.55 + band * 0.45).clamp(0.0, 1.0);
-            let radius = if low_power {
-                0
+
+            // Audio motion: bounded scale and offset only; the base rectangle
+            // (and so the art) never changes. Silence and low power are the
+            // base geometry by construction.
+            let rect = if low_power || energy <= SILENCE_ENERGY {
+                base_rect
             } else {
-                (energy * 2.0).round() as u16
+                let grow_w = (energy * 2.0).round() as i32;
+                let grow_h = energy.round() as i32;
+                let dx = tile_dir(seed, 0) * (energy * 1.4).round() as i32;
+                let dy = tile_dir(seed, 1) * (energy * 0.9).round() as i32;
+                clamp_rect(
+                    base_rect.x as i32 - grow_w / 2 + dx,
+                    base_rect.y as i32 - grow_h / 2 + dy,
+                    base_rect.width + grow_w as u16,
+                    base_rect.height + grow_h as u16,
+                    area,
+                )
             };
 
-            let cell = if low_power {
-                (anchor_x, baseline)
-            } else {
-                let dy = flow_tangent(&flow_cells, col) * radius.min(1) as i32;
-                let y = (flow_cells[col].y as i32 + dy)
-                    .clamp(area.y as i32, (area.y + area.height - 1) as i32)
-                    as u16;
-                (anchor_x, y)
-            };
-
-            let trail_cells = if low_power || energy <= TRAIL_ENERGY {
+            let shadows = if low_power {
                 Vec::new()
             } else {
-                history_columns
+                history
                     .iter()
+                    .take(SHADOW_LAYERS)
                     .enumerate()
                     .filter_map(|(age, old)| {
-                        let x = anchor_x as i32 - (age as i32 + 1);
-                        if x < area.x as i32 {
+                        let old_energy =
+                            (old.rms * 0.55 + band_of(seed, &old.bands) * 0.45).clamp(0.0, 1.0);
+                        if old_energy <= SHADOW_ENERGY {
                             return None;
                         }
-                        let old_col = (x - area.x as i32) as usize;
-                        let &(magnitude, position) = old.get(old_col)?;
-                        Some((x as u16, flow_y(area, magnitude, position)))
+                        let step = age as i32 + 1;
+                        Some(clamp_rect(
+                            base_rect.x as i32 - tile_dir(seed, 0) * step * 2,
+                            base_rect.y as i32 + step,
+                            base_rect.width,
+                            base_rect.height,
+                            area,
+                        ))
                     })
                     .collect()
             };
 
-            CurrentLight {
+            CollageTile {
                 index,
-                anchor_seed: seed,
-                anchor_x,
-                cell,
-                radius,
+                seed,
+                motif,
+                base_rect,
+                rect,
                 energy,
-                trail_cells,
+                shadows,
             }
         })
         .collect();
 
-    CurrentLayout { flow_cells, lights }
+    CollageLayout { background, tiles }
 }
 
 // --- canvas geometry --------------------------------------------------------
@@ -323,9 +438,9 @@ fn canvas_active(app: &App) -> bool {
         && app.agent_pulse_connection() != AgentPulseConnection::Hidden
 }
 
-/// The flow region inside the canvas: below the title/banner rows and above
+/// The collage region inside the canvas: below the title/banner rows and above
 /// the label/footer rows.
-fn flow_area(area: Rect) -> Rect {
+fn collage_area(area: Rect) -> Rect {
     Rect::new(
         area.x,
         area.y + 2,
@@ -341,14 +456,14 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 
 // --- hit testing ------------------------------------------------------------
 
-/// Pure mouse hit test for the Bioluminescent Current canvas.
+/// Pure mouse hit test for the Kinetic Collage canvas.
 ///
-/// Maps a click on a light's current cells (its core plus halo width on the
-/// drawn row, or its stable baseline anchor so low-power/quiet fields stay
-/// clickable) to the read-only [`Action::SelectAgent`]; returns `None`
-/// whenever the canvas is closed, the integration is hidden, the connection
-/// is stale or unavailable, Signal View is active, or the click misses every
-/// light. Flow and trail cells resolve nothing.
+/// Maps a click inside a tile's drawn rectangle to the read-only
+/// [`Action::SelectAgent`]; returns `None` whenever the canvas is closed, the
+/// integration is hidden, the connection is stale or unavailable, Signal View
+/// is active, or the click misses every tile. Background trace, vignette, and
+/// shadow cells resolve nothing. Overlapping tiles resolve topmost-first, with
+/// the selected tile in front, matching draw order.
 pub(super) fn hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<Action> {
     if app.agent_pulse_connection() != AgentPulseConnection::Connected {
         return None;
@@ -360,16 +475,24 @@ pub(super) fn hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<A
     if agents.is_empty() || !rect_contains(area, column, row) {
         return None;
     }
-    let flow = flow_area(area);
-    let layout = current_layout(agents, app.viz(), &[], flow, false);
-    let baseline = flow_y(flow, 0.0, 0.0);
-    for light in &layout.lights {
-        let (x, y) = light.cell;
-        let span = light.radius.max(1);
-        let on_light = row == y && column + span >= x && column <= x + span;
-        let on_anchor = row == baseline && column == light.anchor_x;
-        if on_light || on_anchor {
-            let view = agents.get(light.index)?;
+    let layout = collage_layout(agents, app.viz(), &[], collage_area(area), false);
+    let selected_index = app
+        .selected_agent()
+        .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
+    let topmost = layout
+        .tiles
+        .iter()
+        .filter(|tile| Some(tile.index) == selected_index)
+        .chain(
+            layout
+                .tiles
+                .iter()
+                .rev()
+                .filter(|tile| Some(tile.index) != selected_index),
+        );
+    for tile in topmost {
+        if rect_contains(tile.rect, column, row) {
+            let view = agents.get(tile.index)?;
             return Some(Action::SelectAgent(view.id.clone()));
         }
     }
@@ -378,16 +501,16 @@ pub(super) fn hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<A
 
 // --- canvas rendering -------------------------------------------------------
 
-/// Render the full-screen Bioluminescent Current over the composed layout.
+/// Render the full-screen Kinetic Collage over the composed layout.
 ///
 /// A no-op unless the canvas is active, so normal and standalone output is
-/// untouched. Clears the full area, then draws the title/count, the
-/// FFT-derived flow line, each agent's trail, halo, and state-colored light,
-/// the selected explicit-name label, and a restrained footer hint. Stale
-/// renders the frozen last live field dimmed under a `reconnecting` banner;
-/// Unavailable hides every light behind calm copy. `now` is injected by the
-/// render entry point but deliberately unused: motion derives from audio
-/// frames only.
+/// untouched. Clears the full area, then draws the title/count, the breathing
+/// vignette and waveform/FFT trace, each tile's shadow trails and album-art
+/// motif with its state edge glow, the selected explicit-name label, and a
+/// restrained footer hint. Stale renders the frozen last live collage dimmed
+/// under a `reconnecting` banner; Unavailable hides every tile behind calm
+/// copy. `now` is injected by the render entry point but deliberately unused:
+/// motion derives from audio frames only.
 pub(super) fn render_canvas(
     app: &App,
     theme: &Theme,
@@ -434,26 +557,26 @@ pub(super) fn render_canvas(
         set_row(buf, area, area.y + 1, 1, "stale · reconnecting", dim_muted);
     }
 
-    let flow = flow_area(area);
+    let canvas = collage_area(area);
     // Stale renders the display captured by the reducer at the
-    // Connected→Stale edge, freezing the exact last live current and trails
+    // Connected→Stale edge, freezing the exact last live collage and trails
     // (then dimmed below); live renders use the current frame plus the real
-    // prior frames behind it. Only `--low-power` flattens geometry.
+    // prior frames behind it. Only `--low-power` freezes geometry further.
     let (frame, history): (&VizFrame, Vec<VizFrame>) = match app.stale_viz().filter(|_| stale) {
         Some((frame, history)) => (frame, history.to_vec()),
         None => (app.viz(), app.viz_history().skip(1).cloned().collect()),
     };
-    let layout = current_layout(agents, frame, &history, flow, low_power);
+    let layout = collage_layout(agents, frame, &history, canvas, low_power);
 
-    for cell in &layout.flow_cells {
-        let mut style = Style::default().fg(theme.spectrum_color(cell.position));
-        if cell.magnitude < SILENCE_ENERGY {
-            style = style.add_modifier(Modifier::DIM);
-        }
+    render_vignette(buf, canvas, layout.background.vignette, theme, stale);
+    for cell in &layout.background.trace {
+        let style = Style::default()
+            .fg(theme.spectrum_color(cell.position))
+            .add_modifier(Modifier::DIM);
         buf.set_string(
             cell.x,
             cell.y,
-            flow_glyph(cell.magnitude),
+            trace_glyph(cell.magnitude),
             with_stale(style, stale),
         );
     }
@@ -468,35 +591,28 @@ pub(super) fn render_canvas(
         .selected_agent()
         .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
 
-    for light in &layout.lights {
-        let Some(view) = agents.get(light.index) else {
-            continue;
-        };
-        for &(x, y) in &light.trail_cells {
-            buf.set_string(x, y, "∙", dim_muted);
-        }
-        // Halo cells widen the light with energy; dim so the core stays the
-        // brightest point of its glow.
-        let halo = Style::default()
-            .fg(status_color(view.status, theme))
-            .add_modifier(Modifier::DIM);
-        for step in 1..=light.radius {
-            for x in [
-                light.cell.0.saturating_sub(step),
-                light.cell.0.saturating_add(step),
-            ] {
-                if x != light.cell.0 && rect_contains(flow, x, light.cell.1) {
-                    buf.set_string(x, light.cell.1, "◦", with_stale(halo, stale));
+    // Soft shadow trails sit behind every tile.
+    for tile in &layout.tiles {
+        for shadow in &tile.shadows {
+            for y in shadow.y..shadow.y + shadow.height {
+                for x in shadow.x..shadow.x + shadow.width {
+                    buf.set_string(x, y, "∙", with_stale(dim_muted, stale));
                 }
             }
         }
+    }
 
-        let style = if selected_index == Some(light.index) {
-            with_stale(theme.selection_style(), stale)
-        } else {
-            light_style(view.status, theme, light.energy, stale, low_power)
-        };
-        buf.set_string(light.cell.0, light.cell.1, status_glyph(view.status), style);
+    // Tiles draw in stable slot order; the selected tile comes forward last.
+    for tile in &layout.tiles {
+        if Some(tile.index) == selected_index {
+            continue;
+        }
+        render_tile(buf, tile, agents, theme, false, stale, low_power);
+    }
+    if let Some(selected) = selected_index {
+        if let Some(tile) = layout.tiles.iter().find(|tile| tile.index == selected) {
+            render_tile(buf, tile, agents, theme, true, stale, low_power);
+        }
     }
 
     // Selected label: the explicit Herdr name only. An unnamed selection
@@ -519,8 +635,151 @@ pub(super) fn render_canvas(
     footer(buf, area, muted);
 }
 
-/// Flow glyph weight by band magnitude: heavier water for louder bands.
-fn flow_glyph(magnitude: f32) -> &'static str {
+/// Draw one album-art tile: its interior motif in identity-arranged theme
+/// colors and its state edge glow around the border.
+fn render_tile(
+    buf: &mut Buffer,
+    tile: &CollageTile,
+    agents: &[AgentView],
+    theme: &Theme,
+    selected: bool,
+    stale: bool,
+    low_power: bool,
+) {
+    let Some(view) = agents.get(tile.index) else {
+        return;
+    };
+    let edge = if selected {
+        theme.selection_style()
+    } else {
+        edge_style(view.status, theme, tile.energy, low_power)
+    };
+    let edge = with_stale(edge, stale);
+    let (first, second) = motif_palette(tile.seed, theme);
+    let rect = tile.rect;
+    for y in rect.y..rect.y + rect.height {
+        for x in rect.x..rect.x + rect.width {
+            let on_edge = x == rect.x
+                || x == rect.x + rect.width - 1
+                || y == rect.y
+                || y == rect.y + rect.height - 1;
+            if on_edge {
+                buf.set_string(x, y, "▒", edge);
+                continue;
+            }
+            // Sample the art at its stable base scale: audio growth reveals
+            // the pattern's edge instead of stretching the composition.
+            let rx = (x - rect.x).min(tile.base_rect.width - 1);
+            let ry = (y - rect.y).min(tile.base_rect.height - 1);
+            let (glyph, leading) = motif_cell(tile.motif, tile.seed, rx, ry, tile.base_rect);
+            let mut style = Style::default().fg(if leading { first } else { second });
+            if tile.energy <= SILENCE_ENERGY {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            buf.set_string(x, y, glyph, with_stale(style, stale));
+        }
+    }
+}
+
+/// Two theme colors arranged by identity for a tile's interior art. Muted and
+/// the state colors are deliberately excluded so the edge glow stays the only
+/// state signal.
+fn motif_palette(seed: u64, theme: &Theme) -> (Color, Color) {
+    let pool = [
+        theme.accent,
+        theme.spectrum_low,
+        theme.spectrum_mid,
+        theme.spectrum_high,
+        theme.foreground,
+    ];
+    (
+        pool[(seed >> 8) as usize % pool.len()],
+        pool[(seed >> 16) as usize % pool.len()],
+    )
+}
+
+/// Interior motif glyph for a tile-relative cell, plus which palette color it
+/// takes. Pure in (motif, seed, position, rect size): audio never reaches it.
+fn motif_cell(motif: AlbumMotif, seed: u64, rx: u16, ry: u16, rect: Rect) -> (&'static str, bool) {
+    let w = rect.width.max(1) as f32;
+    let h = rect.height.max(1) as f32;
+    match motif {
+        AlbumMotif::Record => {
+            let cx = (w - 1.0) / 2.0;
+            let cy = (h - 1.0) / 2.0;
+            let nx = (rx as f32 - cx) / cx.max(0.5);
+            let ny = (ry as f32 - cy) / cy.max(0.5);
+            let dist = (nx * nx + ny * ny).sqrt();
+            if dist < 0.25 {
+                ("◌", true)
+            } else if ((dist * 3.0) as u32).is_multiple_of(2) {
+                ("▒", false)
+            } else {
+                ("░", true)
+            }
+        }
+        AlbumMotif::Diagonal => {
+            let falling = (seed >> 5) & 1 == 0;
+            let px = rx as f32 / (w - 1.0).max(1.0);
+            let py = ry as f32 / (h - 1.0).max(1.0);
+            let along = if falling { px - py } else { px + py - 1.0 };
+            if along.abs() < 0.25 {
+                (if falling { "╲" } else { "╱" }, true)
+            } else {
+                ("░", false)
+            }
+        }
+        AlbumMotif::Stripe => {
+            let step = (rect.width / 4).max(1);
+            if (rx / step).is_multiple_of(2) {
+                ("▒", true)
+            } else {
+                ("░", false)
+            }
+        }
+        AlbumMotif::Frame => {
+            let ring = rx
+                .min(rect.width - 1 - rx)
+                .min(ry)
+                .min(rect.height - 1 - ry);
+            if ring == 1 {
+                ("▒", true)
+            } else {
+                ("░", false)
+            }
+        }
+    }
+}
+
+/// Draw the breathing theme-phosphor vignette ring for a normalized radius.
+fn render_vignette(buf: &mut Buffer, area: Rect, radius: f32, theme: &Theme, stale: bool) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let half_w = area.width as f32 / 2.0;
+    let half_h = area.height as f32 / 2.0;
+    let cx = area.x as f32 + half_w - 0.5;
+    let cy = area.y as f32 + half_h - 0.5;
+    let style = with_stale(
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::DIM),
+        stale,
+    );
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            let nx = (x as f32 - cx) / half_w;
+            let ny = (y as f32 - cy) / half_h;
+            let dist = (nx * nx + ny * ny).sqrt();
+            if (dist - radius).abs() <= VIGNETTE_BAND {
+                buf.set_string(x, y, "·", style);
+            }
+        }
+    }
+}
+
+/// Trace glyph weight by magnitude: heavier water for louder audio.
+fn trace_glyph(magnitude: f32) -> &'static str {
     if magnitude < SILENCE_ENERGY {
         "·"
     } else if magnitude < 0.35 {
@@ -532,26 +791,19 @@ fn flow_glyph(magnitude: f32) -> &'static str {
     }
 }
 
-/// Light style: theme status color, silence dims, strong signal emboldens
-/// working lights (never in low power), done is always faded, and stale dims
-/// everything.
-fn light_style(
-    status: AgentStatus,
-    theme: &Theme,
-    energy: f32,
-    stale: bool,
-    low_power: bool,
-) -> Style {
+/// Edge glow style: theme status color, silence dims, strong signal emboldens
+/// working tiles (never in low power), done is always faded.
+fn edge_style(status: AgentStatus, theme: &Theme, energy: f32, low_power: bool) -> Style {
     let mut style = Style::default().fg(status_color(status, theme));
     if status == AgentStatus::Done {
         style = style.add_modifier(Modifier::DIM);
     }
-    if energy < SILENCE_ENERGY {
+    if energy <= SILENCE_ENERGY {
         style = style.add_modifier(Modifier::DIM);
     } else if status == AgentStatus::Working && energy > BRIGHT_ENERGY && !low_power {
         style = style.add_modifier(Modifier::BOLD);
     }
-    with_stale(style, stale)
+    style
 }
 
 fn with_stale(style: Style, stale: bool) -> Style {
@@ -609,6 +861,9 @@ mod tests {
         height: 30,
     };
 
+    /// Glyphs only tile art (interior or edge) may use.
+    const TILE_GLYPHS: [&str; 5] = ["░", "▒", "╱", "╲", "◌"];
+
     fn view(workspace: &str, pane: &str, status: AgentStatus) -> AgentView {
         AgentView {
             id: AgentId::new(workspace, pane),
@@ -637,7 +892,7 @@ mod tests {
     }
 
     /// A connected app with the canvas open.
-    fn current_app(agents: Vec<AgentSnapshot>) -> App {
+    fn collage_app(agents: Vec<AgentSnapshot>) -> App {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(Action::AgentSnapshot {
             agents,
@@ -670,7 +925,7 @@ mod tests {
         app.apply(Action::Audio(AudioEvent::Viz(frame)));
     }
 
-    fn render_current_for(app: &App, low_power: bool, now: Instant) -> Buffer {
+    fn render_collage_for(app: &App, low_power: bool, now: Instant) -> Buffer {
         let mut buf = Buffer::empty(CANVAS);
         let theme = Theme::for_name(ThemeName::Minimal);
         render_canvas(app, &theme, low_power, now, CANVAS, &mut buf);
@@ -679,7 +934,7 @@ mod tests {
 
     /// Render an open canvas of `count` working agents after feeding the prior
     /// `history` frames (oldest first) and then the current `frame`.
-    fn render_current(
+    fn render_collage(
         count: usize,
         frame: VizFrame,
         history: Vec<VizFrame>,
@@ -688,12 +943,12 @@ mod tests {
         let snaps = (0..count)
             .map(|i| snap("ws", &format!("p{i}"), None, AgentStatus::Working))
             .collect();
-        let mut app = current_app(snaps);
+        let mut app = collage_app(snaps);
         for old in history {
             push_frame(&mut app, old);
         }
         push_frame(&mut app, frame);
-        render_current_for(&app, low_power, Instant::now())
+        render_collage_for(&app, low_power, Instant::now())
     }
 
     fn buffer_text(buf: &Buffer) -> String {
@@ -708,34 +963,28 @@ mod tests {
         out
     }
 
-    /// Positions of every light glyph cell, in scan order.
-    fn glyph_positions(buf: &Buffer) -> Vec<(u16, u16, String)> {
-        let area = *buf.area();
-        let mut positions = Vec::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                let symbol = buf.cell((x, y)).unwrap().symbol();
-                if ["●", "◆", "○", "✓", "?"].contains(&symbol) {
-                    positions.push((x, y, symbol.to_string()));
-                }
-            }
-        }
-        positions
-    }
-
-    /// Trail cells use a glyph no flow or light cell shares.
-    fn count_trail_cells(buf: &Buffer) -> usize {
+    /// Shadow cells use a glyph no background or tile cell shares.
+    fn count_shadow_cells(buf: &Buffer) -> usize {
         buffer_text(buf).matches('∙').count()
     }
 
-    /// Every non-blank cell of the flow region — flow, trails, halos, and
-    /// lights — as `(x, y, symbol)`, so tests can compare whole-field
+    /// Cells drawn with tile-art glyphs.
+    fn count_tile_cells(buf: &Buffer) -> usize {
+        let text = buffer_text(buf);
+        TILE_GLYPHS
+            .iter()
+            .map(|glyph| text.matches(glyph).count())
+            .sum()
+    }
+
+    /// Every non-blank cell of the collage region — vignette, trace, shadows,
+    /// and tiles — as `(x, y, symbol)`, so tests can compare whole-field
     /// geometry between renders.
     fn field_cells(buf: &Buffer) -> Vec<(u16, u16, String)> {
-        let flow = flow_area(*buf.area());
+        let canvas = collage_area(*buf.area());
         let mut cells = Vec::new();
-        for y in flow.y..flow.y + flow.height {
-            for x in flow.x..flow.x + flow.width {
+        for y in canvas.y..canvas.y + canvas.height {
+            for x in canvas.x..canvas.x + canvas.width {
                 let symbol = buf.cell((x, y)).unwrap().symbol();
                 if symbol != " " {
                     cells.push((x, y, symbol.to_string()));
@@ -745,67 +994,70 @@ mod tests {
         cells
     }
 
-    // --- pure current layout ----------------------------------------------
+    // --- pure collage layout ----------------------------------------------
 
     #[test]
-    fn current_flow_tracks_fft_shape_not_elapsed_time() {
-        let area = Rect::new(0, 0, 80, 24);
-        let low = current_layout(
-            &agents(3),
-            &frame(0.2, vec![0.1, 0.8, 0.2]),
+    fn tile_motif_and_staggered_rect_stay_stable_for_an_agent_identity() {
+        let area = Rect::new(0, 0, 120, 36);
+        let agent = view("alpha", "p1", AgentStatus::Working);
+        let first = collage_layout(
+            std::slice::from_ref(&agent),
+            &frame(0.0, vec![0.0; 16]),
             &[],
             area,
             false,
         );
-        let high = current_layout(
-            &agents(3),
-            &frame(0.2, vec![0.8, 0.1, 0.8]),
-            &[],
+        let later = collage_layout(
+            &[agent],
+            &frame(0.9, vec![0.9; 16]),
+            &[frame(0.1, vec![0.1; 16])],
             area,
             false,
         );
-        assert_ne!(low.flow_cells, high.flow_cells);
+        assert_eq!(first.tiles[0].motif, later.tiles[0].motif);
+        assert_eq!(first.tiles[0].base_rect, later.tiles[0].base_rect);
     }
 
     #[test]
-    fn each_light_has_a_stable_anchor_and_a_short_history_trail() {
-        let area = Rect::new(0, 0, 80, 24);
-        let agents = agents(6);
-        let first = current_layout(&agents, &frame(0.3, vec![0.2; 12]), &[], area, false);
-        let next = current_layout(
-            &agents,
-            &frame(0.7, vec![0.8; 12]),
-            &[frame(0.2, vec![0.1; 12])],
-            area,
-            false,
-        );
-        assert_eq!(first.lights[0].anchor_seed, next.lights[0].anchor_seed);
-        assert!(!next.lights[0].trail_cells.is_empty());
+    fn dense_collage_keeps_one_tile_per_agent() {
+        let area = Rect::new(0, 0, 50, 15);
+        let layout = collage_layout(&agents(80), &frame(0.5, vec![0.5; 16]), &[], area, false);
+        assert_eq!(layout.tiles.len(), 80);
+        for tile in &layout.tiles {
+            assert!(tile.rect.width >= 1 && tile.rect.height >= 1);
+            assert!(
+                tile.rect.x + tile.rect.width <= area.width
+                    && tile.rect.y + tile.rect.height <= area.height,
+                "tile {:?} escaped the {area:?}",
+                tile.rect
+            );
+        }
     }
 
     #[test]
-    fn current_anchors_are_stable_when_status_changes() {
-        let before = current_layout(
+    fn tile_art_and_rect_are_stable_when_status_changes() {
+        let before = collage_layout(
             &[view("alpha", "p1", AgentStatus::Working)],
             &frame(0.4, vec![0.4; 16]),
             &[],
             CANVAS,
             false,
         );
-        let after = current_layout(
+        let after = collage_layout(
             &[view("alpha", "p1", AgentStatus::Blocked)],
             &frame(0.4, vec![0.4; 16]),
             &[],
             CANVAS,
             false,
         );
-        assert_eq!(before.lights[0].anchor_x, after.lights[0].anchor_x);
-        assert_eq!(before.lights[0].anchor_seed, after.lights[0].anchor_seed);
+        assert_eq!(before.tiles[0].motif, after.tiles[0].motif);
+        assert_eq!(before.tiles[0].base_rect, after.tiles[0].base_rect);
+        assert_eq!(before.tiles[0].rect, after.tiles[0].rect);
     }
 
     #[test]
-    fn current_anchors_differ_for_identical_panes_in_different_workspaces() {
-        let layout = current_layout(
+    fn tiles_differ_for_identical_panes_in_different_workspaces() {
+        let layout = collage_layout(
             &[
                 view("alpha", "p1", AgentStatus::Working),
                 view("beta", "p1", AgentStatus::Working),
@@ -815,96 +1067,82 @@ mod tests {
             CANVAS,
             false,
         );
-        assert_eq!(layout.lights.len(), 2);
-        assert_ne!(layout.lights[0].anchor_x, layout.lights[1].anchor_x);
+        assert_eq!(layout.tiles.len(), 2);
+        assert_ne!(layout.tiles[0].base_rect, layout.tiles[1].base_rect);
     }
 
     #[test]
-    fn dense_current_keeps_one_light_per_agent() {
-        let area = Rect::new(0, 0, 50, 15);
-        let layout = current_layout(&agents(80), &frame(0.5, vec![0.5; 16]), &[], area, false);
-        assert_eq!(layout.lights.len(), 80);
-        for light in &layout.lights {
-            let (x, y) = light.cell;
-            assert!(
-                x < area.width && y < area.height,
-                "light ({x}, {y}) escaped the {area:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn low_power_layout_is_flat_with_no_trails() {
+    fn low_power_layout_is_static_with_no_shadows() {
         let area = Rect::new(0, 0, 80, 24);
-        let layout = current_layout(
+        let layout = collage_layout(
             &agents(4),
             &frame(0.9, vec![0.9; 16]),
             &[frame(0.5, vec![0.5; 16])],
             area,
             true,
         );
-        let baseline = flow_y(area, 0.0, 0.0);
-        for cell in &layout.flow_cells {
-            assert_eq!(cell.y, baseline, "low-power flow is flat");
+        assert_eq!(layout.background.vignette, VIGNETTE_BASE);
+        let baseline = trace_y(area, 0.0);
+        for cell in &layout.background.trace {
+            assert_eq!(cell.y, baseline, "low-power trace is flat");
         }
-        for light in &layout.lights {
-            assert_eq!(
-                light.cell.1, baseline,
-                "low-power lights sit on the baseline"
-            );
-            assert_eq!(light.radius, 0);
-            assert!(light.trail_cells.is_empty());
+        for tile in &layout.tiles {
+            assert_eq!(tile.rect, tile.base_rect, "low-power tiles sit still");
+            assert!(tile.shadows.is_empty(), "low power grows no shadows");
         }
     }
 
     // --- music reactivity -------------------------------------------------
 
     #[test]
-    fn louder_audio_changes_light_glow_size_and_trails() {
-        let quiet = render_current(4, frame(0.05, vec![0.05; 16]), vec![], false);
-        let loud = render_current(
+    fn rms_and_fft_expand_tiles_and_add_soft_shadow_trails() {
+        let quiet = render_collage(4, frame(0.05, vec![0.05; 16]), vec![], false);
+        let loud = render_collage(
             4,
             frame(0.9, vec![0.9; 16]),
             vec![frame(0.4, vec![0.4; 16])],
             false,
         );
         assert_ne!(quiet, loud);
-        assert!(count_trail_cells(&loud) > count_trail_cells(&quiet));
+        assert!(count_shadow_cells(&loud) > count_shadow_cells(&quiet));
     }
 
     #[test]
-    fn rms_and_bands_move_the_current_not_elapsed_time() {
+    fn rms_and_bands_move_the_collage_not_elapsed_time() {
         let t0 = Instant::now();
-        let mut app = current_app(vec![
-            snap("ws", "p1", Some("one"), AgentStatus::Working),
-            snap("ws", "p2", Some("two"), AgentStatus::Working),
-            snap("ws", "p3", Some("three"), AgentStatus::Working),
-        ]);
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         push_frame(&mut app, frame(0.05, vec![0.0; 16]));
-        let quiet = render_current_for(&app, false, t0);
+        let quiet = render_collage_for(&app, false, t0);
+        let quiet_again = render_collage_for(&app, false, t0 + Duration::from_secs(9));
+        assert_eq!(quiet, quiet_again, "time alone never animates the collage");
+
         push_frame(&mut app, frame(0.90, vec![0.8; 16]));
-        let loud = render_current_for(&app, false, t0);
-        assert_ne!(quiet, loud, "audio frames must drive the current");
+        let loud = render_collage_for(&app, false, t0);
+        assert_ne!(quiet, loud, "audio frames must drive the collage");
         assert_ne!(
-            glyph_positions(&quiet),
-            glyph_positions(&loud),
-            "loud frames must move lights along the flow, not just restyle them"
+            field_cells(&quiet),
+            field_cells(&loud),
+            "loud frames must move background and tiles, not just restyle them"
+        );
+        assert!(
+            buffer_text(&loud).contains('≈') || buffer_text(&loud).contains('≋'),
+            "a loud frame draws a heavy background trace"
         );
     }
 
     #[test]
     fn silence_is_dim_and_still_across_time() {
         let t0 = Instant::now();
-        let mut app = current_app(vec![
+        let mut app = collage_app(vec![
             snap("ws", "p1", Some("one"), AgentStatus::Working),
             snap("ws", "p2", Some("two"), AgentStatus::Idle),
         ]);
         push_frame(&mut app, frame(0.0, vec![0.0; 16]));
-        let first = render_current_for(&app, false, t0);
-        let later = render_current_for(&app, false, t0 + Duration::from_secs(9));
-        assert_eq!(first, later, "silent current must not animate with time");
-        assert_eq!(count_trail_cells(&first), 0, "silence leaves no trails");
-        for (x, y, _) in glyph_positions(&first) {
+        let first = render_collage_for(&app, false, t0);
+        let later = render_collage_for(&app, false, t0 + Duration::from_secs(9));
+        assert_eq!(first, later, "silent collage must not animate with time");
+        assert_eq!(count_shadow_cells(&first), 0, "silence leaves no shadows");
+        for (x, y, _) in field_cells(&first) {
             assert!(
                 first
                     .cell((x, y))
@@ -912,41 +1150,45 @@ mod tests {
                     .style()
                     .add_modifier
                     .contains(Modifier::DIM),
-                "silent lights must be dim"
+                "silent field cell ({x}, {y}) must be dim"
             );
         }
     }
 
     #[test]
-    fn low_power_keeps_positions_fixed_while_colors_remain() {
-        let mut app = current_app(vec![
+    fn low_power_keeps_geometry_fixed_while_colors_remain() {
+        let mut app = collage_app(vec![
             snap("ws", "p1", Some("one"), AgentStatus::Working),
             snap("ws", "p2", Some("two"), AgentStatus::Blocked),
             snap("ws", "p3", Some("three"), AgentStatus::Idle),
         ]);
         let t0 = Instant::now();
         push_frame(&mut app, frame(0.05, vec![0.0; 16]));
-        let quiet = glyph_positions(&render_current_for(&app, true, t0));
+        let quiet = render_collage_for(&app, true, t0);
         push_frame(&mut app, frame(0.90, vec![0.8; 16]));
-        let loud_low = glyph_positions(&render_current_for(&app, true, t0));
-        assert!(!quiet.is_empty());
-        assert_eq!(quiet, loud_low, "low power fixes light positions");
+        let loud_low = render_collage_for(&app, true, t0);
+        assert!(!field_cells(&quiet).is_empty());
         assert_eq!(
-            count_trail_cells(&render_current_for(&app, true, t0)),
+            field_cells(&quiet),
+            field_cells(&loud_low),
+            "low power fixes tile, trace, and vignette geometry"
+        );
+        assert_eq!(
+            count_shadow_cells(&loud_low),
             0,
-            "low power draws no trails"
+            "low power draws no shadows"
         );
 
-        // The same loud frame in normal power does move the current.
-        let loud_normal = glyph_positions(&render_current_for(&app, false, t0));
-        assert_ne!(loud_low, loud_normal);
+        // The same loud frame in normal power does move the collage.
+        let loud_normal = render_collage_for(&app, false, t0);
+        assert_ne!(field_cells(&loud_low), field_cells(&loud_normal));
     }
 
     // --- state, selection, and privacy -------------------------------------
 
     #[test]
-    fn state_colors_come_from_the_theme() {
-        let mut app = current_app(vec![
+    fn state_edge_glow_comes_from_the_theme() {
+        let mut app = collage_app(vec![
             snap("ws", "p1", Some("w"), AgentStatus::Working),
             snap("ws", "p2", Some("b"), AgentStatus::Blocked),
             snap("ws", "p3", Some("i"), AgentStatus::Idle),
@@ -954,22 +1196,27 @@ mod tests {
         ]);
         push_frame(&mut app, frame(0.5, vec![0.4; 16]));
         let theme = Theme::for_name(ThemeName::Minimal);
-        let buf = render_current_for(&app, false, Instant::now());
-        for (x, y, glyph) in glyph_positions(&buf) {
-            let style = buf.cell((x, y)).unwrap().style();
-            match glyph.as_str() {
-                "●" => assert_eq!(style.fg, Some(theme.playing), "working uses playing color"),
-                "◆" => assert_eq!(style.fg, Some(theme.error), "blocked uses error color"),
-                "○" => assert_eq!(style.fg, Some(theme.muted), "idle stays muted"),
-                "✓" => {
-                    assert_eq!(style.fg, Some(theme.muted), "done stays muted");
-                    assert!(
-                        style.add_modifier.contains(Modifier::DIM),
-                        "done fades until its snapshot removes it"
-                    );
-                }
-                _ => {}
-            }
+        let buf = render_collage_for(&app, false, Instant::now());
+        let layout = collage_layout(
+            app.active_agents(),
+            app.viz(),
+            &[],
+            collage_area(CANVAS),
+            false,
+        );
+        for tile in &layout.tiles {
+            let status = app.active_agents()[tile.index].status;
+            let style = buf.cell((tile.rect.x, tile.rect.y)).unwrap().style();
+            assert_eq!(
+                style.fg,
+                Some(status_color(status, &theme)),
+                "{status:?} edge glow must take its theme color"
+            );
+            assert_eq!(
+                style.add_modifier.contains(Modifier::DIM),
+                status == AgentStatus::Done,
+                "only done fades while energy is up: {status:?}"
+            );
         }
     }
 
@@ -978,7 +1225,7 @@ mod tests {
         let mut app = app_with_named_and_unnamed_agents();
         app.apply(Action::ToggleAgentOverlay);
         app.apply(Action::SelectNextAgent);
-        let text = buffer_text(&render_current_for(&app, false, Instant::now()));
+        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
         assert!(
             text.contains("research · working"),
             "selected explicit-name label missing: {text}"
@@ -990,13 +1237,13 @@ mod tests {
 
     #[test]
     fn no_label_renders_before_selection() {
-        let app = current_app(vec![snap(
+        let app = collage_app(vec![snap(
             "alpha",
             "p1",
             Some("research"),
             AgentStatus::Working,
         )]);
-        let text = buffer_text(&render_current_for(&app, false, Instant::now()));
+        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
         assert!(
             !text.contains("research"),
             "no label before selection: {text}"
@@ -1005,10 +1252,10 @@ mod tests {
 
     #[test]
     fn selecting_an_unnamed_agent_shows_no_label_at_all() {
-        let mut app = current_app(vec![snap("alpha", "p1", None, AgentStatus::Working)]);
+        let mut app = collage_app(vec![snap("alpha", "p1", None, AgentStatus::Working)]);
         app.apply(Action::SelectNextAgent);
         assert!(app.selected_agent().is_some());
-        let text = buffer_text(&render_current_for(&app, false, Instant::now()));
+        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
         assert!(
             !text.contains("· working"),
             "an unnamed selection must not reveal any fallback label: {text}"
@@ -1023,30 +1270,25 @@ mod tests {
     // --- connection states --------------------------------------------------
 
     #[test]
-    fn stale_freezes_the_last_live_field_dimmed_and_time_invariant() {
-        let mut app = current_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+    fn stale_freezes_the_last_live_collage_dimmed_and_time_invariant() {
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         push_frame(&mut app, frame(0.4, vec![0.4; 16]));
         push_frame(&mut app, frame(0.9, vec![0.8; 16]));
-        let live = render_current_for(&app, false, Instant::now());
+        let live = render_collage_for(&app, false, Instant::now());
         let live_field = field_cells(&live);
         assert!(
-            count_trail_cells(&live) > 0,
-            "sanity: the final live frame has trails to freeze"
+            count_shadow_cells(&live) > 0,
+            "sanity: the final live frame has shadows to freeze"
         );
 
         app.apply(Action::AgentPollFailed {
             now: Instant::now(),
         });
-        let stale_buf = render_current_for(&app, false, Instant::now());
+        let stale_buf = render_collage_for(&app, false, Instant::now());
         assert_eq!(
             field_cells(&stale_buf),
             live_field,
-            "stale freezes the exact flow, trail, and light geometry of the last live frame"
-        );
-        assert_eq!(
-            count_trail_cells(&stale_buf),
-            count_trail_cells(&live),
-            "stale retains the last live trails"
+            "stale freezes the exact background, shadow, and tile geometry of the last live frame"
         );
         assert!(buffer_text(&stale_buf).contains("reconnecting"));
         for (x, y, _) in field_cells(&stale_buf) {
@@ -1061,10 +1303,10 @@ mod tests {
             );
         }
 
-        // Later live audio frames and elapsed time must not thaw the field.
+        // Later live audio frames and elapsed time must not thaw the collage.
         push_frame(&mut app, frame(0.1, vec![0.05; 16]));
         push_frame(&mut app, frame(0.7, vec![0.6; 16]));
-        let later = render_current_for(&app, false, Instant::now() + Duration::from_secs(9));
+        let later = render_collage_for(&app, false, Instant::now() + Duration::from_secs(9));
         assert_eq!(
             later, stale_buf,
             "stale output is invariant across later audio frames and time"
@@ -1072,37 +1314,37 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_hides_lights_behind_calm_copy() {
-        let mut app = current_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+    fn unavailable_hides_tiles_behind_calm_copy() {
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         app.apply(Action::AgentPollFailed {
             now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
         });
-        let buf = render_current_for(&app, false, Instant::now());
-        assert!(glyph_positions(&buf).is_empty(), "no lights render");
+        let buf = render_collage_for(&app, false, Instant::now());
+        assert_eq!(count_tile_cells(&buf), 0, "no tiles render");
         assert!(buffer_text(&buf).contains("agents · unavailable · retrying"));
     }
 
     #[test]
     fn canvas_is_a_noop_while_closed() {
-        let mut app = current_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         app.apply(Action::CloseAgentOverlay);
-        let buf = render_current_for(&app, false, Instant::now());
+        let buf = render_collage_for(&app, false, Instant::now());
         assert_eq!(buf, Buffer::empty(CANVAS), "closed canvas draws nothing");
     }
 
     // --- hit testing --------------------------------------------------------
 
     #[test]
-    fn clicking_a_light_cell_selects_that_agent() {
-        let mut app = current_app(vec![
+    fn clicking_a_tile_cell_selects_that_agent() {
+        let mut app = collage_app(vec![
             snap("alpha", "p1", Some("research"), AgentStatus::Working),
             snap("beta", "p1", Some("review"), AgentStatus::Idle),
         ]);
-        let layout = current_layout(
+        let layout = collage_layout(
             app.active_agents(),
             app.viz(),
             &[],
-            flow_area(CANVAS),
+            collage_area(CANVAS),
             false,
         );
         let review_index = app
@@ -1110,14 +1352,15 @@ mod tests {
             .iter()
             .position(|view| view.name.as_deref() == Some("review"))
             .unwrap();
-        let light = layout
-            .lights
+        let tile = layout
+            .tiles
             .iter()
-            .find(|light| light.index == review_index)
+            .find(|tile| tile.index == review_index)
             .unwrap();
-        let (x, y) = light.cell;
+        let x = tile.rect.x + tile.rect.width / 2;
+        let y = tile.rect.y + tile.rect.height / 2;
 
-        let action = hit_test(CANVAS, x, y, &app).expect("a light click selects");
+        let action = hit_test(CANVAS, x, y, &app).expect("a tile click selects");
         app.apply(action);
         assert_eq!(
             app.selected_agent().unwrap().name.as_deref(),
@@ -1126,45 +1369,66 @@ mod tests {
     }
 
     #[test]
-    fn clicks_resolve_only_light_cells_never_flow_or_trail_cells() {
-        let mut app = current_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+    fn clicks_resolve_only_tile_cells_never_background_or_shadows() {
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        push_frame(&mut app, frame(0.4, vec![0.4; 16]));
         push_frame(&mut app, frame(0.9, vec![0.8; 16]));
-        let flow = flow_area(CANVAS);
-        let layout = current_layout(app.active_agents(), app.viz(), &[], flow, false);
-        let light = &layout.lights[0];
-        let light_columns: Vec<u16> = (light.cell.0.saturating_sub(light.radius.max(1))
-            ..=light.cell.0 + light.radius.max(1))
-            .collect();
-        let baseline = flow_y(flow, 0.0, 0.0);
-        for cell in &layout.flow_cells {
-            if light_columns.contains(&cell.x) {
-                continue;
+        let canvas = collage_area(CANVAS);
+        let history: Vec<VizFrame> = app.viz_history().skip(1).cloned().collect();
+        let layout = collage_layout(app.active_agents(), app.viz(), &history, canvas, false);
+        let inside_a_tile = |x: u16, y: u16| {
+            layout
+                .tiles
+                .iter()
+                .any(|tile| rect_contains(tile.rect, x, y))
+        };
+
+        for cell in &layout.background.trace {
+            if !inside_a_tile(cell.x, cell.y) {
+                assert!(
+                    hit_test(CANVAS, cell.x, cell.y, &app).is_none(),
+                    "a background trace cell at ({}, {}) must resolve nothing",
+                    cell.x,
+                    cell.y
+                );
             }
-            if cell.y == baseline && cell.x == light.anchor_x {
-                continue;
-            }
-            assert!(
-                hit_test(CANVAS, cell.x, cell.y, &app).is_none(),
-                "a bare flow cell at ({}, {}) must resolve nothing",
-                cell.x,
-                cell.y
-            );
         }
+        let mut checked_shadow = false;
+        for tile in &layout.tiles {
+            for shadow in &tile.shadows {
+                for y in shadow.y..shadow.y + shadow.height {
+                    for x in shadow.x..shadow.x + shadow.width {
+                        if !inside_a_tile(x, y) {
+                            checked_shadow = true;
+                            assert!(
+                                hit_test(CANVAS, x, y, &app).is_none(),
+                                "a shadow cell at ({x}, {y}) must resolve nothing"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked_shadow, "sanity: some shadow cell sat outside tiles");
     }
 
     #[test]
     fn clicks_resolve_nothing_when_missed_stale_or_closed() {
-        let mut app = current_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         assert!(hit_test(CANVAS, 0, 0, &app).is_none(), "corner miss");
 
-        let layout = current_layout(
+        let layout = collage_layout(
             app.active_agents(),
             app.viz(),
             &[],
-            flow_area(CANVAS),
+            collage_area(CANVAS),
             false,
         );
-        let (x, y) = layout.lights[0].cell;
+        let tile = &layout.tiles[0];
+        let (x, y) = (
+            tile.rect.x + tile.rect.width / 2,
+            tile.rect.y + tile.rect.height / 2,
+        );
         app.apply(Action::AgentPollFailed {
             now: Instant::now(),
         });
@@ -1173,7 +1437,7 @@ mod tests {
             "stale ignores clicks"
         );
 
-        let mut closed = current_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        let mut closed = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         closed.apply(Action::CloseAgentOverlay);
         assert!(
             hit_test(CANVAS, x, y, &closed).is_none(),
@@ -1186,7 +1450,7 @@ mod tests {
     #[test]
     fn summary_shows_only_the_active_count() {
         let theme = Theme::for_name(ThemeName::Minimal);
-        let app = current_app(vec![
+        let app = collage_app(vec![
             snap("ws", "p1", Some("research"), AgentStatus::Working),
             snap("ws", "p2", Some("review"), AgentStatus::Idle),
         ]);
@@ -1205,7 +1469,7 @@ mod tests {
         let hidden = App::new(Settings::default(), Catalog::curated());
         assert!(summary_line(&hidden, &theme).is_none());
 
-        let mut unavailable = current_app(vec![snap("ws", "p1", None, AgentStatus::Working)]);
+        let mut unavailable = collage_app(vec![snap("ws", "p1", None, AgentStatus::Working)]);
         unavailable.apply(Action::AgentPollFailed {
             now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
         });

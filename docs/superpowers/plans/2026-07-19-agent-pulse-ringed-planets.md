@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Preserve the current Dual Phase Scope exactly: paired real-audio data, two traces, Comet Trace behavior, persistence, silence threshold, audio timing, stale capture, and low-power audible-first capture.
+- Preserve the current Dual Phase Scope exactly: paired real-audio data, two traces, persistence, silence threshold, audio timing, stale capture, and low-power audible-first capture.
 - No new dependencies, persistence format, Herdr method/socket, playback command, control, keybinding, list, card, or detail rail.
 - Keep same-socket `agent.list` visibility only; never display pane/workspace/cwd/agent type/raw status/fallback identifiers.
 - Keep every agent visible at dense counts, with deterministic private-identity placement. Shrink radius, then optional crater/ring detail, before omitting any agent.

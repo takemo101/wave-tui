@@ -440,7 +440,7 @@ cargo build --release
 
 Expected: documentation is accurate and every command exits 0. Do not mark live manual checks as complete based on these commands.
 
-- [ ] **Step 4: Commit documentation and manual-verification record.**
+- [x] **Step 4: Commit documentation and manual-verification record.**
 
 ```bash
 but commit agent-pulse-lissajous-scope -m "docs: document Agent Pulse Lissajous scope"

@@ -2,8 +2,9 @@
 //!
 //! This module owns the CPAL boundary: selecting an output device and a config
 //! that matches the stream sample rate, building the typed output callback, and
-//! applying a shared, lock-free volume. The callback also mirrors the played
-//! mono mix into a channel so the analyzer can compute visualizer frames.
+//! applying a shared, lock-free volume. The callback also mirrors each played
+//! source frame into a channel as a typed [`PlayedSample`] so the analyzer can
+//! compute visualizer frames and phase traces.
 //!
 //! Unsupported sample rates are an explicit, recoverable error: the MVP does not
 //! resample, so [`choose_output_config`] fails when the device cannot output the
@@ -19,6 +20,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use ringbuf::traits::{Consumer, Observer};
 
 use crate::model::VolumePercent;
+
+use super::played_sample::PlayedSample;
 
 /// Lock-free playback volume shared between the control thread and the realtime
 /// output callback.
@@ -112,10 +115,10 @@ pub(crate) fn choose_output_config(
 
 /// Build and return the CPAL output stream feeding from `queue_rx`.
 ///
-/// Each output frame pulls one source frame from the queue, mirrors its mono mix
-/// to `played_tx` for analysis, then writes the volume-scaled samples to the
-/// device. The returned stream is paused until [`cpal::traits::StreamTrait::play`]
-/// is called.
+/// Each output frame pulls one source frame from the queue, mirrors it to
+/// `played_tx` as a pre-volume [`PlayedSample`] for analysis, then writes the
+/// volume-scaled samples to the device. The returned stream is paused until
+/// [`cpal::traits::StreamTrait::play`] is called.
 ///
 /// `on_error` is invoked (off the realtime thread, by CPAL) with a human-readable
 /// message when the device reports a stream error, so the caller can surface it
@@ -127,7 +130,7 @@ pub(crate) fn build_output_stream(
     queue_rx: ringbuf::HeapCons<f32>,
     source_channels: usize,
     volume: SharedVolume,
-    played_tx: mpsc::SyncSender<f32>,
+    played_tx: mpsc::SyncSender<PlayedSample>,
     mut on_error: impl FnMut(String) + Send + 'static,
 ) -> Result<cpal::Stream> {
     let stream_config = config.config();
@@ -176,7 +179,7 @@ fn build_typed_output_stream<T>(
     source_channels: usize,
     output_channels: usize,
     volume: SharedVolume,
-    played_tx: mpsc::SyncSender<f32>,
+    played_tx: mpsc::SyncSender<PlayedSample>,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream>
 where
@@ -197,10 +200,12 @@ where
                     source_frame.fill(0.0);
                 }
 
-                // Mirror the pre-volume mono mix so the visualizer reflects the
-                // stream content regardless of listening level.
+                // Mirror the pre-volume played frame so the visualizer reflects
+                // the stream content regardless of listening level.
                 if has_frame {
-                    let _ = played_tx.try_send(mix_for_analyzer(&source_frame));
+                    if let Some(sample) = PlayedSample::from_source_frame(&source_frame) {
+                        let _ = played_tx.try_send(sample);
+                    }
                 }
 
                 for (idx, out) in frame.iter_mut().enumerate() {
@@ -289,5 +294,31 @@ mod tests {
         assert_eq!(map_output_sample(&[], 0, 2), 0.0);
         assert_eq!(map_output_sample(&[0.5], 0, 0), 0.0);
         assert_eq!(mix_for_analyzer(&[]), 0.0);
+    }
+
+    #[test]
+    fn played_sample_keeps_stereo_channels_and_pre_volume_mono_mix() {
+        let sample = PlayedSample::from_source_frame(&[0.8, -0.2]).unwrap();
+        assert_eq!(sample.left, 0.8);
+        assert_eq!(sample.right, -0.2);
+        assert!((sample.mono - 0.3).abs() < f32::EPSILON);
+        assert!(sample.is_stereo);
+    }
+
+    #[test]
+    fn played_sample_mono_duplicates_the_channel_for_analyzer_fallback() {
+        let sample = PlayedSample::from_source_frame(&[0.4]).unwrap();
+        assert_eq!(sample.left, 0.4);
+        assert_eq!(sample.right, 0.4);
+        assert!(!sample.is_stereo);
+    }
+
+    #[test]
+    fn played_sample_rejects_empty_frames_and_clamps_hot_samples() {
+        assert_eq!(PlayedSample::from_source_frame(&[]), None);
+        let sample = PlayedSample::from_source_frame(&[2.0, -3.0]).unwrap();
+        assert_eq!(sample.left, 1.0);
+        assert_eq!(sample.right, -1.0);
+        assert!((-1.0..=1.0).contains(&sample.mono));
     }
 }

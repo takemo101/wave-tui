@@ -475,12 +475,45 @@ impl<'de> Deserialize<'de> for VisualizerMode {
     }
 }
 
-/// A single visualizer frame: normalized spectrum bands, an RMS level, and a
-/// low-resolution time-domain waveform.
+/// A normalized phase-portrait coordinate series: paired played-audio samples
+/// plotted on X/Y axes, not an amplitude-over-time waveform.
+///
+/// Both series are clamped to `-1.0..=1.0` and truncated to a shared length on
+/// construction, so renderers always receive matched, in-range pairs. How the
+/// pairs are derived (stereo channels or lagged mono samples) is an analyzer
+/// concern; this type only guarantees renderer-safe coordinates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhaseTrace {
+    pub x: Vec<f32>,
+    pub y: Vec<f32>,
+}
+
+impl PhaseTrace {
+    pub fn new(x: impl IntoIterator<Item = f32>, y: impl IntoIterator<Item = f32>) -> Self {
+        let x: Vec<f32> = x.into_iter().map(|value| value.clamp(-1.0, 1.0)).collect();
+        let y: Vec<f32> = y.into_iter().map(|value| value.clamp(-1.0, 1.0)).collect();
+        let len = x.len().min(y.len());
+        Self {
+            x: x[..len].to_vec(),
+            y: y[..len].to_vec(),
+        }
+    }
+
+    /// A trace with no points; renders as nothing rather than a substitute.
+    pub fn empty() -> Self {
+        Self {
+            x: Vec::new(),
+            y: Vec::new(),
+        }
+    }
+}
+
+/// A single visualizer frame: normalized spectrum bands, an RMS level, a
+/// low-resolution time-domain waveform, and two phase-portrait traces.
 ///
 /// Bands and RMS are magnitudes clamped to `0.0..=1.0` on construction. The
-/// `waveform` is a signed time-domain series clamped to `-1.0..=1.0`. All three
-/// are clamped on construction so renderers never receive out-of-range values.
+/// `waveform` is a signed time-domain series clamped to `-1.0..=1.0`, and the
+/// phase traces are [`PhaseTrace`] values normalized on their own construction.
 /// Renderers receive only these drawing-oriented values, never raw audio
 /// buffers.
 #[derive(Debug, Clone, PartialEq)]
@@ -488,22 +521,46 @@ pub struct VizFrame {
     pub bands: Vec<f32>,
     pub rms: f32,
     pub waveform: Vec<f32>,
+    pub primary_phase: PhaseTrace,
+    pub secondary_phase: PhaseTrace,
 }
 
 impl VizFrame {
+    /// Compatibility constructor for callers without phase data; both phase
+    /// traces start empty. The analyzer uses [`VizFrame::with_phase`] instead.
     pub fn new(
         bands: impl IntoIterator<Item = f32>,
         rms: f32,
         waveform: impl IntoIterator<Item = f32>,
     ) -> Self {
+        Self::with_phase(
+            bands,
+            rms,
+            waveform,
+            PhaseTrace::empty(),
+            PhaseTrace::empty(),
+        )
+    }
+
+    /// Full constructor carrying paired phase traces derived from played audio.
+    pub fn with_phase(
+        bands: impl IntoIterator<Item = f32>,
+        rms: f32,
+        waveform: impl IntoIterator<Item = f32>,
+        primary_phase: PhaseTrace,
+        secondary_phase: PhaseTrace,
+    ) -> Self {
         Self {
             bands: bands.into_iter().map(|b| b.clamp(0.0, 1.0)).collect(),
             rms: rms.clamp(0.0, 1.0),
             waveform: waveform.into_iter().map(|w| w.clamp(-1.0, 1.0)).collect(),
+            primary_phase,
+            secondary_phase,
         }
     }
 
-    /// A silent frame with `band_count` zeroed bands and no waveform points.
+    /// A silent frame with `band_count` zeroed bands, no waveform points, and
+    /// empty phase traces.
     ///
     /// An empty waveform is valid and renders as stable silence (a flat
     /// baseline); waveform resolution is an analyzer concern, so the silent
@@ -513,6 +570,8 @@ impl VizFrame {
             bands: vec![0.0; band_count],
             rms: 0.0,
             waveform: Vec::new(),
+            primary_phase: PhaseTrace::empty(),
+            secondary_phase: PhaseTrace::empty(),
         }
     }
 }
@@ -741,6 +800,49 @@ mod tests {
         assert_eq!(frame.bands, vec![0.0; 4]);
         assert_eq!(frame.rms, 0.0);
         assert!(frame.waveform.is_empty());
+    }
+
+    #[test]
+    fn phase_trace_clamps_coordinates_and_truncates_to_paired_length() {
+        let trace = PhaseTrace::new([-2.0, -0.25, 2.0], [-0.5, 0.5]);
+        assert_eq!(trace.x, vec![-1.0, -0.25]);
+        assert_eq!(trace.y, vec![-0.5, 0.5]);
+    }
+
+    #[test]
+    fn phase_trace_empty_has_no_points() {
+        let trace = PhaseTrace::empty();
+        assert!(trace.x.is_empty());
+        assert!(trace.y.is_empty());
+    }
+
+    #[test]
+    fn legacy_viz_frame_constructor_has_empty_phase_traces() {
+        let frame = VizFrame::new([0.2], 0.4, [0.1]);
+        assert!(frame.primary_phase.x.is_empty());
+        assert!(frame.secondary_phase.y.is_empty());
+    }
+
+    #[test]
+    fn viz_frame_with_phase_carries_normalized_traces() {
+        let frame = VizFrame::with_phase(
+            [0.5],
+            0.5,
+            [0.0],
+            PhaseTrace::new([2.0, 0.1], [0.2, -2.0]),
+            PhaseTrace::new([0.3], [0.4]),
+        );
+        assert_eq!(frame.primary_phase.x, vec![1.0, 0.1]);
+        assert_eq!(frame.primary_phase.y, vec![0.2, -1.0]);
+        assert_eq!(frame.secondary_phase.x, vec![0.3]);
+        assert_eq!(frame.secondary_phase.y, vec![0.4]);
+    }
+
+    #[test]
+    fn viz_frame_silent_has_empty_phase_traces() {
+        let frame = VizFrame::silent(4);
+        assert!(frame.primary_phase.x.is_empty());
+        assert!(frame.secondary_phase.x.is_empty());
     }
 
     #[test]

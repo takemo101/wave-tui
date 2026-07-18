@@ -1,5 +1,18 @@
 # Agent Pulse Beat Orbit Implementation Plan
 
+> **Status (2026-07-18): Superseded — do not execute.** The Bioluminescent
+> Current redesign
+> (`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`,
+> plan `docs/superpowers/plans/2026-07-18-agent-pulse-bioluminescent-current.md`)
+> replaced the Beat Orbit presentation before release. Tasks 1–3 of this plan
+> were implemented (commits `41b1bc5`, `09d9a55`); the cross-workspace
+> aggregation, live-only state, and non-recursive full-screen input routing
+> from Tasks 1 and 3 survive in the current implementation, while the Beat
+> Orbit ring renderer from Task 2 was rewritten as the Bioluminescent Current
+> canvas. Task 4's documentation sync was never performed under this plan; the
+> durable docs were synchronized under the Bioluminescent Current plan's
+> Task 3 instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the Agent Pulse detail modal with a full-screen, music-reactive Beat Orbit that renders every agent returned by the current Herdr socket as a stable, selectable particle.

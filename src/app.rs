@@ -124,8 +124,9 @@ pub(crate) enum AgentPulseConnection {
 /// process start time. The view deliberately carries no pane id, cwd, or
 /// agent type: the explicit `name` is the only displayable label, and the
 /// private [`AgentId`] exists solely for identity.
-// Temporary dead-code allowance: the timing field is read by the Beat Orbit
-// UI in a follow-up task; reducer tests exercise it until then.
+// Dead-code allowance: `observed_at` is reducer-internal state (preserved
+// while identity and status are unchanged) that the Bioluminescent Current
+// UI never displays; reducer tests exercise it.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentView {

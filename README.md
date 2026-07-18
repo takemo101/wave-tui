@@ -38,9 +38,10 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   visualizer; `z`/`Esc` return and `q` quits. It is not persisted and has no CLI
   flag.
 - **Herdr Agent Pulse (optional)** — when launched as the official Herdr
-  plugin (Herdr 0.7.0+), a quiet, read-only
-  summary of the AI coding agents in the current Herdr workspace appears in
-  Wide/Medium layouts, with an `a`-key Status Constellation overlay. It never
+  plugin (Herdr 0.7.0+), a quiet, read-only `● n active` count of the AI
+  coding agents on the local Herdr socket appears in Wide/Medium layouts, and
+  `a` opens a full-screen, music-reactive **Bioluminescent Current** canvas
+  that renders each agent as a light inside an FFT-derived flow. It never
   reads agent output, never controls panes, and standalone launches are
   completely unchanged (see
   [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
@@ -149,7 +150,7 @@ search controls act on the focused pane.
 | `t`         | cycle theme                  |
 | `v`         | cycle visualizer mode        |
 | `z`         | toggle Signal View           |
-| `a`         | toggle Agent Pulse overlay (Herdr plugin launches only) |
+| `a`         | toggle the Agent Pulse canvas (Herdr plugin launches only) |
 | `/`         | search Radio Browser         |
 | `Esc`       | clear search / return        |
 | `q` / `Esc` | quit when not searching      |
@@ -223,9 +224,10 @@ mixing in unrelated status labels.
 ## Herdr Agent Pulse (optional)
 
 When `wave-tui` is launched by its official Herdr plugin, it can quietly show
-the live status of AI coding agents in the current Herdr workspace. The
-feature is a read-only companion to radio playback: it never affects audio,
-search, settings, or standalone use, and it is invisible outside Herdr.
+the live status of the AI coding agents visible on that Herdr session's local
+control socket, across the session's workspaces. The feature is a read-only
+companion to radio playback: it never affects audio, search, settings, or
+standalone use, and it is invisible outside Herdr.
 
 ### Requirements and installation
 
@@ -268,47 +270,57 @@ The official plugin supplies these variables. In every other case — a
 standalone launch, a plain shell inside Herdr without trustworthy plugin
 context, or an explicit `--no-agent-pulse` — `wave-tui` keeps its exact
 pre-integration appearance and behavior: no reserved rows, no "not in Herdr"
-hints, and `a` does nothing.
+hints, and `a` does nothing. The injected workspace id is trusted plugin
+context used for eligibility; the display itself is not filtered to it — every
+agent reported by the session's socket is shown.
 
 ### What it shows
 
-- **Wide and Medium layouts** add a one-line state-count summary to Now
-  Playing, e.g. `● 2 working · ○ 1 idle`, or `agents · none active` when the
-  workspace has no active agents.
-- **Compact layout** hides the summary to preserve station and playback
-  context, but `a` still opens the overlay while the integration is active.
+- **Wide and Medium layouts** add exactly one quiet line to Now Playing:
+  `● n active`, a count of every agent on the socket. Names never appear in
+  the normal view.
+- **Compact layout** shows no Agent Pulse line to preserve station and
+  playback context, but `a` still opens the canvas while the integration is
+  active.
 - **Signal View** never shows Agent Pulse and ignores `a`.
-- Press `a` for the **Status Constellation overlay**: state-colored nodes per
-  agent, a short active list (name, agent type, working directory label,
-  state, and an estimated state duration such as `~12m`), an information card
-  for the selected agent, and a `Completed (n)` disclosure with the 20 newest
-  completed agents (agents reported `done` or whose panes disappeared),
-  kept in memory only for the current run.
+- Press `a` for the **Bioluminescent Current** canvas: a full-screen view that
+  replaces the whole player surface. A continuous current derived from the
+  played-sample FFT bands flows across the screen — per-band magnitude sets
+  its height and glyph weight — and every agent is one state-colored light at
+  a stable position along that flow. Each light's glow, size, and short
+  trail react to the current RMS and its assigned FFT band, with trails drawn
+  from real recent visualizer frames. Silence (or no audio) leaves the
+  current and lights dim and still; nothing animates on a timer. With no
+  agents the canvas shows a calm `agents · none active`.
+- Theme colors communicate state: working lights use the playing color (the
+  strongest glow), blocked uses the error color, and idle/done/unknown stay
+  muted; a done light fades until the next snapshot omits it. Dense terminals
+  shrink spacing rather than hiding lights — every agent stays visible.
+- Selecting a light shows only `name · status` for agents with an explicit
+  Herdr `name`; an unnamed selection shows no label at all. Pane ids,
+  workspace ids, working directories, and agent types never render.
 
-Durations are estimates since `wave-tui` first observed an agent in its
-current status, not the agent's true process start time. A status change gets
-one restrained visual acknowledgement (a brief bold highlight); there are no
-toasts or sounds. Working nodes pulse slowly; with `--low-power` all nodes
-render statically.
-
-### Overlay controls
+### Canvas controls
 
 | Key / input        | Action                                   |
 | ------------------ | ---------------------------------------- |
-| `a`                | open / close the overlay                 |
-| `Esc`              | close the overlay                        |
-| `Tab` / `↑↓` / `j`/`k` | select an agent                      |
-| `Enter`            | keep the information card visible        |
-| mouse click        | select a node/list row, toggle `Completed (n)` |
+| `a` / `Esc`        | close the canvas                         |
+| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select a light         |
+| mouse click        | select a light (its cells only)          |
+| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | normal player behavior |
 | `q` / `Ctrl+C`     | quit the app                             |
 
-Every other key is consumed while the overlay is open, so overlay input can
-never play a station, move station selection, change settings, or alter audio.
-Mouse capture is enabled only for eligible plugin launches (native terminal
-text selection may then need `Shift`+drag); standalone launches leave terminal
-mouse behavior untouched. Mouse clicks resolve only while the connection is
-live — during `stale`/`unavailable` states clicks select nothing, while
-keyboard selection over the last known list keeps working; this asymmetry is
+Search (`/`) and station navigation/selection (`g`/`G`/`Home`/`End`/`Enter`)
+are suppressed while the canvas is open, so canvas input can never play a
+station or move station selection. The global player shortcuts keep their
+exact normal semantics: `Space` still toggles playback only while the station
+list is the focused pane underneath, `f` favorites the station-list selection,
+and `z` switches to Signal View (which replaces the canvas surface). Mouse
+capture is enabled only for eligible plugin launches (native terminal text
+selection may then need `Shift`+drag); standalone launches leave terminal
+mouse behavior untouched. Clicks resolve only while the connection is live —
+during `stale`/`unavailable` states clicks select nothing, while keyboard
+selection over the last known lights keeps working; this asymmetry is
 intentional (clicks should not act on data that may no longer be current).
 
 ### Connection loss and recovery
@@ -316,10 +328,11 @@ intentional (clicks should not act on data that may no longer be current).
 The integration polls Herdr's `agent.list` every 5 seconds over the local Unix
 socket. Failures are recoverable and never interrupt playback:
 
-- After the first failed poll, the last known state dims and shows
-  `stale · reconnecting`.
+- After the first failed poll, the `● n active` count dims and the canvas
+  freezes the last live current and trails, dimmed, under a
+  `stale · reconnecting` banner.
 - After 15 seconds without a successful response, the summary disappears and
-  the overlay reports `agents · unavailable · retrying`.
+  the canvas hides every light behind `agents · unavailable · retrying`.
 - Polling continues; a fresh successful snapshot restores the live view.
 
 ### Privacy and read-only limits
@@ -330,11 +343,15 @@ Agent Pulse is strictly observational:
   terminal scrollback.
 - It cannot focus, create, close, send text to, or otherwise control Herdr
   panes.
-- It shows only agents in the plugin invocation's current workspace.
+- It shows every agent reported by the plugin invocation's local Herdr
+  socket, across that session's workspaces; it never discovers other Herdr
+  sessions or opens another socket.
+- Only a selected light's explicit Herdr `name` is ever rendered; there is no
+  fallback label and no pane/workspace/cwd/agent-type detail on screen.
 - It never changes volume, theme, station, playback, search, or the
   visualizer, and never emits OS notifications.
-- Nothing is persisted: agent state and completed history live only in process
-  memory for the current run.
+- Nothing is persisted: agent state lives only in process memory for the
+  current run, and there is no completed-agent history.
 
 Disable the integration for one launch with `--no-agent-pulse` (never written
 to settings).
@@ -450,11 +467,16 @@ for findings and caveats.
 - [`docs/audio-spike.md`](docs/audio-spike.md) — native audio spike results
 - [`herdr-plugin.toml`](herdr-plugin.toml) — official Herdr plugin manifest
 - [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
-  — Herdr Agent Pulse design
+  — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
+  presentation superseded by the Bioluminescent Current design)
+- [`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md)
+  — Agent Pulse Bioluminescent Current design (current presentation decision)
 - [`docs/superpowers/plans/2026-06-27-radio-replacement.md`](docs/superpowers/plans/2026-06-27-radio-replacement.md)
   — implementation plan
 - [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
   — Herdr Agent Pulse implementation plan
+- [`docs/superpowers/plans/2026-07-18-agent-pulse-bioluminescent-current.md`](docs/superpowers/plans/2026-07-18-agent-pulse-bioluminescent-current.md)
+  — Bioluminescent Current implementation plan
 
 ## Verification
 

@@ -117,51 +117,64 @@ Implications:
 - Signal View adds no playlist, queue, search, or new selection behavior and does
   not turn compact panes into a default full-screen visualizer.
 
-### Agent Pulse: Quiet Companion + Status Constellation
+### Agent Pulse: Quiet Count + Bioluminescent Current
 
-The optional Herdr Agent Pulse (design:
-`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`) uses the
-**Quiet Companion** direction for normal layouts and a **Status Constellation
-plus short list** for its overlay. It presents agent activity as ambient
-context beside playback, never as a work-management dashboard.
+The optional Herdr Agent Pulse uses a one-line **quiet count** in normal
+layouts and a full-screen, music-reactive **Bioluminescent Current** canvas
+as its only rich surface. The current presentation decision is
+`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`
+(approved 2026-07-18), which supersedes the presentation decisions of the
+original `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`
+(Quiet Companion summary + Status Constellation overlay) and the interim
+`docs/superpowers/specs/2026-07-18-agent-pulse-beat-orbit-design.md` (Beat
+Orbit ring canvas). The earlier modal/list/card/completed-history surfaces
+are removed; the 2026-07-16 design's local-only and read-only privacy
+boundaries remain in force. Agent Pulse presents agent activity as ambient
+light inside a music visualizer, never as a work-management dashboard.
 
 Implications:
 
-- **Quiet Companion summary.** Wide and Medium add exactly one state-count
-  line to Now Playing (`● 2 working · ○ 1 idle`, or `agents · none active`).
-  It reports counts, never agent output or prompts, and reuses theme colors
-  only.
-- **Compact suppression.** The Compact tier hides the summary to preserve its
-  Split Mini station and playback context; while the integration is active,
-  `a` still opens the overlay there. Signal View keeps its restricted key
-  contract: it never shows Agent Pulse and ignores `a`.
+- **Quiet count.** Wide and Medium add exactly one `● n active` line to Now
+  Playing — a count of every agent on the session's socket, never names,
+  output, or prompts — using theme colors only. Stale dims the count;
+  unavailable removes the line.
+- **Compact suppression.** The Compact tier shows no Agent Pulse line to
+  preserve its Split Mini station and playback context; while the
+  integration is active, `a` still opens the canvas there. Signal View keeps
+  its restricted key contract: it never shows Agent Pulse and ignores `a`.
 - **Standalone invisibility.** Ineligible and standalone launches render
   byte-identical to the pre-integration UI: no reserved rows, no empty slots,
   no "not in Herdr" hints, and mouse capture stays off.
-- **Status Constellation overlay.** `a` opens a centered, temporary, read-only
-  overlay: state-colored nodes (`●` working, `◆` blocked, `○` idle, `✓` done,
-  `?` unknown), a short active list windowed to five rows so the selection
-  stays visible, an information card for the selected agent, and a
-  `Completed (n)` disclosure showing up to four history rows with `… n more`
-  markers. Below roughly 60×20 the overlay drops the constellation and card
-  and keeps the readable list and disclosure.
+- **Bioluminescent Current canvas.** `a` opens a single full-screen view that
+  replaces the whole player surface. A continuous current derived from the
+  played-sample FFT bands flows across the screen — per-band magnitude sets
+  its height and glyph weight (`·`/`~`/`≈`/`≋`) — and every agent is one
+  state-glyph light (`●` working, `◆` blocked, `○` idle, `✓` done, `?`
+  unknown) at a stable, identity-derived position along the flow. Dense
+  terminals shrink spacing rather than omitting lights.
+- **Music-driven, not timer-driven.** Light glow, halo size, and a short
+  upstream trail react to the current RMS and the light's assigned FFT band;
+  trails are drawn from real recent visualizer frames. Silence leaves the
+  current and lights dim and still by construction; nothing animates on a
+  clock. Low-power mode freezes flow, light positions, and trails flat while
+  state colors and minimal brightness still update.
 - **Restrained signal color.** Only working (playing color) and blocked
-  (error color) get strong color; idle, done, and unknown stay muted, and done
-  nodes dim. Stale state dims the whole overlay and summary and adds a single
-  `stale · reconnecting` line; unavailable shows one calm
-  `agents · unavailable · retrying` line.
-- **Quiet motion.** Working nodes pulse on a slow four-second cycle. A status
-  change earns one restrained acknowledgement — a brief (~2 s) bold highlight
-  derived from the observed-at timestamp, so it expires on its own — never a
-  toast, sound, or layout shift. Low-power mode renders all nodes statically
-  while keeping the same visual language; the acknowledgement still applies.
-- **Read-only interaction.** Keyboard (`Tab`/arrows/`j`/`k`, `Enter`,
-  `a`/`Esc`) and mouse clicks only select and disclose; nothing in the overlay
-  can control panes or change playback, settings, focus, or search. Mouse
-  clicks intentionally resolve only while the connection is live, while
-  keyboard selection over the last known (dimmed) list keeps working during
-  stale/unavailable states — pointer input should not act on possibly outdated
-  rows.
+  (error color) get strong color; idle, done, and unknown stay muted, and
+  done lights fade until their snapshot removes them. Stale freezes the last
+  live field dimmed under a single `stale · reconnecting` banner; unavailable
+  hides every light behind one calm `agents · unavailable · retrying` line.
+- **Selected-name-only privacy.** Selecting a light (`Tab`/`Shift+Tab`/
+  arrows/`j`/`k`, or a click on its cells) shows only `name · status` when
+  the agent has an explicit Herdr `name`; an unnamed selection shows no label
+  at all. Pane ids, workspace ids, working directories, and agent types never
+  render.
+- **Player-first input.** The canvas consumes search and station
+  navigation/selection keys, but the documented global player shortcuts —
+  `Space`, `+`/`-`, `f`, `t`, `v`, and `z` (Signal View) — fall through with
+  their exact normal semantics. Mouse clicks only select lights and resolve
+  only while the connection is live; keyboard selection over the last known
+  lights keeps working during stale/unavailable states — pointer input
+  should not act on possibly outdated data.
 
 ### Theme Set: High Contrast Trio
 

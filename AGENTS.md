@@ -20,7 +20,10 @@ Start here:
    — implementation plan for the replacement.
 6. [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
    and [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
-   — approved design and plan for the optional Herdr Agent Pulse integration.
+   — original design and plan for the optional Herdr Agent Pulse integration
+   (packaging, eligibility, monitoring); its presentation is superseded by
+   [`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md)
+   and [`docs/superpowers/plans/2026-07-18-agent-pulse-bioluminescent-current.md`](docs/superpowers/plans/2026-07-18-agent-pulse-bioluminescent-current.md).
 
 Before changing playback, search, persistence, themes, layout, module
 boundaries, or user-facing controls, re-read the relevant doc first.
@@ -43,10 +46,11 @@ Stay inside the MVP unless the user explicitly expands scope:
 - three responsive layout tiers;
 - Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes;
 - the optional, read-only Herdr Agent Pulse companion when launched as the
-  official Herdr plugin (approved design:
-  `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`). It only
-  observes current-workspace agent status via `agent.list`; it is not a
-  daemon, remote control, or an internal plugin system.
+  official Herdr plugin (current design:
+  `docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`).
+  It only observes agent status via `agent.list` on the plugin's local Herdr
+  socket (across that session's workspaces); it is not a daemon, remote
+  control, or an internal plugin system.
 
 Do not add these in MVP without an explicit design update:
 
@@ -295,7 +299,9 @@ Update docs when changing:
   `docs/ui-design-decisions.md`;
 - audio architecture findings or spike conclusions: `docs/audio-spike.md`;
 - Herdr plugin packaging or Agent Pulse behavior: `README.md`, `docs/SPEC.md`,
-  and `docs/ui-design-decisions.md` (design record:
+  and `docs/ui-design-decisions.md` (presentation design record:
+  `docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`;
+  integration design record:
   `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`);
 - task order or implementation contracts:
   `docs/superpowers/plans/2026-06-27-radio-replacement.md`.

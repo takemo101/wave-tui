@@ -479,17 +479,21 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - `--low-power` explicitly lowers visual update cadence.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
-- Agent Pulse constellation nodes render statically (no pulse animation) in
-  low-power mode; the one-shot status-change acknowledgement still applies.
+- The Agent Pulse Bioluminescent Current renders statically in low-power
+  mode: the flow, light positions, and trails are frozen on a flat baseline
+  while state colors and minimal brightness updates remain.
 
 ### Herdr Agent Pulse (Optional Integration)
 
 `wave-tui` ships as an official Herdr plugin and, only when launched by that
-plugin, shows a **read-only Agent Pulse**: the live status of AI coding agents
-in the current Herdr workspace, presented as ambient context beside radio
-playback. The approved design is
-`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; this section
-records the product behavior as implemented.
+plugin, shows a **read-only Agent Pulse**: the live status of the AI coding
+agents visible on that Herdr session's local control socket, presented as
+ambient context beside radio playback. The integration design (packaging,
+eligibility, monitoring) is
+`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; its
+presentation is superseded by the approved
+`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`.
+This section records the product behavior as implemented.
 
 This is an optional Herdr integration, not a plugin system inside `wave-tui`,
 and it does not weaken the non-goals below: there is still no daemon, no IPC
@@ -515,11 +519,12 @@ Agent Pulse is enabled if and only if all of these hold:
 3. `HERDR_SOCKET_PATH` is set and non-empty.
 4. `HERDR_WORKSPACE_ID` is set and non-empty.
 
-The plugin environment is the authority for the current workspace; the app
-never guesses a workspace. Every ineligible launch (standalone, incomplete
-environment, or explicit disable) keeps the exact pre-integration appearance
-and behavior — no reserved rows, no hints, `a` is a silent no-op, and mouse
-capture is not enabled.
+The plugin environment is the authority for eligibility; the injected
+workspace id is trusted plugin context and is not used to filter the display.
+Every ineligible launch (standalone, incomplete environment, or explicit
+disable) keeps the exact pre-integration appearance and behavior — no
+reserved rows, no hints, `a` is a silent no-op, and mouse capture is not
+enabled.
 
 #### Monitoring and data flow
 
@@ -529,72 +534,92 @@ capture is not enabled.
 - A background thread polls `agent.list` every 5 seconds with a 3-second
   socket I/O timeout and forwards typed snapshot/failure events into the
   existing event loop; the reducer in `app` owns all lifecycle state.
-- Responses are filtered strictly to the injected current workspace. Statuses
-  `working`, `blocked`, `done`, and `idle` are mapped explicitly; anything
-  else (or a missing status) becomes `unknown`. Entries missing required ids
-  and malformed payloads are dropped/rejected without crashing.
-- Displayed durations (`<1m`, `~12m`, `~2h`) are estimates since `wave-tui`
-  first observed the agent in its current status, not process start times.
+- Every agent returned by the current socket is normalized — across all of
+  that Herdr session's workspaces — under a private workspace-qualified
+  identity, so identical pane ids in different workspaces stay distinct. No
+  other Herdr sessions or sockets are ever discovered or opened.
+- Statuses `working`, `blocked`, `done`, and `idle` are mapped explicitly;
+  anything else (or a missing status) becomes `unknown`. Entries missing
+  required ids and malformed payloads are dropped/rejected without crashing.
+- The observed-at timestamp is internal reducer state (preserved while an
+  agent's identity and status are unchanged); no duration is displayed.
 
 #### Lifecycle and history
 
-- Each successful snapshot replaces the active view. Agents sort working,
-  blocked, idle, done, then unknown; `observed_at` is preserved while a
-  pane's status is unchanged and resets on a status change.
-- An agent moves to completed history when Herdr reports `done` or when a
-  previously live pane disappears from a later snapshot — exactly once per
-  status episode (no duplicates across unchanged polls).
-- Completed history is process-local only, newest first, capped at 20 entries.
+- Each successful snapshot replaces the live view. Agents sort working,
+  blocked, idle, done, then unknown.
+- A `done` agent stays in the live view, rendered faded, until a later
+  snapshot omits it; then it disappears.
+- There is no completed-agent history and no agent detail store: live
+  snapshot, selection, and connection state are the only Agent Pulse state,
+  all process-local.
 
 #### Connection states and recovery
 
-| Condition | Wide/Medium summary | Overlay |
+| Condition | Wide/Medium summary | Canvas (`a`) |
 | --- | --- | --- |
-| Connected, active agents | `● 2 working · ○ 1 idle` state counts | Constellation + active list |
-| Connected, no agents | `agents · none active` | Calm empty state |
-| First failed poll | Dimmed last state + `stale · reconnecting` | Last state, dimmed, stale banner |
-| ≥ 15 seconds without success | Summary disappears | `agents · unavailable · retrying` |
-| Fresh snapshot | Live state replaces stale state | Live state |
+| Connected | `● n active` count | Live Bioluminescent Current (`agents · none active` when empty) |
+| First failed poll | Count dims | Last live current/trails frozen, dimmed, `stale · reconnecting` banner |
+| ≥ 15 seconds without success | Summary disappears | Lights hidden behind `agents · unavailable · retrying` |
+| Fresh snapshot | Live count | Live current |
 
 Socket errors, malformed replies, and timeouts are recoverable: they never
 panic the TUI or interrupt playback, and polling continues. A per-loop timer
 tick advances the 15-second unavailable threshold even when no further monitor
-event arrives.
+event arrives. The stale freeze uses the visualizer frames captured at the
+Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 
 #### UI and input contract
 
-- Wide and Medium add the one-line summary to Now Playing; Compact hides the
-  summary (but `a` still opens the overlay while the integration is active);
-  Signal View never shows Agent Pulse and ignores `a`.
-- `a` toggles the Status Constellation overlay; `Esc` also closes it. The
-  overlay contains state-colored nodes, a short active list (windowed to keep
-  the selection visible), an information card for the selected agent, and a
-  `Completed (n)` disclosure. On small overlay areas it falls back to the
-  readable list and disclosure without constellation/card.
-- Overlay keys: `Tab`/arrows/`j`/`k` select, `Enter` keeps the card visible,
-  `q`/`Ctrl+C` still quit. All other keys are consumed while the overlay is
-  open so overlay input can never play a station, move station selection,
-  change settings or focus, or alter audio.
+- Wide and Medium add exactly one `● n active` line to Now Playing — a count
+  only, never names. Compact shows no Agent Pulse line (but `a` still opens
+  the canvas while the integration is active); Signal View never shows Agent
+  Pulse and ignores `a`.
+- `a` opens the full-screen **Bioluminescent Current** canvas, replacing the
+  whole player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit.
+- The canvas draws a continuous current derived from the played-sample FFT
+  bands (per-band magnitude sets height and glyph weight), with one
+  state-colored light per agent at a stable, identity-derived position along
+  the flow. Light glow, size, and a short trail react to the current RMS and
+  the light's assigned band; trails come from real recent visualizer frames.
+  Silence leaves the field dim and still — nothing animates on a timer.
+  Dense terminals shrink spacing rather than omitting lights.
+- State colors come from the active theme only: working uses the playing
+  color (strongest), blocked the error color; idle/done/unknown stay muted
+  and done fades until removed. In `--low-power`, flow, light positions, and
+  trails are frozen flat while state colors and brightness still update.
+- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a light. Selection shows only
+  `name · status` for an explicitly named agent; an unnamed selection shows
+  no label. Search (`/`) and station navigation/selection
+  (`g`/`G`/`Home`/`End`/`Enter`) are consumed, so canvas input can never play
+  a station or move station selection.
+- The documented global player shortcuts fall through with their exact normal
+  semantics and side effects: `Space` (playback toggle, still conditional on
+  the station list being the focused pane underneath), `+`/`-` (volume), `f`
+  (favorite for the station-list selection), `t` (theme), `v` (visualizer
+  mode), and `z` (Signal View, which replaces the canvas surface).
 - Mouse capture is enabled only for eligible plugin launches, solely to feed
-  overlay clicks (node/list selection and the disclosure toggle). Clicks
+  light-selection clicks; flow and trail cells resolve nothing. Clicks
   resolve only while the connection is `Connected`; during stale/unavailable
   states mouse clicks select nothing while keyboard selection over the last
-  known list keeps working. This asymmetry is intentional: pointer input
+  known lights keeps working. This asymmetry is intentional: pointer input
   should not act on data that may no longer be current.
-- A status change gets one restrained visual acknowledgement (a brief bold
-  highlight derived from the observed-at timestamp); no toasts, no sounds.
-  Working nodes pulse slowly; low-power rendering is static.
 
 #### Privacy and read-only guarantees
 
 - Only `agent.list` is ever called. Pane output, prompts, files, and
   scrollback are never read; panes are never focused, created, closed, sent
   text, or otherwise controlled.
-- Only the current workspace's agents are shown; no cross-workspace view.
-- Agent activity changes colors/low-rate animation only — never audio,
+- Every agent reported by the plugin invocation's local Herdr socket is
+  shown, across that session's workspaces; other Herdr sessions are never
+  discovered.
+- Only a selected light's explicit Herdr `name` is ever rendered. There is no
+  fallback label; pane ids, workspace ids, working directories, and agent
+  types never appear on screen.
+- Agent activity changes colors/low-rate rendering only — never audio,
   playback, search, settings, theme, visualizer, or OS notifications.
-- Nothing is persisted: agent state and completed history exist only in
-  process memory, and `--no-agent-pulse` is never written to settings.
+- Nothing is persisted: agent state exists only in process memory, and
+  `--no-agent-pulse` is never written to settings.
 
 ### Implementation Principles
 
@@ -632,9 +657,9 @@ Use automated tests for core logic:
 - domain primitive smart constructors and parse boundaries
 - first-class collection behavior such as favorite deduplication and failed-station filtering
 - Herdr Agent Pulse logic without a live Herdr process, socket, or terminal:
-  plugin-environment eligibility, `agent.list` payload
-  normalization/filtering, lifecycle/history/stale reducers, key/mouse
-  routing, and summary/overlay rendering
+  plugin-environment eligibility, cross-workspace `agent.list` payload
+  normalization, lifecycle/stale reducers, key/mouse routing, and
+  summary/Bioluminescent Current canvas rendering
 
 Use manual verification for:
 
@@ -730,7 +755,7 @@ tier, and built-in retry candidates stay visible
 
 ### Herdr Agent Pulse — Verification Status
 
-Status as of the MIK-060 documentation pass (2026-07-18).
+Status as of the Bioluminescent Current documentation pass (2026-07-18).
 
 **Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
 `cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
@@ -738,19 +763,24 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
 
 - exact plugin-environment eligibility and every ineligible/disabled case
   (`herdr` module tests);
-- `agent.list` request framing, payload normalization, status mapping,
-  workspace filtering, and malformed-payload rejection (`herdr`);
+- `agent.list` request framing, cross-workspace payload normalization with
+  workspace-qualified identity, status mapping, and malformed-payload
+  rejection (`herdr`);
 - monitor failure reporting and clean shutdown against a nonexistent socket
   (`herdr`);
-- snapshot/lifecycle reducers: sort order, observed-duration reset only on
-  status change, done/disappeared panes completing exactly once, the
-  20-entry history cap, stale → unavailable (15 s) → recovery transitions,
-  and the per-loop staleness tick (`app`);
+- snapshot/lifecycle reducers: sort order, cross-workspace identity
+  distinctness and selection, done agents staying until a snapshot omits
+  them, the stale-edge visualizer freeze capture, stale → unavailable
+  (15 s) → recovery transitions, and the per-loop staleness tick (`app`);
 - `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
-  overlay key consumption, and monitor/mouse event routing (`cli`);
-- summary visibility per tier and connection state, overlay/hit-test
-  geometry, low-power static motion, and the one-shot status-change
-  acknowledgement (`ui`, `ui::agent_pulse`).
+  the canvas key gate (light selection, suppressed search/station
+  navigation, preserved global player shortcuts, Signal View delegation),
+  and monitor/mouse-capture/click routing (`cli`);
+- summary visibility per tier and connection state, full-screen canvas
+  coverage, FFT-flow/RMS-driven glow-size-trail reactivity, silence
+  stillness, low-power frozen geometry, state colors, selected-name-only
+  privacy, stale freeze/unavailable rendering, and light-only hit testing
+  (`ui`, `ui::agent_pulse`).
 
 **Manual checklist (NOT run in this pass).** This documentation pass was
 performed without a Herdr 0.7.0+ installation, a real terminal session, or
@@ -763,23 +793,28 @@ the release as fully validated:
       runs during `herdr plugin install`/link.
 - [ ] Open the `Open wave-tui radio tab` action; confirm a dedicated tab with
       the Wide or Medium layout and working playback.
-- [ ] With live agents in the current workspace, confirm the Now Playing
-      summary counts and the `a` overlay (constellation, list, information
-      card, keyboard and mouse selection).
-- [ ] Drive agent status changes (working/blocked/idle/done) and confirm the
-      one-shot acknowledgement and sort order; let an agent finish and a pane
-      close, and confirm both appear once under `Completed (n)`.
-- [ ] Temporarily remove socket access; confirm `stale · reconnecting`, the
-      15-second `agents · unavailable · retrying` state, and full recovery
-      when the socket returns — with playback unaffected throughout.
+- [ ] Play a real stream with the canvas open and judge live visual quality:
+      the current's shape follows the music, light glow/size/trails react,
+      and silence leaves a dim, still field with no timer motion.
+- [ ] Cycle all six themes on the canvas and confirm flow, lights, and state
+      colors stay legible on each.
+- [ ] With agents across multiple workspaces of the same Herdr session,
+      confirm `● n active` counts them all and the canvas keeps one light
+      per agent at stable positions, including dense agent counts.
+- [ ] Select lights with keyboard and mouse; confirm only explicit
+      `name · status` labels render and unnamed agents show no label.
 - [ ] Resize the tab through Wide/Medium/Compact; confirm the summary hides
-      in Compact while `a` still opens the overlay.
+      in Compact while `a` still opens the full-screen canvas, and the
+      canvas redraws cleanly across sizes.
+- [ ] Temporarily remove socket access; confirm the dimmed count and frozen
+      `stale · reconnecting` canvas, the 15-second
+      `agents · unavailable · retrying` state, and full recovery when the
+      socket returns — with playback unaffected throughout, and mouse clicks
+      selecting nothing while stale/unavailable.
 - [ ] Detach and reattach the Herdr session; confirm the tab process and
       playback follow Herdr's normal pane lifecycle.
-- [ ] Confirm mouse clicks select nothing while stale/unavailable and that
-      terminal text selection works with `Shift`+drag under mouse capture.
-- [ ] Run `wave-tui --low-power` inside Herdr and confirm static (non-pulsing)
-      constellation nodes.
+- [ ] Run `wave-tui --low-power` inside Herdr and confirm a static flow with
+      fixed light positions and no trails while state colors remain.
 - [ ] Run standalone `wave-tui --no-auto-play` outside Herdr and inside a
       plain Herdr shell pane (no plugin env); confirm zero Agent Pulse UI,
       inert `a`, and unchanged terminal mouse behavior.

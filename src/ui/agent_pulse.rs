@@ -1,13 +1,22 @@
-//! Agent Pulse rendering: the Quiet Companion summary and the Status
-//! Constellation overlay.
+//! Agent Pulse rendering: the tiny `● n active` summary and the full-screen,
+//! music-reactive Beat Orbit canvas.
 //!
 //! Everything here is read-only presentation over the Agent Pulse display
 //! accessors on [`App`]: this module never calls the Herdr adapter, opens
-//! sockets, or mutates app state. Mouse input flows through [`hit_test`],
-//! which shares [`overlay_layout`] with rendering so a click resolves against
-//! exactly the geometry that was drawn, and returns only the read-only
-//! selection/disclosure [`Action`]s; the CLI event loop owns applying them.
+//! sockets, or mutates app state. The canvas derives a deterministic
+//! concentric-ring layout from stable agent identity, then displaces and
+//! brightens particles from the actual played-sample [`crate::model::VizFrame`]
+//! (RMS plus the FFT column under each particle) — never from a timer.
+//! Silence leaves a dim, static field; `--low-power` fixes positions and
+//! trails while state colors and minimal brightness still update.
 //!
+//! Mouse input flows through [`hit_test`], which shares [`beat_orbit_layout`]
+//! with rendering so a click resolves against the same stable slots that were
+//! drawn, and returns only the read-only selection [`Action`]; the CLI event
+//! loop owns applying it.
+//!
+//! Privacy: a selected particle may show the explicit Herdr agent `name`
+//! only. No pane id, workspace id, cwd, or agent type is ever rendered.
 //! All colors come from the active [`Theme`]; no palette values are added.
 
 use ratatui::{
@@ -15,90 +24,60 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Widget},
+    widgets::{Clear, Widget},
 };
-use std::time::{Duration, Instant};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::Instant;
 
 use crate::app::{Action, AgentPulseConnection, AgentView, App};
 use crate::herdr::AgentStatus;
 use crate::theme::Theme;
 
-/// Most active-list rows shown at once; the list stays a short companion to
-/// the constellation, windowed so the selected agent is always visible.
-const LIST_CAP: usize = 5;
-/// Most completed-history rows shown when the disclosure is expanded.
-const COMPLETED_CAP: usize = 4;
-/// Preferred overlay width; shrinks on narrow terminals.
-const OVERLAY_DESIRED_WIDTH: u16 = 56;
-/// Below this area the overlay drops the constellation and information card,
-/// keeping the readable list and disclosure (the compact fallback).
-const COMPACT_WIDTH: u16 = 60;
-const COMPACT_HEIGHT: u16 = 20;
+/// Rough number of particles per ring before another ring is added.
+const RING_TARGET: usize = 8;
+/// Maximum horizontal displacement (cells) at full music energy.
+const MAX_RADIAL_X: f32 = 3.0;
+/// Terminal cells are roughly twice as tall as wide; vertical motion and
+/// radii use this factor so the orbit reads as circular.
+const CELL_ASPECT_Y: f32 = 0.5;
+/// Below this energy the field counts as silent: dim and static.
+const SILENCE_ENERGY: f32 = 0.05;
+/// Above this energy a working particle brightens to bold.
+const BRIGHT_ENERGY: f32 = 0.6;
+/// A displaced particle leaves its faint trail above this energy.
+const TRAIL_ENERGY: f32 = 0.25;
 
-/// Display order for status counts and node/list sorting context: mirrors the
-/// active-agent sort rank in `app`.
-const STATUS_ORDER: [AgentStatus; 5] = [
-    AgentStatus::Working,
-    AgentStatus::Blocked,
-    AgentStatus::Idle,
-    AgentStatus::Done,
-    AgentStatus::Unknown,
-];
+// --- quiet normal-layout summary -------------------------------------------
 
-// --- Quiet Companion summary ---------------------------------------------
-
-/// The one-line Now Playing summary for Wide/Medium tiers.
+/// The one-line Now Playing summary for Wide/Medium tiers: only `● n active`.
 ///
 /// `None` when hidden (standalone/ineligible) or unavailable, so those states
-/// reserve no row and standalone output stays byte-identical. Connected shows
-/// state counts (or the calm connected-empty copy); stale dims the last known
-/// state and appends the `stale · reconnecting` marker.
+/// reserve no row and standalone output stays byte-identical. Stale dims the
+/// last known count; the canvas owns every richer state description.
 pub(super) fn summary_line<'a>(app: &App, theme: &Theme) -> Option<Line<'a>> {
+    let count = app.active_agents().len();
+    let text = format!("● {count} active");
     match app.agent_pulse_connection() {
         AgentPulseConnection::Hidden | AgentPulseConnection::Unavailable => None,
         AgentPulseConnection::Connected => {
-            Some(Line::from(status_count_spans(app.active_agents(), theme)))
+            let color = if count > 0 {
+                theme.playing
+            } else {
+                theme.muted
+            };
+            Some(Line::from(Span::styled(text, Style::default().fg(color))))
         }
-        AgentPulseConnection::Stale => {
-            let mut spans = status_count_spans(app.active_agents(), theme);
-            spans.push(Span::styled(
-                " · stale · reconnecting",
-                Style::default().fg(theme.muted),
-            ));
-            Some(Line::from(spans).patch_style(Style::default().add_modifier(Modifier::DIM)))
-        }
+        AgentPulseConnection::Stale => Some(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+        ))),
     }
 }
 
-/// State-count spans like `● 2 working · ○ 1 idle`, in status order, or the
-/// calm `agents · none active` copy when no agent is active.
-fn status_count_spans<'a>(agents: &[AgentView], theme: &Theme) -> Vec<Span<'a>> {
-    if agents.is_empty() {
-        return vec![Span::styled(
-            "agents · none active",
-            Style::default().fg(theme.muted),
-        )];
-    }
-    let mut spans = Vec::new();
-    for status in STATUS_ORDER {
-        let count = agents.iter().filter(|view| view.status == status).count();
-        if count == 0 {
-            continue;
-        }
-        if !spans.is_empty() {
-            spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
-        }
-        spans.push(Span::styled(
-            format!("{} {count} {}", status_glyph(status), status_label(status)),
-            Style::default().fg(status_color(status, theme)),
-        ));
-    }
-    spans
-}
+// --- status presentation helpers -------------------------------------------
 
-// --- status presentation helpers ------------------------------------------
-
-/// Short lowercase state label shared by the summary, list, and card.
+/// Short lowercase state label for the selected-particle line.
 fn status_label(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "working",
@@ -109,7 +88,7 @@ fn status_label(status: AgentStatus) -> &'static str {
     }
 }
 
-/// Constellation node / summary glyph per status.
+/// Particle glyph per status.
 fn status_glyph(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "●",
@@ -120,8 +99,8 @@ fn status_glyph(status: AgentStatus) -> &'static str {
     }
 }
 
-/// Theme color per status: strong color only for useful signal (activity and
-/// attention); idle/done/unknown stay muted.
+/// Theme color per status: working is strongest, blocked demands attention,
+/// idle/done/unknown stay muted.
 fn status_color(status: AgentStatus, theme: &Theme) -> ratatui::style::Color {
     match status {
         AgentStatus::Working => theme.playing,
@@ -130,223 +109,120 @@ fn status_color(status: AgentStatus, theme: &Theme) -> ratatui::style::Color {
     }
 }
 
-/// How long a freshly observed status keeps its one-shot acknowledgement.
+// --- stable orbit layout ----------------------------------------------------
+
+/// One placed particle: the index into `App::active_agents()`, its stable
+/// cell anchor, and the slot angle used for radial displacement.
+pub(super) struct OrbitParticle {
+    pub(super) index: usize,
+    pub(super) anchor: (u16, u16),
+    pub(super) angle: f32,
+}
+
+/// Pure orbit geometry shared by rendering and hit testing.
+pub(super) struct BeatOrbitLayout {
+    pub(super) particles: Vec<OrbitParticle>,
+}
+
+/// Stable placement seed for an agent: a hash of its private identity, so a
+/// status change never moves a particle and no pane detail is exposed.
+fn seed_of(view: &AgentView) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    view.id.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Compute the concentric-ring layout for every agent inside `area`.
 ///
-/// `App` resets `observed_at` whenever a pane's status changes, so "recently
-/// observed in this status" is exactly "the state just changed" — the
-/// highlight derives purely from existing state and expires on its own, with
-/// no per-frame mutation or toast.
-const STATUS_CHANGE_HIGHLIGHT: Duration = Duration::from_secs(2);
-
-/// Whether a status observed `elapsed` ago still shows its one restrained
-/// visual acknowledgement.
-fn recent_change_highlight(elapsed: Duration) -> bool {
-    elapsed < STATUS_CHANGE_HIGHLIGHT
-}
-
-/// Whether a working node renders its dimmed pulse phase.
-///
-/// The slow, quiet pulse alternates every two seconds of the agent's observed
-/// duration; low-power rendering is static (never dimmed by phase). Pure so
-/// the motion contract is testable without a terminal or clock.
-fn working_pulse_dim(elapsed: Duration, low_power: bool) -> bool {
-    !low_power && elapsed.as_secs() % 4 >= 2
-}
-
-/// Node style per status at an observed-state age: a brief bold
-/// acknowledgement right after a status change, then the working pulse phase
-/// (static under low power), a static blocked node, and a dimmed done node;
-/// all colors are theme-sourced.
-fn node_style(status: AgentStatus, theme: &Theme, elapsed: Duration, low_power: bool) -> Style {
-    let mut style = Style::default().fg(status_color(status, theme));
-    if recent_change_highlight(elapsed) {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    match status {
-        AgentStatus::Working if working_pulse_dim(elapsed, low_power) => {
-            style.add_modifier(Modifier::DIM)
-        }
-        AgentStatus::Done => style.add_modifier(Modifier::DIM),
-        _ => style,
-    }
-}
-
-/// Estimated duration label (`<1m`, `~12m`, `~2h`) for an observed-state age.
-fn format_observed_duration(elapsed: Duration) -> String {
-    let secs = elapsed.as_secs();
-    if secs < 60 {
-        "<1m".to_string()
-    } else if secs < 3600 {
-        format!("~{}m", secs / 60)
-    } else {
-        format!("~{}h", secs / 3600)
-    }
-}
-
-// --- overlay geometry ------------------------------------------------------
-
-/// One overlay content row, in draw order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowKind {
-    /// `stale · reconnecting` banner (stale only).
-    Banner,
-    /// The Status Constellation node row.
-    Nodes,
-    /// Spacer row.
-    Blank,
-    /// One active-list row; carries the index into `App::active_agents`.
-    ListRow(usize),
-    /// `… n more` marker for active agents beyond the visible window.
-    ListMore(usize),
-    /// Information-card title line (selected agent metadata or key hint).
-    CardTitle,
-    /// Information-card status/duration line.
-    CardStatus,
-    /// The `Completed (n)` disclosure line.
-    Disclosure,
-    /// One expanded completed-history row (index into newest-first history).
-    CompletedRow(usize),
-    /// `… n more` marker for completed history beyond the visible rows.
-    CompletedMore(usize),
-    /// Calm connected-empty copy.
-    EmptyCopy,
-    /// Unavailable copy.
-    UnavailableCopy,
-}
-
-/// Pure overlay geometry shared by rendering and hit testing.
-struct OverlayLayout {
-    /// The centered, cleared overlay rect (including its border).
-    overlay: Rect,
-    /// Content rows top to bottom, clipped to the overlay's inner area.
-    rows: Vec<(Rect, RowKind)>,
-    /// Constellation node hit targets: rect plus active-agent index.
-    nodes: Vec<(Rect, usize)>,
-}
-
-/// Compute the overlay geometry, or `None` when no overlay exists: closed,
-/// hidden integration, Signal View active, or a degenerate area.
-fn overlay_layout(app: &App, area: Rect) -> Option<OverlayLayout> {
-    if !app.is_agent_overlay_open() || app.is_signal_view() {
-        return None;
-    }
-    let connection = app.agent_pulse_connection();
-    if connection == AgentPulseConnection::Hidden {
-        return None;
-    }
-    if area.width < 12 || area.height < 5 {
-        return None;
+/// Deterministic and status-independent: agents are ordered by their stable
+/// identity seed, then fill rings whose capacity grows outward. Every agent
+/// gets exactly one particle regardless of density — dense areas only shrink
+/// spacing. No randomness and no clock.
+pub(super) fn beat_orbit_layout(agents: &[AgentView], area: Rect) -> BeatOrbitLayout {
+    if agents.is_empty() || area.width == 0 || area.height == 0 {
+        return BeatOrbitLayout {
+            particles: Vec::new(),
+        };
     }
 
-    let compact = area.width < COMPACT_WIDTH || area.height < COMPACT_HEIGHT;
-    let active = app.active_agents();
-    let completed_len = app.completed_agents().len();
+    // Stable, status-independent placement order.
+    let mut order: Vec<(u64, usize)> = (0..agents.len())
+        .map(|index| (seed_of(&agents[index]), index))
+        .collect();
+    order.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| agents[a.1].id.cmp(&agents[b.1].id))
+    });
 
-    let mut kinds: Vec<RowKind> = Vec::new();
-    match connection {
-        AgentPulseConnection::Hidden => return None,
-        AgentPulseConnection::Unavailable => kinds.push(RowKind::UnavailableCopy),
-        AgentPulseConnection::Connected | AgentPulseConnection::Stale => {
-            if connection == AgentPulseConnection::Stale {
-                kinds.push(RowKind::Banner);
-            }
-            if active.is_empty() {
-                kinds.push(RowKind::EmptyCopy);
-            } else {
-                if !compact {
-                    kinds.push(RowKind::Nodes);
-                    kinds.push(RowKind::Blank);
-                }
-                let visible = active.len().min(LIST_CAP);
-                let selected = selected_index(app).unwrap_or(0);
-                let start = selected
-                    .saturating_sub(visible.saturating_sub(1))
-                    .min(active.len() - visible);
-                for index in start..start + visible {
-                    kinds.push(RowKind::ListRow(index));
-                }
-                if active.len() > visible {
-                    kinds.push(RowKind::ListMore(active.len() - visible));
-                }
-                if !compact {
-                    kinds.push(RowKind::Blank);
-                    kinds.push(RowKind::CardTitle);
-                    kinds.push(RowKind::CardStatus);
-                }
-            }
-            kinds.push(RowKind::Disclosure);
-            if app.completed_agents_disclosed() && completed_len > 0 {
-                let shown = completed_len.min(COMPLETED_CAP);
-                for index in 0..shown {
-                    kinds.push(RowKind::CompletedRow(index));
-                }
-                if completed_len > shown {
-                    kinds.push(RowKind::CompletedMore(completed_len - shown));
-                }
-            }
+    let n = order.len();
+    let cx = area.x as f32 + (area.width.saturating_sub(1)) as f32 / 2.0;
+    let cy = area.y as f32 + (area.height.saturating_sub(1)) as f32 / 2.0;
+    let max_rx = ((area.width.saturating_sub(1)) as f32 / 2.0 - 1.0).max(1.0);
+    let max_ry = ((area.height.saturating_sub(1)) as f32 / 2.0).max(1.0);
+
+    let rings = n.div_ceil(RING_TARGET).clamp(1, (max_ry as usize).max(1));
+    // Ring capacities grow with the ring number and are adjusted (outer rings
+    // first, where there is the most room) to sum to exactly `n`.
+    let weight_sum: usize = (1..=rings).sum();
+    let mut caps: Vec<usize> = (1..=rings).map(|i| n * i / weight_sum).collect();
+    let mut assigned: usize = caps.iter().sum();
+    let mut fill = rings - 1;
+    while assigned < n {
+        caps[fill] += 1;
+        assigned += 1;
+        fill = if fill == 0 { rings - 1 } else { fill - 1 };
+    }
+
+    let mut particles = Vec::with_capacity(n);
+    let mut cursor = order.into_iter().map(|(_, index)| index);
+    for (ring, cap) in caps.iter().enumerate() {
+        let fraction = (ring + 1) as f32 / (rings + 1) as f32;
+        let rx = max_rx * fraction;
+        let ry = max_ry * fraction;
+        // A fixed per-ring phase offset keeps neighboring rings from lining
+        // their slots up into visible spokes; it depends on the ring only,
+        // so it is deterministic.
+        let phase = ring as f32 * 0.7399 + 0.5;
+        for slot in 0..*cap {
+            let Some(index) = cursor.next() else {
+                break;
+            };
+            let angle = std::f32::consts::TAU * slot as f32 / (*cap).max(1) as f32 + phase;
+            let x = (cx + rx * angle.cos()).round() as i32;
+            let y = (cy + ry * angle.sin()).round() as i32;
+            let x = x.clamp(area.x as i32, (area.x + area.width - 1) as i32) as u16;
+            let y = y.clamp(area.y as i32, (area.y + area.height - 1) as i32) as u16;
+            particles.push(OrbitParticle {
+                index,
+                anchor: (x, y),
+                angle,
+            });
         }
     }
 
-    // Center the overlay like the hidden-Browse modal: full width on tiny
-    // panes, otherwise the preferred width with a margin.
-    let width = if area.width <= OVERLAY_DESIRED_WIDTH {
-        area.width
-    } else {
-        OVERLAY_DESIRED_WIDTH.min(area.width.saturating_sub(4))
-    };
-    let desired_height = (kinds.len() as u16).saturating_add(2);
-    let height = if area.height <= desired_height {
-        area.height
-    } else {
-        desired_height.min(area.height.saturating_sub(2))
-    };
-    let overlay = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
-    let inner = Rect::new(
-        overlay.x + 1,
-        overlay.y + 1,
-        overlay.width.saturating_sub(2),
-        overlay.height.saturating_sub(2),
-    );
-
-    let mut rows = Vec::new();
-    let mut nodes = Vec::new();
-    for (offset, kind) in kinds.into_iter().enumerate() {
-        let y = inner.y + offset as u16;
-        if y >= inner.y + inner.height {
-            break;
-        }
-        let row = Rect::new(inner.x, y, inner.width, 1);
-        if kind == RowKind::Nodes {
-            // Node slots: a 3-cell hit target per agent, spaced every 4 cells.
-            for index in 0..active.len() {
-                let x = row.x + 1 + (index as u16) * 4;
-                if x + 3 > row.x + row.width {
-                    break;
-                }
-                nodes.push((Rect::new(x, y, 3, 1), index));
-            }
-        }
-        rows.push((row, kind));
-    }
-
-    Some(OverlayLayout {
-        overlay,
-        rows,
-        nodes,
-    })
+    BeatOrbitLayout { particles }
 }
 
-/// Index of the overlay-selected agent within the sorted active list.
-fn selected_index(app: &App) -> Option<usize> {
-    let selected = app.selected_agent()?;
-    app.active_agents()
-        .iter()
-        .position(|view| view.pane_id == selected.pane_id)
+// --- canvas geometry --------------------------------------------------------
+
+/// Whether the full-screen canvas exists at all: overlay open, integration
+/// visible, and Signal View (which keeps its own input/display contract)
+/// inactive.
+fn canvas_active(app: &App) -> bool {
+    app.is_agent_overlay_open()
+        && !app.is_signal_view()
+        && app.agent_pulse_connection() != AgentPulseConnection::Hidden
+}
+
+/// The orbit region inside the canvas: below the title/banner rows and above
+/// the label/footer rows.
+fn orbit_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x,
+        area.y + 2,
+        area.width,
+        area.height.saturating_sub(4),
+    )
 }
 
 /// Whether (`x`, `y`) falls inside `rect`.
@@ -354,272 +230,610 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
-// --- hit testing -----------------------------------------------------------
+// --- hit testing ------------------------------------------------------------
 
-/// Pure mouse hit test for the overlay; see `ui::agent_pulse_hit_test`.
+/// Pure mouse hit test for the Beat Orbit canvas.
 ///
-/// Returns only read-only selection/disclosure actions, and `None` whenever
-/// the overlay is closed, the integration is hidden, the connection is stale
-/// or unavailable, Signal View is active, or the click is outside the overlay
-/// or on a non-interactive row.
+/// Maps a click on a particle's stable slot (a three-cell target centered on
+/// its anchor) to the read-only [`Action::SelectAgent`]; returns `None`
+/// whenever the canvas is closed, the integration is hidden, the connection
+/// is stale or unavailable, Signal View is active, or the click misses every
+/// particle. Clicks resolve against anchors, not displaced positions, so a
+/// beat never steals a click.
 pub(super) fn hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<Action> {
     if app.agent_pulse_connection() != AgentPulseConnection::Connected {
         return None;
     }
-    let layout = overlay_layout(app, area)?;
-    if !rect_contains(layout.overlay, column, row) {
+    if !canvas_active(app) || area.width < 8 || area.height < 5 {
         return None;
     }
-    for (rect, index) in &layout.nodes {
-        if rect_contains(*rect, column, row) {
-            let pane = app.active_agents().get(*index)?.pane_id.clone();
-            return Some(Action::SelectAgent(pane));
-        }
+    let agents = app.active_agents();
+    if agents.is_empty() || !rect_contains(area, column, row) {
+        return None;
     }
-    for (rect, kind) in &layout.rows {
-        if !rect_contains(*rect, column, row) {
-            continue;
-        }
-        match kind {
-            RowKind::ListRow(index) => {
-                let pane = app.active_agents().get(*index)?.pane_id.clone();
-                return Some(Action::SelectAgent(pane));
-            }
-            RowKind::Disclosure => return Some(Action::ToggleCompletedAgents),
-            _ => return None,
+    let layout = beat_orbit_layout(agents, orbit_area(area));
+    for particle in &layout.particles {
+        let (ax, ay) = particle.anchor;
+        if row == ay && column + 1 >= ax && column <= ax + 1 {
+            let view = agents.get(particle.index)?;
+            return Some(Action::SelectAgent(view.id.clone()));
         }
     }
     None
 }
 
-// --- overlay rendering -----------------------------------------------------
+// --- canvas rendering -------------------------------------------------------
 
-/// Render the Status Constellation overlay over the composed normal layout.
+/// Render the full-screen Beat Orbit canvas over the composed normal layout.
 ///
-/// A no-op unless the overlay is open and the integration is visible, so
-/// normal and standalone output is untouched. Clears the centered rect, then
-/// draws the constellation, short active list, information card, and
-/// completed disclosure from the shared [`overlay_layout`] geometry. `now`
-/// and `low_power` are injected by the render entry point, keeping motion
-/// deterministic and clock-free here.
-pub(super) fn render_overlay(
+/// A no-op unless the canvas is active, so normal and standalone output is
+/// untouched. Clears the full area, then draws the title/count, the particle
+/// field driven by the current [`crate::model::VizFrame`], the selected
+/// explicit-name label, and a restrained footer hint. Stale renders the last
+/// orbit frozen and dimmed with a `reconnecting` banner; Unavailable hides
+/// every particle behind calm copy. `now` is injected by the render entry
+/// point but deliberately unused: motion derives from audio frames only.
+pub(super) fn render_canvas(
     app: &App,
     theme: &Theme,
     low_power: bool,
-    now: Instant,
+    _now: Instant,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let Some(layout) = overlay_layout(app, area) else {
+    if !canvas_active(app) || area.width < 8 || area.height < 5 {
         return;
-    };
-    let stale = app.agent_pulse_connection() == AgentPulseConnection::Stale;
-    let selected = selected_index(app);
+    }
+    Clear.render(area, buf);
+    buf.set_style(area, theme.base_style());
 
-    Clear.render(layout.overlay, buf);
-    buf.set_style(layout.overlay, theme.base_style());
-    super::bordered_block(theme, "Agent Pulse", false).render(layout.overlay, buf);
+    let connection = app.agent_pulse_connection();
+    let agents = app.active_agents();
+    let stale = connection == AgentPulseConnection::Stale;
+    let muted = Style::default().fg(theme.muted);
+    let dim_muted = muted.add_modifier(Modifier::DIM);
 
-    for (rect, kind) in &layout.rows {
-        let line = match kind {
-            RowKind::Blank | RowKind::Nodes => continue,
-            RowKind::Banner => {
-                Line::styled("stale · reconnecting", Style::default().fg(theme.muted))
-            }
-            RowKind::ListRow(index) => match app.active_agents().get(*index) {
-                Some(view) => list_row_line(view, selected == Some(*index), theme, now),
-                None => continue,
-            },
-            RowKind::ListMore(hidden) => {
-                Line::styled(format!("… {hidden} more"), Style::default().fg(theme.muted))
-            }
-            RowKind::CardTitle => card_title_line(app, theme),
-            RowKind::CardStatus => match app.selected_agent() {
-                Some(view) => Line::from(vec![
-                    Span::styled(
-                        status_label(view.status).to_string(),
-                        Style::default().fg(status_color(view.status, theme)),
-                    ),
-                    Span::styled(
-                        format!(
-                            " for {}",
-                            format_observed_duration(view.observed_duration(now))
-                        ),
-                        Style::default().fg(theme.muted),
-                    ),
-                ]),
-                None => continue,
-            },
-            RowKind::Disclosure => {
-                let arrow = if app.completed_agents_disclosed() {
-                    "▾"
-                } else {
-                    "▸"
-                };
-                Line::from(vec![
-                    Span::styled(
-                        format!("Completed ({})", app.completed_agents().len()),
-                        Style::default().fg(theme.foreground),
-                    ),
-                    Span::styled(format!(" {arrow}"), theme.accent_style()),
-                ])
-            }
-            RowKind::CompletedRow(index) => match app.completed_agents().nth(*index) {
-                Some(entry) => Line::styled(
-                    format!(
-                        "✓ {} · {} ago",
-                        entry.agent.display_name(),
-                        format_observed_duration(now.saturating_duration_since(entry.completed_at))
-                    ),
-                    Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-                ),
-                None => continue,
-            },
-            RowKind::CompletedMore(hidden) => {
-                Line::styled(format!("… {hidden} more"), Style::default().fg(theme.muted))
-            }
-            RowKind::EmptyCopy => {
-                Line::styled("agents · none active", Style::default().fg(theme.muted))
-            }
-            RowKind::UnavailableCopy => Line::styled(
-                "agents · unavailable · retrying",
-                Style::default().fg(theme.muted),
-            ),
-        };
-        let line = if stale {
-            line.patch_style(Style::default().add_modifier(Modifier::DIM))
-        } else {
-            line
-        };
-        Paragraph::new(line)
-            .style(theme.base_style())
-            .render(*rect, buf);
+    // Title row: name plus the same tiny count language as the normal line.
+    let mut title = theme.accent_style();
+    if stale {
+        title = title.add_modifier(Modifier::DIM);
+    }
+    set_row(buf, area, area.y, 1, "Agent Pulse", title);
+    let count = format!(" · {} active", agents.len());
+    set_row(
+        buf,
+        area,
+        area.y,
+        1 + "Agent Pulse".len() as u16,
+        &count,
+        if stale { dim_muted } else { muted },
+    );
+
+    if connection == AgentPulseConnection::Unavailable {
+        center_copy(buf, area, "agents · unavailable · retrying", muted);
+        footer(buf, area, muted);
+        return;
     }
 
-    // Constellation nodes, drawn cell-precise over their hit targets.
-    for (rect, index) in &layout.nodes {
-        let Some(view) = app.active_agents().get(*index) else {
+    if stale {
+        set_row(buf, area, area.y + 1, 1, "stale · reconnecting", dim_muted);
+    }
+
+    if agents.is_empty() {
+        center_copy(buf, area, "agents · none active", muted);
+        footer(buf, area, muted);
+        return;
+    }
+
+    let orbit = orbit_area(area);
+    let layout = beat_orbit_layout(agents, orbit);
+    let frame = app.viz();
+    let columns = super::visualizer::spectrum_columns(&frame.bands, orbit.width as usize);
+    let selected_index = app
+        .selected_agent()
+        .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
+
+    for particle in &layout.particles {
+        let Some(view) = agents.get(particle.index) else {
             continue;
         };
-        let mut style = if selected == Some(*index) {
-            theme.selection_style()
+        // Energy: overall RMS blended with the FFT column under the anchor,
+        // so louder music expands the orbit and each particle rides its own
+        // slice of the spectrum.
+        let column = (particle.anchor.0 - orbit.x) as usize;
+        let band = columns.get(column).map_or(0.0, |c| c.0);
+        let energy = (frame.rms * 0.65 + band * 0.35).clamp(0.0, 1.0);
+
+        let animate = !low_power && !stale;
+        let (x, y) = if animate {
+            displaced(particle, energy, orbit)
         } else {
-            node_style(view.status, theme, view.observed_duration(now), low_power)
+            particle.anchor
         };
-        if stale {
-            style = style.add_modifier(Modifier::DIM);
+        if animate && (x, y) != particle.anchor && energy > TRAIL_ENERGY {
+            buf.set_string(particle.anchor.0, particle.anchor.1, "·", dim_muted);
         }
-        buf.set_string(rect.x + 1, rect.y, status_glyph(view.status), style);
+
+        let style = if selected_index == Some(particle.index) {
+            with_stale(theme.selection_style(), stale)
+        } else {
+            particle_style(view.status, theme, energy, stale, low_power)
+        };
+        buf.set_string(x, y, status_glyph(view.status), style);
     }
+
+    // Selected label: the explicit Herdr name only. An unnamed selection
+    // shows no label at all — never a pane id, cwd, or agent-type fallback.
+    if let Some(view) = app.selected_agent() {
+        if let Some(name) = &view.name {
+            let label = format!("{name} · {}", status_label(view.status));
+            let style = Style::default().fg(theme.foreground);
+            set_row(
+                buf,
+                area,
+                area.y + area.height - 2,
+                1,
+                &label,
+                with_stale(style, stale),
+            );
+        }
+    }
+
+    footer(buf, area, muted);
 }
 
-/// One short active-list row: selection cursor, display name, agent type,
-/// short cwd label, state, and estimated state duration.
-fn list_row_line<'a>(view: &AgentView, selected: bool, theme: &Theme, now: Instant) -> Line<'a> {
-    let cursor = if selected { "▶ " } else { "  " };
-    let name_style = if selected {
-        Style::default()
-            .fg(theme.foreground)
-            .add_modifier(Modifier::BOLD)
+/// Anchor displaced outward along its slot angle by the current energy.
+fn displaced(particle: &OrbitParticle, energy: f32, orbit: Rect) -> (u16, u16) {
+    let radial = energy * MAX_RADIAL_X;
+    let dx = (radial * particle.angle.cos()).round() as i32;
+    let dy = (radial * particle.angle.sin() * CELL_ASPECT_Y).round() as i32;
+    let x =
+        (particle.anchor.0 as i32 + dx).clamp(orbit.x as i32, (orbit.x + orbit.width - 1) as i32);
+    let y =
+        (particle.anchor.1 as i32 + dy).clamp(orbit.y as i32, (orbit.y + orbit.height - 1) as i32);
+    (x as u16, y as u16)
+}
+
+/// Particle style: theme status color, silence dims, strong signal
+/// emboldens working particles (never in low power), done is always faded,
+/// and stale dims everything.
+fn particle_style(
+    status: AgentStatus,
+    theme: &Theme,
+    energy: f32,
+    stale: bool,
+    low_power: bool,
+) -> Style {
+    let mut style = Style::default().fg(status_color(status, theme));
+    if status == AgentStatus::Done {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if energy < SILENCE_ENERGY {
+        style = style.add_modifier(Modifier::DIM);
+    } else if status == AgentStatus::Working && energy > BRIGHT_ENERGY && !low_power {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    with_stale(style, stale)
+}
+
+fn with_stale(style: Style, stale: bool) -> Style {
+    if stale {
+        style.add_modifier(Modifier::DIM)
     } else {
-        Style::default().fg(theme.foreground)
-    };
-    let muted = Style::default().fg(theme.muted);
-
-    let mut spans = vec![
-        Span::styled(cursor.to_string(), theme.accent_style()),
-        Span::styled(view.display_name().to_string(), name_style),
-    ];
-    if let Some(agent) = &view.agent {
-        if agent != view.display_name() {
-            spans.push(Span::styled(format!("  {agent}"), muted));
-        }
+        style
     }
-    if let Some(cwd) = &view.cwd {
-        spans.push(Span::styled(format!("  {cwd}"), muted));
-    }
-    spans.push(Span::styled(
-        format!("  {}", status_label(view.status)),
-        Style::default().fg(status_color(view.status, theme)),
-    ));
-    spans.push(Span::styled(
-        format!(" {}", format_observed_duration(view.observed_duration(now))),
-        muted,
-    ));
-    Line::from(spans)
 }
 
-/// Information-card title: selected-agent metadata, or a quiet key hint while
-/// nothing is selected.
-fn card_title_line<'a>(app: &App, theme: &Theme) -> Line<'a> {
-    let muted = Style::default().fg(theme.muted);
-    match app.selected_agent() {
-        Some(view) => {
-            let mut spans = vec![Span::styled(
-                view.display_name().to_string(),
-                Style::default()
-                    .fg(theme.foreground)
-                    .add_modifier(Modifier::BOLD),
-            )];
-            if let Some(agent) = &view.agent {
-                if agent != view.display_name() {
-                    spans.push(Span::styled(format!(" · {agent}"), muted));
-                }
-            }
-            if let Some(cwd) = &view.cwd {
-                spans.push(Span::styled(format!(" · {cwd}"), muted));
-            }
-            Line::from(spans)
-        }
-        None => Line::from(Span::styled("Tab/↑↓ select · a/Esc close", muted)),
+/// Write `text` on `row` starting `indent` cells in, clipped to the area.
+fn set_row(buf: &mut Buffer, area: Rect, row: u16, indent: u16, text: &str, style: Style) {
+    if row >= area.y + area.height || indent >= area.width {
+        return;
     }
+    let x = area.x + indent;
+    buf.set_stringn(x, row, text, (area.width - indent) as usize, style);
+}
+
+/// Centered single-line copy for the empty/unavailable states.
+fn center_copy(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
+    let width = text.chars().count() as u16;
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height / 2;
+    buf.set_stringn(x, y, text, area.width as usize, style);
+}
+
+/// Restrained footer hint on the canvas' last row.
+fn footer(buf: &mut Buffer, area: Rect, style: Style) {
+    set_row(
+        buf,
+        area,
+        area.y + area.height - 1,
+        1,
+        "Tab/↑↓/click select · a/Esc close",
+        style,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::Action;
+    use crate::audio::AudioEvent;
     use crate::catalog::Catalog;
-    use crate::herdr::AgentSnapshot;
+    use crate::herdr::{AgentId, AgentSnapshot};
+    use crate::model::VizFrame;
     use crate::settings::Settings;
     use crate::theme::ThemeName;
+    use std::time::Duration;
 
-    fn snap(pane: &str, name: &str, status: AgentStatus) -> AgentSnapshot {
+    const CANVAS: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+    };
+
+    fn view(workspace: &str, pane: &str, status: AgentStatus) -> AgentView {
+        AgentView {
+            id: AgentId::new(workspace, pane),
+            name: None,
+            status,
+            observed_at: Instant::now(),
+        }
+    }
+
+    fn many_views(count: usize) -> Vec<AgentView> {
+        (0..count)
+            .map(|i| view("ws", &format!("p{i}"), AgentStatus::Working))
+            .collect()
+    }
+
+    fn snap(workspace: &str, pane: &str, name: Option<&str>, status: AgentStatus) -> AgentSnapshot {
         AgentSnapshot {
-            pane_id: pane.to_string(),
-            agent: Some("claude".to_string()),
-            name: Some(name.to_string()),
-            cwd: Some("~/radio".to_string()),
+            id: AgentId::new(workspace, pane),
+            name: name.map(str::to_string),
             status,
         }
     }
 
-    fn pulse_app(agents: Vec<AgentSnapshot>) -> App {
+    /// A connected app with the canvas open.
+    fn orbit_app(agents: Vec<AgentSnapshot>) -> App {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(Action::AgentSnapshot {
             agents,
             now: Instant::now(),
         });
+        app.apply(Action::ToggleAgentOverlay);
         app
     }
 
-    fn line_text(line: &Line) -> String {
-        line.spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect()
+    fn set_frame(app: &mut App, rms: f32, band: f32) {
+        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
+            vec![band; 16],
+            rms,
+            Vec::<f32>::new(),
+        ))));
+    }
+
+    fn render_orbit(app: &App, low_power: bool, now: Instant) -> Buffer {
+        let mut buf = Buffer::empty(CANVAS);
+        let theme = Theme::for_name(ThemeName::Minimal);
+        render_canvas(app, &theme, low_power, now, CANVAS, &mut buf);
+        buf
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let area = *buf.area();
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Positions of every particle glyph cell, in scan order.
+    fn glyph_positions(buf: &Buffer) -> Vec<(u16, u16, String)> {
+        let area = *buf.area();
+        let mut positions = Vec::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let symbol = buf.cell((x, y)).unwrap().symbol();
+                if ["●", "◆", "○", "✓", "?"].contains(&symbol) {
+                    positions.push((x, y, symbol.to_string()));
+                }
+            }
+        }
+        positions
+    }
+
+    // --- layout ----------------------------------------------------------
+
+    #[test]
+    fn orbit_slots_are_stable_when_status_changes() {
+        let before = beat_orbit_layout(&[view("alpha", "p1", AgentStatus::Working)], CANVAS);
+        let after = beat_orbit_layout(&[view("alpha", "p1", AgentStatus::Blocked)], CANVAS);
+        assert_eq!(before.particles[0].anchor, after.particles[0].anchor);
     }
 
     #[test]
-    fn summary_counts_use_the_specified_quiet_copy() {
-        let app = pulse_app(vec![
-            snap("pane-a", "alpha", AgentStatus::Working),
-            snap("pane-b", "beta", AgentStatus::Working),
-            snap("pane-c", "gamma", AgentStatus::Idle),
+    fn orbit_slots_differ_for_identical_panes_in_different_workspaces() {
+        let layout = beat_orbit_layout(
+            &[
+                view("alpha", "p1", AgentStatus::Working),
+                view("beta", "p1", AgentStatus::Working),
+            ],
+            CANVAS,
+        );
+        assert_eq!(layout.particles.len(), 2);
+        assert_ne!(layout.particles[0].anchor, layout.particles[1].anchor);
+    }
+
+    #[test]
+    fn dense_layout_keeps_one_particle_per_agent() {
+        let area = Rect::new(0, 0, 50, 15);
+        let layout = beat_orbit_layout(&many_views(80), area);
+        assert_eq!(layout.particles.len(), 80);
+        for particle in &layout.particles {
+            let (x, y) = particle.anchor;
+            assert!(
+                x < area.width && y < area.height,
+                "anchor ({x}, {y}) escaped the {area:?}"
+            );
+        }
+    }
+
+    // --- music reactivity -------------------------------------------------
+
+    #[test]
+    fn rms_and_bands_move_orbit_without_timer_only_motion() {
+        let t0 = Instant::now();
+        let mut app = orbit_app(vec![
+            snap("ws", "p1", Some("one"), AgentStatus::Working),
+            snap("ws", "p2", Some("two"), AgentStatus::Working),
+            snap("ws", "p3", Some("three"), AgentStatus::Working),
         ]);
+        set_frame(&mut app, 0.05, 0.0);
+        let quiet = render_orbit(&app, false, t0);
+        set_frame(&mut app, 0.90, 0.8);
+        let loud = render_orbit(&app, false, t0);
+        assert_ne!(quiet, loud, "audio frames must drive the orbit");
+        assert_ne!(
+            glyph_positions(&quiet),
+            glyph_positions(&loud),
+            "loud frames must displace particles, not just restyle them"
+        );
+    }
+
+    #[test]
+    fn silence_is_dim_and_static_across_time() {
+        let t0 = Instant::now();
+        let mut app = orbit_app(vec![
+            snap("ws", "p1", Some("one"), AgentStatus::Working),
+            snap("ws", "p2", Some("two"), AgentStatus::Idle),
+        ]);
+        set_frame(&mut app, 0.0, 0.0);
+        let first = render_orbit(&app, false, t0);
+        let later = render_orbit(&app, false, t0 + Duration::from_secs(9));
+        assert_eq!(first, later, "silent field must not animate with time");
+        for (x, y, _) in glyph_positions(&first) {
+            assert!(
+                first
+                    .cell((x, y))
+                    .unwrap()
+                    .style()
+                    .add_modifier
+                    .contains(Modifier::DIM),
+                "silent particles must be dim"
+            );
+        }
+    }
+
+    #[test]
+    fn low_power_keeps_positions_fixed_while_colors_remain() {
+        let mut app = orbit_app(vec![
+            snap("ws", "p1", Some("one"), AgentStatus::Working),
+            snap("ws", "p2", Some("two"), AgentStatus::Blocked),
+            snap("ws", "p3", Some("three"), AgentStatus::Idle),
+        ]);
+        let t0 = Instant::now();
+        set_frame(&mut app, 0.05, 0.0);
+        let quiet = glyph_positions(&render_orbit(&app, true, t0));
+        set_frame(&mut app, 0.90, 0.8);
+        let loud_low = glyph_positions(&render_orbit(&app, true, t0));
+        assert!(!quiet.is_empty());
+        assert_eq!(quiet, loud_low, "low power fixes particle positions");
+
+        // The same loud frame in normal power does move the orbit.
+        let loud_normal = glyph_positions(&render_orbit(&app, false, t0));
+        assert_ne!(loud_low, loud_normal);
+    }
+
+    // --- state, selection, and privacy -------------------------------------
+
+    #[test]
+    fn state_colors_come_from_the_theme() {
+        let mut app = orbit_app(vec![
+            snap("ws", "p1", Some("w"), AgentStatus::Working),
+            snap("ws", "p2", Some("b"), AgentStatus::Blocked),
+            snap("ws", "p3", Some("i"), AgentStatus::Idle),
+            snap("ws", "p4", Some("d"), AgentStatus::Done),
+        ]);
+        set_frame(&mut app, 0.5, 0.4);
         let theme = Theme::for_name(ThemeName::Minimal);
+        let buf = render_orbit(&app, false, Instant::now());
+        for (x, y, glyph) in glyph_positions(&buf) {
+            let style = buf.cell((x, y)).unwrap().style();
+            match glyph.as_str() {
+                "●" => assert_eq!(style.fg, Some(theme.playing), "working uses playing color"),
+                "◆" => assert_eq!(style.fg, Some(theme.error), "blocked uses error color"),
+                "○" => assert_eq!(style.fg, Some(theme.muted), "idle stays muted"),
+                "✓" => {
+                    assert_eq!(style.fg, Some(theme.muted), "done stays muted");
+                    assert!(
+                        style.add_modifier.contains(Modifier::DIM),
+                        "done fades until its snapshot removes it"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn selected_particle_shows_the_explicit_name_only() {
+        let mut app = orbit_app(vec![snap(
+            "alpha",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        let unselected = buffer_text(&render_orbit(&app, false, Instant::now()));
+        assert!(
+            !unselected.contains("research"),
+            "no label before selection: {unselected}"
+        );
+
+        app.apply(Action::SelectNextAgent);
+        let selected = buffer_text(&render_orbit(&app, false, Instant::now()));
+        assert!(
+            selected.contains("research · working"),
+            "selected label missing: {selected}"
+        );
+    }
+
+    #[test]
+    fn selecting_an_unnamed_agent_shows_no_label_at_all() {
+        let mut app = orbit_app(vec![snap("alpha", "p1", None, AgentStatus::Working)]);
+        app.apply(Action::SelectNextAgent);
+        assert!(app.selected_agent().is_some());
+        let text = buffer_text(&render_orbit(&app, false, Instant::now()));
+        assert!(
+            !text.contains("· working"),
+            "an unnamed selection must not reveal any fallback label: {text}"
+        );
+        assert!(!text.contains("p1"), "pane ids never render: {text}");
+        assert!(
+            !text.contains("alpha"),
+            "workspace ids never render: {text}"
+        );
+    }
+
+    // --- connection states --------------------------------------------------
+
+    #[test]
+    fn stale_freezes_and_dims_the_last_orbit() {
+        let mut app = orbit_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        set_frame(&mut app, 0.9, 0.8);
+        let live = glyph_positions(&render_orbit(&app, false, Instant::now()));
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        let buf = render_orbit(&app, false, Instant::now());
+        let frozen = glyph_positions(&buf);
+        assert_eq!(frozen.len(), 1, "the last orbit is retained");
+        assert_ne!(live, frozen, "stale freezes particles onto their anchors");
+        assert!(buffer_text(&buf).contains("reconnecting"));
+        for (x, y, _) in frozen {
+            assert!(
+                buf.cell((x, y))
+                    .unwrap()
+                    .style()
+                    .add_modifier
+                    .contains(Modifier::DIM),
+                "stale particles are dimmed"
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_hides_particles_behind_calm_copy() {
+        let mut app = orbit_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+        });
+        let buf = render_orbit(&app, false, Instant::now());
+        assert!(glyph_positions(&buf).is_empty(), "no particles render");
+        assert!(buffer_text(&buf).contains("agents · unavailable · retrying"));
+    }
+
+    #[test]
+    fn canvas_is_a_noop_while_closed() {
+        let mut app = orbit_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        app.apply(Action::CloseAgentOverlay);
+        let buf = render_orbit(&app, false, Instant::now());
+        assert_eq!(buf, Buffer::empty(CANVAS), "closed canvas draws nothing");
+    }
+
+    // --- hit testing --------------------------------------------------------
+
+    #[test]
+    fn clicking_a_particle_slot_selects_that_agent() {
+        let mut app = orbit_app(vec![
+            snap("alpha", "p1", Some("research"), AgentStatus::Working),
+            snap("beta", "p1", Some("review"), AgentStatus::Idle),
+        ]);
+        let layout = beat_orbit_layout(app.active_agents(), orbit_area(CANVAS));
+        let review_index = app
+            .active_agents()
+            .iter()
+            .position(|view| view.name.as_deref() == Some("review"))
+            .unwrap();
+        let particle = layout
+            .particles
+            .iter()
+            .find(|particle| particle.index == review_index)
+            .unwrap();
+        let (x, y) = particle.anchor;
+
+        let action = hit_test(CANVAS, x, y, &app).expect("anchor click selects");
+        app.apply(action);
+        assert_eq!(
+            app.selected_agent().unwrap().name.as_deref(),
+            Some("review")
+        );
+    }
+
+    #[test]
+    fn clicks_resolve_nothing_when_missed_stale_or_closed() {
+        let mut app = orbit_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        assert!(hit_test(CANVAS, 0, 0, &app).is_none(), "corner miss");
+
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        let layout = beat_orbit_layout(app.active_agents(), orbit_area(CANVAS));
+        let (x, y) = layout.particles[0].anchor;
+        assert!(
+            hit_test(CANVAS, x, y, &app).is_none(),
+            "stale ignores clicks"
+        );
+
+        let mut closed = orbit_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        closed.apply(Action::CloseAgentOverlay);
+        assert!(
+            hit_test(CANVAS, x, y, &closed).is_none(),
+            "closed canvas ignores clicks"
+        );
+    }
+
+    // --- quiet summary ------------------------------------------------------
+
+    #[test]
+    fn summary_shows_only_the_active_count() {
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let app = orbit_app(vec![
+            snap("ws", "p1", Some("research"), AgentStatus::Working),
+            snap("ws", "p2", Some("review"), AgentStatus::Idle),
+        ]);
         let line = summary_line(&app, &theme).expect("connected summary");
-        assert_eq!(line_text(&line), "● 2 working · ○ 1 idle");
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "● 2 active");
     }
 
     #[test]
@@ -628,121 +842,10 @@ mod tests {
         let hidden = App::new(Settings::default(), Catalog::curated());
         assert!(summary_line(&hidden, &theme).is_none());
 
-        let mut unavailable = pulse_app(vec![snap("pane-a", "alpha", AgentStatus::Working)]);
-        // Well past the stale threshold measured from the snapshot above.
+        let mut unavailable = orbit_app(vec![snap("ws", "p1", None, AgentStatus::Working)]);
         unavailable.apply(Action::AgentPollFailed {
             now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
         });
         assert!(summary_line(&unavailable, &theme).is_none());
-    }
-
-    #[test]
-    fn observed_duration_formats_as_calm_estimates() {
-        assert_eq!(format_observed_duration(Duration::from_secs(30)), "<1m");
-        assert_eq!(
-            format_observed_duration(Duration::from_secs(12 * 60 + 5)),
-            "~12m"
-        );
-        assert_eq!(
-            format_observed_duration(Duration::from_secs(2 * 3600 + 120)),
-            "~2h"
-        );
-    }
-
-    #[test]
-    fn low_power_motion_is_static_and_normal_motion_pulses() {
-        // Low power never dims: static nodes regardless of elapsed time.
-        for secs in 0..600 {
-            assert!(
-                !working_pulse_dim(Duration::from_secs(secs), true),
-                "low-power motion must be static at {secs}s"
-            );
-        }
-        // Normal motion alternates between both phases over a slow cycle.
-        let phases: std::collections::HashSet<bool> = (0..8)
-            .map(|secs| working_pulse_dim(Duration::from_secs(secs), false))
-            .collect();
-        assert_eq!(phases.len(), 2, "normal motion must pulse");
-    }
-
-    #[test]
-    fn node_styles_stay_quiet_and_theme_sourced() {
-        let theme = Theme::for_name(ThemeName::Minimal);
-        // Settled ages on opposite pulse phases, outside the highlight window.
-        let bright = Duration::from_secs(4);
-        let dimmed = Duration::from_secs(6);
-
-        // Working carries the playing color and only its pulse phase dims it.
-        assert_eq!(
-            node_style(AgentStatus::Working, &theme, bright, false).fg,
-            Some(theme.playing)
-        );
-        assert!(node_style(AgentStatus::Working, &theme, dimmed, false)
-            .add_modifier
-            .contains(Modifier::DIM));
-        // Low-power working nodes are static across phases.
-        assert_eq!(
-            node_style(AgentStatus::Working, &theme, bright, true),
-            node_style(AgentStatus::Working, &theme, dimmed, true)
-        );
-        // Blocked is static: the pulse phase never changes it.
-        assert_eq!(
-            node_style(AgentStatus::Blocked, &theme, bright, false),
-            node_style(AgentStatus::Blocked, &theme, dimmed, false)
-        );
-        assert_eq!(
-            node_style(AgentStatus::Blocked, &theme, bright, false).fg,
-            Some(theme.error)
-        );
-        // Done dims.
-        assert!(node_style(AgentStatus::Done, &theme, bright, false)
-            .add_modifier
-            .contains(Modifier::DIM));
-    }
-
-    #[test]
-    fn fresh_status_change_is_acknowledged_once_then_expires() {
-        let theme = Theme::for_name(ThemeName::Minimal);
-        // Inside the window the node is emphasized; after it, never again.
-        assert!(recent_change_highlight(Duration::from_secs(1)));
-        assert!(!recent_change_highlight(STATUS_CHANGE_HIGHLIGHT));
-        assert!(
-            node_style(AgentStatus::Blocked, &theme, Duration::from_secs(1), false)
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
-        assert!(
-            !node_style(AgentStatus::Blocked, &theme, Duration::from_secs(30), false)
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
-    }
-
-    #[test]
-    fn clicking_a_named_list_row_selects_that_pane() {
-        let mut app = pulse_app(vec![
-            snap("pane-a", "alpha", AgentStatus::Working),
-            snap("pane-b", "beta", AgentStatus::Blocked),
-        ]);
-        app.apply(Action::ToggleAgentOverlay);
-
-        let area = Rect::new(0, 0, 130, 32);
-        let mut buf = Buffer::empty(area);
-        super::super::render_into(&app, false, Instant::now(), area, &mut buf);
-        let row = (0..area.height)
-            .find(|&y| {
-                (0..area.width)
-                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
-                    .collect::<String>()
-                    .contains("beta")
-            })
-            .expect("beta list row rendered");
-
-        let layout = overlay_layout(&app, area).expect("overlay layout");
-        let action = hit_test(area, layout.overlay.x + 2, row, &app);
-        match action {
-            Some(Action::SelectAgent(pane)) => assert_eq!(pane, "pane-b"),
-            other => panic!("expected SelectAgent(pane-b), got {other:?}"),
-        }
     }
 }

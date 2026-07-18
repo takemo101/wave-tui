@@ -24,11 +24,11 @@ const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HerdrContext {
     pub socket_path: PathBuf,
-    pub workspace_id: String,
 }
 
-// `AgentStatus` and `AgentSnapshot` are `pub` (not `pub(crate)`) because they
-// appear in the public `app::Action` enum, like `audio::AudioEvent`.
+// `AgentStatus`, `AgentSnapshot`, and `AgentId` are `pub` (not `pub(crate)`)
+// because they appear in the public `app::Action` enum, like
+// `audio::AudioEvent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStatus {
     Working,
@@ -38,12 +38,33 @@ pub enum AgentStatus {
     Unknown,
 }
 
+/// Stable agent identity across every workspace served by the current
+/// control socket: the workspace-qualified pane.
+///
+/// The parts stay private so no caller can display or leak the raw pane or
+/// workspace ids; identity is only compared, ordered, and hashed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AgentId {
+    workspace_id: String,
+    pane_id: String,
+}
+
+impl AgentId {
+    pub(crate) fn new(workspace_id: impl Into<String>, pane_id: impl Into<String>) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            pane_id: pane_id.into(),
+        }
+    }
+}
+
+/// One normalized agent from the current control socket. Only the explicit
+/// Herdr name may ever be displayed; everything else about the source pane
+/// stays behind the private [`AgentId`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSnapshot {
-    pub pane_id: String,
-    pub agent: Option<String>,
+    pub(crate) id: AgentId,
     pub name: Option<String>,
-    pub cwd: Option<String>,
     pub status: AgentStatus,
 }
 
@@ -64,6 +85,9 @@ pub(crate) fn context_from_env(disabled: bool) -> Option<HerdrContext> {
     )
 }
 
+/// A complete plugin environment (including a non-empty workspace id) is
+/// still required for eligibility, but the workspace id is not retained:
+/// `agent.list` aggregates every workspace served by the current socket.
 fn context_from_vars(
     disabled: bool,
     herdr_env: Option<String>,
@@ -77,10 +101,9 @@ fn context_from_vars(
         return None;
     }
     let socket_path = socket_path.filter(|path| !path.is_empty())?;
-    let workspace_id = workspace_id.filter(|id| !id.is_empty())?;
+    workspace_id.filter(|id| !id.is_empty())?;
     Some(HerdrContext {
         socket_path: PathBuf::from(socket_path),
-        workspace_id,
     })
 }
 
@@ -99,31 +122,25 @@ struct RawAgent {
     pane_id: String,
     workspace_id: String,
     #[serde(default)]
-    agent: Option<String>,
-    #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
-    cwd: Option<String>,
     #[serde(default)]
     agent_status: Option<String>,
 }
 
-/// Parses one `agent.list` response line and keeps only agents in the
-/// requested workspace. Returns `None` when the framing, `result`, or
-/// `agents` array is malformed; entries missing required ids are dropped.
-fn parse_agent_list(line: &str, workspace_id: &str) -> Option<Vec<AgentSnapshot>> {
+/// Parses one `agent.list` response line, normalizing every agent the
+/// current socket returns across all of its workspaces. Returns `None` when
+/// the framing, `result`, or `agents` array is malformed; entries missing
+/// required ids are dropped.
+fn parse_agent_list(line: &str) -> Option<Vec<AgentSnapshot>> {
     let response: RawResponse = serde_json::from_str(line).ok()?;
     let agents = response.result?.agents?;
     Some(
         agents
             .into_iter()
             .filter_map(|value| serde_json::from_value::<RawAgent>(value).ok())
-            .filter(|raw| raw.workspace_id == workspace_id)
             .map(|raw| AgentSnapshot {
-                pane_id: raw.pane_id,
-                agent: raw.agent,
+                id: AgentId::new(raw.workspace_id, raw.pane_id),
                 name: raw.name,
-                cwd: raw.cwd,
                 status: normalize_status(raw.agent_status.as_deref()),
             })
             .collect(),
@@ -163,7 +180,7 @@ fn request_agent_list(context: &HerdrContext, request_id: u64) -> Option<Vec<Age
     if read == 0 {
         return None;
     }
-    parse_agent_list(line.trim_end(), &context.workspace_id)
+    parse_agent_list(line.trim_end())
 }
 
 fn poll_once(context: &HerdrContext, request_id: u64) -> MonitorEvent {
@@ -258,7 +275,6 @@ mod tests {
         let context = context_from_vars(false, herdr_env, socket, workspace)
             .expect("exact plugin environment should be eligible");
         assert_eq!(context.socket_path, PathBuf::from("/tmp/herdr.sock"));
-        assert_eq!(context.workspace_id, WORKSPACE);
     }
 
     #[test]
@@ -292,6 +308,8 @@ mod tests {
 
     #[test]
     fn context_rejects_missing_or_empty_workspace_id() {
+        // The workspace id is no longer retained, but an incomplete plugin
+        // environment (no workspace id) must stay ineligible.
         for workspace in [None, Some(String::new())] {
             let (herdr_env, socket, _) = eligible_vars();
             assert!(
@@ -321,7 +339,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_and_filters_current_workspace_agents() {
+    fn parses_agents_from_every_workspace_with_qualified_identity() {
+        let parsed = parse_agent_list(concat!(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"agents":["#,
+            r#"{"pane_id":"p1","workspace_id":"alpha","name":"research","agent_status":"working"},"#,
+            r#"{"pane_id":"p1","workspace_id":"beta","name":"review","agent_status":"idle"}"#,
+            r#"]}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_ne!(parsed[0].id, parsed[1].id);
+    }
+
+    #[test]
+    fn parses_every_workspace_agent_without_filtering() {
         let line = concat!(
             r#"{"jsonrpc":"2.0","id":1,"result":{"agents":["#,
             r#"{"pane_id":"p1","workspace_id":"ws-1","agent":"claude","name":"impl","cwd":"~/repo","agent_status":"working"},"#,
@@ -329,22 +361,23 @@ mod tests {
             r#"{"pane_id":"p3","workspace_id":"ws-1","agent_status":"blocked"}"#,
             r#"]}}"#,
         );
-        let agents = parse_agent_list(line, WORKSPACE).expect("valid payload");
+        let agents = parse_agent_list(line).expect("valid payload");
         assert_eq!(
             agents,
             vec![
                 AgentSnapshot {
-                    pane_id: "p1".to_string(),
-                    agent: Some("claude".to_string()),
+                    id: AgentId::new("ws-1", "p1"),
                     name: Some("impl".to_string()),
-                    cwd: Some("~/repo".to_string()),
                     status: AgentStatus::Working,
                 },
                 AgentSnapshot {
-                    pane_id: "p3".to_string(),
-                    agent: None,
+                    id: AgentId::new("ws-2", "p2"),
                     name: None,
-                    cwd: None,
+                    status: AgentStatus::Idle,
+                },
+                AgentSnapshot {
+                    id: AgentId::new("ws-1", "p3"),
+                    name: None,
                     status: AgentStatus::Blocked,
                 },
             ]
@@ -361,7 +394,7 @@ mod tests {
             r#"{"pane_id":"p4","workspace_id":"ws-1","agent_status":"idle"}"#,
             r#"]}}"#,
         );
-        let statuses: Vec<AgentStatus> = parse_agent_list(line, WORKSPACE)
+        let statuses: Vec<AgentStatus> = parse_agent_list(line)
             .expect("valid payload")
             .into_iter()
             .map(|agent| agent.status)
@@ -385,7 +418,7 @@ mod tests {
             r#"{"pane_id":"p2","workspace_id":"ws-1"}"#,
             r#"]}}"#,
         );
-        let agents = parse_agent_list(line, WORKSPACE).expect("valid payload");
+        let agents = parse_agent_list(line).expect("valid payload");
         assert_eq!(agents.len(), 2);
         assert!(agents
             .iter()
@@ -400,7 +433,7 @@ mod tests {
             r#"{"pane_id":"p2","workspace_id":"ws-1","status":"working"}"#,
             r#"]}}"#,
         );
-        let agents = parse_agent_list(line, WORKSPACE).expect("valid payload");
+        let agents = parse_agent_list(line).expect("valid payload");
         assert_eq!(agents.len(), 2);
         assert_eq!(
             agents[0].status,
@@ -423,9 +456,9 @@ mod tests {
             r#"{"pane_id":"p3","workspace_id":"ws-1","agent_status":"working"}"#,
             r#"]}}"#,
         );
-        let agents = parse_agent_list(line, WORKSPACE).expect("valid payload");
+        let agents = parse_agent_list(line).expect("valid payload");
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].pane_id, "p3");
+        assert_eq!(agents[0].id, AgentId::new("ws-1", "p3"));
     }
 
     #[test]
@@ -439,7 +472,7 @@ mod tests {
         ];
         for line in malformed {
             assert!(
-                parse_agent_list(line, WORKSPACE).is_none(),
+                parse_agent_list(line).is_none(),
                 "payload should be rejected: {line}"
             );
         }
@@ -449,7 +482,6 @@ mod tests {
     fn monitor_reports_failure_and_stops_cleanly() {
         let context = HerdrContext {
             socket_path: PathBuf::from("/nonexistent/herdr-agent-pulse-test.sock"),
-            workspace_id: WORKSPACE.to_string(),
         };
         let monitor = spawn_monitor(context);
         let event = monitor

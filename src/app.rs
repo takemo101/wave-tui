@@ -18,7 +18,7 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::herdr::{self, AgentSnapshot, AgentStatus};
+use crate::herdr::{self, AgentId, AgentSnapshot, AgentStatus};
 use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
@@ -29,9 +29,6 @@ use std::time::{Duration, Instant};
 
 /// Step applied to the volume for a single `VolumeUp`/`VolumeDown` action.
 const VOLUME_STEP: i32 = 5;
-
-/// Number of completed Agent Pulse entries kept in process-local history.
-const COMPLETED_AGENTS_CAP: usize = 20;
 
 /// Number of visualizer bands held in the current frame when idle/stopped.
 const VIZ_BANDS: usize = 16;
@@ -120,40 +117,28 @@ pub(crate) enum AgentPulseConnection {
     Unavailable,
 }
 
-/// One live agent pane as Agent Pulse displays it.
+/// One live agent as Agent Pulse displays it.
 ///
-/// `observed_at` is when this app first saw the pane in its current status —
-/// a locally derived estimate for the `~12m` display, not an assertion about
-/// the agent's true process start time.
-// Temporary dead-code allowance: the cwd/timing fields are read by the Agent
-// Pulse UI in a follow-up task; reducer tests exercise them until then.
+/// `observed_at` is when this app first saw the agent in its current status —
+/// a locally derived estimate, not an assertion about the agent's true
+/// process start time. The view deliberately carries no pane id, cwd, or
+/// agent type: the explicit `name` is the only displayable label, and the
+/// private [`AgentId`] exists solely for identity.
+// Temporary dead-code allowance: the timing field is read by the Beat Orbit
+// UI in a follow-up task; reducer tests exercise it until then.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentView {
-    pub(crate) pane_id: String,
-    pub(crate) agent: Option<String>,
+    pub(crate) id: AgentId,
+    /// Explicit Herdr agent name; the only label the UI may ever show.
     pub(crate) name: Option<String>,
-    pub(crate) cwd: Option<String>,
     pub(crate) status: AgentStatus,
     pub(crate) observed_at: Instant,
-    /// Whether this pane already produced its completed-history entry for the
-    /// current status episode. Cleared on a status change so a pane that
-    /// resumes after `done` can complete again without duplicating entries
-    /// across unchanged polling snapshots.
-    completed_recorded: bool,
 }
 
 #[allow(dead_code)]
 impl AgentView {
-    /// Stable display name: explicit name, then agent type, then the pane id.
-    pub(crate) fn display_name(&self) -> &str {
-        self.name
-            .as_deref()
-            .or(self.agent.as_deref())
-            .unwrap_or(&self.pane_id)
-    }
-
-    /// Elapsed time since the pane was first observed in its current status.
+    /// Elapsed time since the agent was first observed in its current status.
     pub(crate) fn observed_duration(&self, now: Instant) -> Duration {
         now.duration_since(self.observed_at)
     }
@@ -170,16 +155,6 @@ impl AgentView {
     }
 }
 
-/// A completed-history entry: the agent as last seen plus when it completed.
-// Temporary dead-code allowance: fields are read by the overlay's Completed
-// disclosure in a follow-up task; reducer tests exercise them until then.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CompletedAgent {
-    pub(crate) agent: AgentView,
-    pub(crate) completed_at: Instant,
-}
-
 /// Visibility of the temporary Agent Pulse overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentOverlay {
@@ -187,23 +162,21 @@ pub(crate) enum AgentOverlay {
     Open,
 }
 
-/// All Agent Pulse state owned by [`App`].
+/// All Agent Pulse state owned by [`App`]: live agents only.
 ///
-/// Process-local only: nothing here is persisted, and the reducer never
-/// touches the Herdr socket — typed snapshots and failures arrive as
-/// [`Action`]s from the controller over the existing event-loop boundary.
+/// Process-local only: nothing here is persisted, no completed history is
+/// kept, and the reducer never touches the Herdr socket — typed snapshots
+/// and failures arrive as [`Action`]s from the controller over the existing
+/// event-loop boundary.
 #[derive(Debug)]
 struct AgentPulse {
     connection: AgentPulseConnection,
-    /// Active current-workspace agents in display (sorted) order.
+    /// Live agents across the current socket's workspaces, in display
+    /// (sorted) order.
     active: Vec<AgentView>,
-    /// Completed history, newest first, bounded to [`COMPLETED_AGENTS_CAP`].
-    completed: VecDeque<CompletedAgent>,
-    /// Pane id of the overlay-selected active agent.
-    selected: Option<String>,
+    /// Identity of the selected active agent.
+    selected: Option<AgentId>,
     overlay: AgentOverlay,
-    /// Whether the overlay's `Completed (n)` disclosure is expanded.
-    completed_disclosed: bool,
     /// When the last successful snapshot arrived.
     last_success: Option<Instant>,
     /// When the current failure streak began; cleared by any success.
@@ -216,25 +189,21 @@ impl AgentPulse {
         Self {
             connection: AgentPulseConnection::Hidden,
             active: Vec::new(),
-            completed: VecDeque::new(),
             selected: None,
             overlay: AgentOverlay::Closed,
-            completed_disclosed: false,
             last_success: None,
             first_failure: None,
         }
     }
 
-    /// Index of the selected pane in the sorted active list, when it is
+    /// Index of the selected agent in the sorted active list, when it is
     /// still an active agent.
     fn selected_index(&self) -> Option<usize> {
         let selected = self.selected.as_ref()?;
-        self.active
-            .iter()
-            .position(|view| &view.pane_id == selected)
+        self.active.iter().position(|view| &view.id == selected)
     }
 
-    /// Drop the overlay selection when its pane left the active list.
+    /// Drop the selection when its agent left the active list.
     fn clamp_selection(&mut self) {
         if self.selected_index().is_none() {
             self.selected = None;
@@ -242,50 +211,21 @@ impl AgentPulse {
     }
 }
 
-/// Push a completed entry, newest first, discarding the oldest entries past
-/// [`COMPLETED_AGENTS_CAP`].
-fn record_completed(
-    completed: &mut VecDeque<CompletedAgent>,
-    agent: AgentView,
-    completed_at: Instant,
-) {
-    completed.push_front(CompletedAgent {
-        agent,
-        completed_at,
-    });
-    completed.truncate(COMPLETED_AGENTS_CAP);
-}
-
-/// Move panes into completed history exactly once per status episode: panes
-/// missing from the new snapshot, and live panes newly reported `done`.
-fn reconcile_completed(
-    completed: &mut VecDeque<CompletedAgent>,
-    previous: Vec<AgentView>,
-    active: &mut [AgentView],
-    now: Instant,
-) {
-    for view in previous {
-        let disappeared = !active.iter().any(|next| next.pane_id == view.pane_id);
-        if disappeared && !view.completed_recorded {
-            record_completed(completed, view, now);
-        }
-    }
-    for view in active.iter_mut() {
-        if view.status == AgentStatus::Done && !view.completed_recorded {
-            view.completed_recorded = true;
-            record_completed(completed, view.clone(), now);
-        }
-    }
-}
-
 /// Sort active agents by state (working, blocked, idle, done, unknown), then
-/// by stable display name, with the pane id as the final tiebreaker.
+/// by explicit name (named agents before unnamed ones), with the stable
+/// identity as the final tiebreaker so equal entries keep a deterministic
+/// order across snapshots.
 fn sort_active_agents(agents: &mut [AgentView]) {
     agents.sort_by(|a, b| {
         a.status_rank()
             .cmp(&b.status_rank())
-            .then_with(|| a.display_name().cmp(b.display_name()))
-            .then_with(|| a.pane_id.cmp(&b.pane_id))
+            .then_with(|| match (&a.name, &b.name) {
+                (Some(a_name), Some(b_name)) => a_name.cmp(b_name),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| a.id.cmp(&b.id))
     });
 }
 
@@ -447,7 +387,8 @@ pub enum Action {
     LeaveSignalView,
     /// Toggle favorite state of the current station shown in Signal View (`f`).
     ToggleCurrentFavorite,
-    /// Apply a fresh Herdr `agent.list` snapshot for the current workspace.
+    /// Apply a fresh Herdr `agent.list` snapshot covering every workspace
+    /// served by the current control socket.
     AgentSnapshot {
         agents: Vec<AgentSnapshot>,
         now: Instant,
@@ -465,10 +406,9 @@ pub enum Action {
     SelectNextAgent,
     /// Move the overlay selection up the sorted active-agent list.
     SelectPreviousAgent,
-    /// Select an active agent by pane id (overlay mouse/list selection).
-    SelectAgent(String),
-    /// Toggle the overlay's `Completed (n)` disclosure.
-    ToggleCompletedAgents,
+    /// Select an active agent by its stable identity (mouse/particle
+    /// selection).
+    SelectAgent(AgentId),
 }
 
 /// The application state.
@@ -584,8 +524,7 @@ impl App {
             Action::CloseAgentOverlay => self.close_agent_overlay(),
             Action::SelectNextAgent => self.select_next_agent(),
             Action::SelectPreviousAgent => self.select_previous_agent(),
-            Action::SelectAgent(pane_id) => self.select_agent(pane_id),
-            Action::ToggleCompletedAgents => self.toggle_completed_agents(),
+            Action::SelectAgent(id) => self.select_agent(id),
         }
     }
 
@@ -951,10 +890,11 @@ impl App {
 
     /// Fold a successful `agent.list` snapshot into Agent Pulse state.
     ///
-    /// The snapshot replaces the active current-workspace view: panes keep
-    /// their `observed_at` while their status is unchanged and reset it on a
-    /// status change; `done` panes and panes missing from the new snapshot
-    /// move to completed history exactly once per status episode. A success
+    /// Live-only reconciliation: the snapshot fully replaces the active
+    /// view. Agents keep their `observed_at` while their identity and status
+    /// are unchanged and reset it on a status change. A `done` agent stays
+    /// in the active list (so the UI can dim it) until a later snapshot
+    /// omits it; nothing is recorded once an agent disappears. A success
     /// always recovers the connection to `Connected`.
     fn apply_agent_snapshot(&mut self, agents: Vec<AgentSnapshot>, now: Instant) {
         let pulse = &mut self.agent_pulse;
@@ -962,21 +902,17 @@ impl App {
         let mut active: Vec<AgentView> = agents
             .into_iter()
             .map(|snapshot| {
-                let carried = previous.iter().find(|view| {
-                    view.pane_id == snapshot.pane_id && view.status == snapshot.status
-                });
+                let carried = previous
+                    .iter()
+                    .find(|view| view.id == snapshot.id && view.status == snapshot.status);
                 AgentView {
                     observed_at: carried.map_or(now, |view| view.observed_at),
-                    completed_recorded: carried.is_some_and(|view| view.completed_recorded),
-                    pane_id: snapshot.pane_id,
-                    agent: snapshot.agent,
+                    id: snapshot.id,
                     name: snapshot.name,
-                    cwd: snapshot.cwd,
                     status: snapshot.status,
                 }
             })
             .collect();
-        reconcile_completed(&mut pulse.completed, previous, &mut active, now);
         sort_active_agents(&mut active);
         pulse.active = active;
         pulse.clamp_selection();
@@ -1033,7 +969,7 @@ impl App {
             && self.display_mode != DisplayMode::SignalView
     }
 
-    /// Whether overlay-internal actions (selection, disclosure) may run.
+    /// Whether overlay-internal actions (selection) may run.
     fn agent_overlay_interactive(&self) -> bool {
         self.agent_pulse_interactive() && self.agent_pulse.overlay == AgentOverlay::Open
     }
@@ -1066,7 +1002,7 @@ impl App {
             Some(index) => (index + 1).min(pulse.active.len().saturating_sub(1)),
             None => 0,
         };
-        pulse.selected = pulse.active.get(index).map(|view| view.pane_id.clone());
+        pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
     }
 
     /// Move the overlay selection up one row, never above the first agent;
@@ -1080,25 +1016,18 @@ impl App {
             Some(index) => index.saturating_sub(1),
             None => pulse.active.len().saturating_sub(1),
         };
-        pulse.selected = pulse.active.get(index).map(|view| view.pane_id.clone());
+        pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
     }
 
-    /// Select an active agent by pane id; unknown panes change nothing.
-    fn select_agent(&mut self, pane_id: String) {
+    /// Select an active agent by its identity; unknown agents change nothing.
+    fn select_agent(&mut self, id: AgentId) {
         if !self.agent_overlay_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
-        if pulse.active.iter().any(|view| view.pane_id == pane_id) {
-            pulse.selected = Some(pane_id);
+        if pulse.active.iter().any(|view| view.id == id) {
+            pulse.selected = Some(id);
         }
-    }
-
-    fn toggle_completed_agents(&mut self) {
-        if !self.agent_overlay_interactive() {
-            return;
-        }
-        self.agent_pulse.completed_disclosed = !self.agent_pulse.completed_disclosed;
     }
 
     // --- queries (read-only, for UI/controller) -------------------------
@@ -1276,17 +1205,13 @@ impl App {
         self.agent_pulse.connection
     }
 
-    /// Active current-workspace agents in display (sorted) order.
+    /// Live agents across the current socket's workspaces, in display
+    /// (sorted) order.
     pub(crate) fn active_agents(&self) -> &[AgentView] {
         &self.agent_pulse.active
     }
 
-    /// Completed history, newest first, bounded to the 20 newest entries.
-    pub(crate) fn completed_agents(&self) -> impl ExactSizeIterator<Item = &CompletedAgent> {
-        self.agent_pulse.completed.iter()
-    }
-
-    /// The overlay-selected active agent, if one is still active.
+    /// The selected active agent, if one is still active.
     pub(crate) fn selected_agent(&self) -> Option<&AgentView> {
         let index = self.agent_pulse.selected_index()?;
         self.agent_pulse.active.get(index)
@@ -1296,17 +1221,12 @@ impl App {
     pub(crate) fn is_agent_overlay_open(&self) -> bool {
         self.agent_pulse.overlay == AgentOverlay::Open
     }
-
-    /// Whether the overlay's `Completed (n)` disclosure is expanded.
-    pub(crate) fn completed_agents_disclosed(&self) -> bool {
-        self.agent_pulse.completed_disclosed
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr::{AgentSnapshot, AgentStatus};
+    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
     use crate::model::{
         BitrateKbps, CodecKind, StationId, StationName, StationSource, StreamUrl, VisualizerMode,
         VolumePercent,
@@ -2434,33 +2354,41 @@ mod tests {
         assert_eq!(app.selected_index(), 0);
     }
 
-    // --- Herdr Agent Pulse reducer state (MIK-057) -----------------------
+    // --- Herdr Agent Pulse reducer state (Beat Orbit: live-only) ---------
 
-    /// A minimal typed agent entry as the Herdr adapter would deliver it.
-    fn pulse_agent(pane: &str, status: AgentStatus) -> AgentSnapshot {
+    /// A typed agent entry as the Herdr adapter would deliver it.
+    fn agent(
+        workspace: &str,
+        pane: &str,
+        name: Option<&str>,
+        status: AgentStatus,
+    ) -> AgentSnapshot {
         AgentSnapshot {
-            pane_id: pane.to_string(),
-            agent: None,
-            name: None,
-            cwd: None,
+            id: AgentId::new(workspace, pane),
+            name: name.map(str::to_string),
             status,
         }
+    }
+
+    fn agent_id(workspace: &str, pane: &str) -> AgentId {
+        AgentId::new(workspace, pane)
     }
 
     fn agent_snapshot(agents: Vec<AgentSnapshot>, now: Instant) -> Action {
         Action::AgentSnapshot { agents, now }
     }
 
-    fn active_pane_ids(app: &App) -> Vec<String> {
-        app.active_agents()
-            .iter()
-            .map(|agent| agent.pane_id.clone())
-            .collect()
+    /// An app that received one Agent Pulse snapshot.
+    fn app_with_agents(agents: Vec<AgentSnapshot>) -> App {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(agents, Instant::now()));
+        app
     }
 
-    fn completed_pane_ids(app: &App) -> Vec<String> {
-        app.completed_agents()
-            .map(|entry| entry.agent.pane_id.clone())
+    fn active_names(app: &App) -> Vec<Option<&str>> {
+        app.active_agents()
+            .iter()
+            .map(|view| view.name.as_deref())
             .collect()
     }
 
@@ -2471,9 +2399,7 @@ mod tests {
         let app = App::new(Settings::default(), Catalog::curated());
         assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Hidden);
         assert!(app.active_agents().is_empty());
-        assert_eq!(app.completed_agents().len(), 0);
         assert!(!app.is_agent_overlay_open());
-        assert!(!app.completed_agents_disclosed());
         assert!(app.selected_agent().is_none());
     }
 
@@ -2483,12 +2409,12 @@ mod tests {
         let now = Instant::now();
         app.apply(agent_snapshot(
             vec![
-                pulse_agent("p-unknown", AgentStatus::Unknown),
-                pulse_agent("p-done", AgentStatus::Done),
-                pulse_agent("p-idle", AgentStatus::Idle),
-                pulse_agent("p-blocked", AgentStatus::Blocked),
-                pulse_agent("p-working-z", AgentStatus::Working),
-                pulse_agent("p-working-a", AgentStatus::Working),
+                agent("ws", "p1", Some("unknown"), AgentStatus::Unknown),
+                agent("ws", "p2", Some("done"), AgentStatus::Done),
+                agent("ws", "p3", Some("idle"), AgentStatus::Idle),
+                agent("ws", "p4", Some("blocked"), AgentStatus::Blocked),
+                agent("ws", "p5", Some("w-z"), AgentStatus::Working),
+                agent("ws", "p6", Some("w-a"), AgentStatus::Working),
             ],
             now,
         ));
@@ -2498,49 +2424,83 @@ mod tests {
             AgentPulseConnection::Connected
         );
         assert_eq!(
-            active_pane_ids(&app),
+            active_names(&app),
             vec![
-                "p-working-a",
-                "p-working-z",
-                "p-blocked",
-                "p-idle",
-                "p-done",
-                "p-unknown",
+                Some("w-a"),
+                Some("w-z"),
+                Some("blocked"),
+                Some("idle"),
+                Some("done"),
+                Some("unknown"),
             ]
         );
     }
 
     #[test]
-    fn agents_with_equal_status_sort_by_display_name() {
-        // Display name prefers the explicit name, then the agent type, then
-        // the stable pane id, and equal-status agents sort by it.
+    fn agents_with_equal_status_sort_named_first_then_by_stable_identity() {
         let mut app = App::new(Settings::default(), Catalog::curated());
-        let named = AgentSnapshot {
-            pane_id: "z-pane".to_string(),
-            agent: Some("zz-agent".to_string()),
-            name: Some("aaa".to_string()),
-            cwd: None,
-            status: AgentStatus::Working,
-        };
-        let agent_only = AgentSnapshot {
-            pane_id: "y-pane".to_string(),
-            agent: Some("bbb".to_string()),
-            name: None,
-            cwd: None,
-            status: AgentStatus::Working,
-        };
-        let bare = pulse_agent("ccc", AgentStatus::Working);
         app.apply(agent_snapshot(
-            vec![bare, agent_only, named],
+            vec![
+                agent("ws", "b-pane", None, AgentStatus::Working),
+                agent("ws", "z-pane", Some("aaa"), AgentStatus::Working),
+                agent("ws", "a-pane", None, AgentStatus::Working),
+                agent("ws", "y-pane", Some("bbb"), AgentStatus::Working),
+            ],
             Instant::now(),
         ));
 
-        let names: Vec<&str> = app
-            .active_agents()
-            .iter()
-            .map(AgentView::display_name)
-            .collect();
-        assert_eq!(names, vec!["aaa", "bbb", "ccc"]);
+        // Named agents sort alphabetically before unnamed ones; unnamed
+        // agents keep a deterministic order via their stable identity.
+        assert_eq!(
+            active_names(&app),
+            vec![Some("aaa"), Some("bbb"), None, None]
+        );
+        assert_eq!(app.active_agents()[2].id, agent_id("ws", "a-pane"));
+        assert_eq!(app.active_agents()[3].id, agent_id("ws", "b-pane"));
+    }
+
+    #[test]
+    fn identical_pane_ids_from_two_workspaces_remain_distinct_and_selectable() {
+        let mut app = app_with_agents(vec![
+            agent("alpha", "p1", Some("research"), AgentStatus::Working),
+            agent("beta", "p1", Some("review"), AgentStatus::Idle),
+        ]);
+        assert_eq!(app.active_agents().len(), 2, "one particle per agent");
+
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("beta", "p1")));
+        assert_eq!(
+            app.selected_agent().unwrap().name.as_deref(),
+            Some("review")
+        );
+    }
+
+    #[test]
+    fn done_agent_remains_live_until_the_next_snapshot_omits_it() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::AgentSnapshot {
+            agents: vec![agent("alpha", "p1", Some("research"), AgentStatus::Done)],
+            now: t0,
+        });
+        assert_eq!(app.active_agents().len(), 1);
+        assert_eq!(app.active_agents()[0].status, AgentStatus::Done);
+
+        // Unchanged polling snapshots keep the done agent (and its observed
+        // time) in the live view so the UI can render it dimmed.
+        app.apply(Action::AgentSnapshot {
+            agents: vec![agent("alpha", "p1", Some("research"), AgentStatus::Done)],
+            now: t0 + Duration::from_secs(2),
+        });
+        assert_eq!(app.active_agents().len(), 1);
+        assert_eq!(app.active_agents()[0].observed_at, t0);
+
+        // The next snapshot that omits it removes it; nothing is retained.
+        app.apply(Action::AgentSnapshot {
+            agents: vec![],
+            now: t0 + Duration::from_secs(5),
+        });
+        assert!(app.active_agents().is_empty());
     }
 
     #[test]
@@ -2548,146 +2508,60 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         let t0 = Instant::now();
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
             t0,
         ));
 
         // Same status in a later snapshot keeps the first observation time.
         let t1 = t0 + Duration::from_secs(5);
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
             t1,
         ));
-        let agent = &app.active_agents()[0];
-        assert_eq!(agent.observed_at, t0);
-        assert_eq!(agent.observed_duration(t1), Duration::from_secs(5));
+        let view = &app.active_agents()[0];
+        assert_eq!(view.observed_at, t0);
+        assert_eq!(view.observed_duration(t1), Duration::from_secs(5));
 
         // A status change resets the local observation time.
         let t2 = t0 + Duration::from_secs(9);
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Blocked)],
+            vec![agent("ws", "p1", None, AgentStatus::Blocked)],
             t2,
         ));
         assert_eq!(app.active_agents()[0].observed_at, t2);
     }
 
     #[test]
-    fn done_agent_completes_once_and_stays_listed_until_it_disappears() {
+    fn observed_time_is_tracked_per_workspace_qualified_identity() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         let t0 = Instant::now();
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
+            vec![agent("alpha", "p1", Some("research"), AgentStatus::Working)],
             t0,
         ));
-        assert_eq!(app.completed_agents().len(), 0);
 
-        // Herdr reports done: one completed entry, but the live pane stays in
-        // the active list (a dim done node) until it actually disappears.
+        // A same-pane agent from another workspace is a new identity: it gets
+        // its own observation time without disturbing the first agent's.
         let t1 = t0 + Duration::from_secs(5);
-        app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Done)],
-            t1,
-        ));
-        assert_eq!(app.completed_agents().len(), 1);
-        assert_eq!(active_pane_ids(&app), vec!["p1"]);
-        let entry = app.completed_agents().next().unwrap();
-        assert_eq!(entry.agent.status, AgentStatus::Done);
-        assert_eq!(entry.completed_at, t1);
-
-        // Unchanged polling snapshots must not duplicate the entry.
-        let t2 = t0 + Duration::from_secs(10);
-        app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Done)],
-            t2,
-        ));
-        assert_eq!(app.completed_agents().len(), 1);
-
-        // Nor must the eventual disappearance of the already-completed pane.
-        let t3 = t0 + Duration::from_secs(15);
-        app.apply(agent_snapshot(vec![], t3));
-        assert!(app.active_agents().is_empty());
-        assert_eq!(app.completed_agents().len(), 1);
-    }
-
-    #[test]
-    fn disappeared_pane_completes_once_with_its_last_status() {
-        let mut app = App::new(Settings::default(), Catalog::curated());
-        let t0 = Instant::now();
         app.apply(agent_snapshot(
             vec![
-                pulse_agent("p1", AgentStatus::Working),
-                pulse_agent("p2", AgentStatus::Working),
+                agent("alpha", "p1", Some("research"), AgentStatus::Working),
+                agent("beta", "p1", Some("review"), AgentStatus::Working),
             ],
-            t0,
-        ));
-
-        // p1 vanished from a later snapshot: completed with its last status.
-        let t1 = t0 + Duration::from_secs(5);
-        app.apply(agent_snapshot(
-            vec![pulse_agent("p2", AgentStatus::Working)],
             t1,
         ));
-        assert_eq!(completed_pane_ids(&app), vec!["p1"]);
-        let entry = app.completed_agents().next().unwrap();
-        assert_eq!(entry.agent.status, AgentStatus::Working);
-        assert_eq!(entry.completed_at, t1);
-
-        // Staying absent in further snapshots adds nothing.
-        let t2 = t0 + Duration::from_secs(10);
-        app.apply(agent_snapshot(
-            vec![pulse_agent("p2", AgentStatus::Working)],
-            t2,
-        ));
-        assert_eq!(app.completed_agents().len(), 1);
-    }
-
-    #[test]
-    fn an_agent_that_resumes_after_done_can_complete_again() {
-        // "Once" is per completion episode: done → working → done is two
-        // real completions, not a duplicate.
-        let mut app = App::new(Settings::default(), Catalog::curated());
-        let t0 = Instant::now();
-        app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Done)],
-            t0,
-        ));
-        assert_eq!(app.completed_agents().len(), 1);
-
-        let t1 = t0 + Duration::from_secs(5);
-        app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
-            t1,
-        ));
-        assert_eq!(app.completed_agents().len(), 1);
-
-        let t2 = t0 + Duration::from_secs(10);
-        app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Done)],
-            t2,
-        ));
-        assert_eq!(completed_pane_ids(&app), vec!["p1", "p1"]);
-        assert_eq!(app.completed_agents().next().unwrap().completed_at, t2);
-    }
-
-    #[test]
-    fn completed_history_keeps_only_the_twenty_newest_entries() {
-        let mut app = App::new(Settings::default(), Catalog::curated());
-        let t0 = Instant::now();
-        for index in 0u64..25 {
-            let pane = format!("p{index:02}");
-            let seen = t0 + Duration::from_secs(index * 10);
-            app.apply(agent_snapshot(
-                vec![pulse_agent(&pane, AgentStatus::Working)],
-                seen,
-            ));
-            app.apply(agent_snapshot(vec![], seen + Duration::from_secs(1)));
-        }
-
-        let ids = completed_pane_ids(&app);
-        assert_eq!(ids.len(), 20, "history is bounded to the 20 newest");
-        assert_eq!(ids.first().map(String::as_str), Some("p24"), "newest first");
-        assert_eq!(ids.last().map(String::as_str), Some("p05"));
-        assert!(!ids.contains(&"p04".to_string()), "oldest entries evicted");
+        let research = app
+            .active_agents()
+            .iter()
+            .find(|view| view.id == agent_id("alpha", "p1"))
+            .unwrap();
+        let review = app
+            .active_agents()
+            .iter()
+            .find(|view| view.id == agent_id("beta", "p1"))
+            .unwrap();
+        assert_eq!(research.observed_at, t0);
+        assert_eq!(review.observed_at, t1);
     }
 
     #[test]
@@ -2695,7 +2569,7 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         let t0 = Instant::now();
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
+            vec![agent("ws", "p1", Some("alpha"), AgentStatus::Working)],
             t0,
         ));
 
@@ -2704,7 +2578,7 @@ mod tests {
             now: t0 + Duration::from_secs(5),
         });
         assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
-        assert_eq!(active_pane_ids(&app), vec!["p1"]);
+        assert_eq!(active_names(&app), vec![Some("alpha")]);
 
         app.apply(Action::AgentPollFailed {
             now: t0 + Duration::from_secs(14),
@@ -2750,7 +2624,7 @@ mod tests {
         assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Hidden);
 
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
             t0,
         ));
         app.apply(Action::AgentTick {
@@ -2797,7 +2671,7 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         let t0 = Instant::now();
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
+            vec![agent("ws", "p1", Some("one"), AgentStatus::Working)],
             t0,
         ));
         app.apply(Action::AgentPollFailed {
@@ -2808,14 +2682,14 @@ mod tests {
         // Fresh state replaces stale state.
         let t1 = t0 + Duration::from_secs(7);
         app.apply(agent_snapshot(
-            vec![pulse_agent("p2", AgentStatus::Working)],
+            vec![agent("ws", "p2", Some("two"), AgentStatus::Working)],
             t1,
         ));
         assert_eq!(
             app.agent_pulse_connection(),
             AgentPulseConnection::Connected
         );
-        assert_eq!(active_pane_ids(&app), vec!["p2"]);
+        assert_eq!(active_names(&app), vec![Some("two")]);
 
         // Recovery also works from unavailable.
         app.apply(Action::AgentPollFailed {
@@ -2829,20 +2703,20 @@ mod tests {
             AgentPulseConnection::Unavailable
         );
         app.apply(agent_snapshot(
-            vec![pulse_agent("p3", AgentStatus::Idle)],
+            vec![agent("ws", "p3", Some("three"), AgentStatus::Idle)],
             t0 + Duration::from_secs(25),
         ));
         assert_eq!(
             app.agent_pulse_connection(),
             AgentPulseConnection::Connected
         );
-        assert_eq!(active_pane_ids(&app), vec!["p3"]);
+        assert_eq!(active_names(&app), vec![Some("three")]);
     }
 
     #[test]
     fn an_empty_snapshot_is_connected_with_no_active_agents() {
-        // Connected-with-none-active is a real state ("agents · none active"),
-        // distinct from hidden and from unavailable.
+        // Connected-with-none-active is a real state, distinct from hidden
+        // and from unavailable.
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(vec![], Instant::now()));
         assert_eq!(
@@ -2850,7 +2724,6 @@ mod tests {
             AgentPulseConnection::Connected
         );
         assert!(app.active_agents().is_empty());
-        assert_eq!(app.completed_agents().len(), 0);
 
         // Selection on an empty list stays cleared even with the overlay open.
         app.apply(Action::ToggleAgentOverlay);
@@ -2868,10 +2741,8 @@ mod tests {
         app.apply(Action::ToggleAgentOverlay);
         assert!(!app.is_agent_overlay_open());
         app.apply(Action::SelectNextAgent);
-        app.apply(Action::SelectAgent("p1".to_string()));
-        app.apply(Action::ToggleCompletedAgents);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
         assert!(app.selected_agent().is_none());
-        assert!(!app.completed_agents_disclosed());
     }
 
     #[test]
@@ -2881,7 +2752,7 @@ mod tests {
         app.apply(Action::SetSearchQuery("jazz".to_string()));
         app.apply(Action::SetFocus(FocusPane::Search));
         app.apply(agent_snapshot(
-            vec![pulse_agent("p1", AgentStatus::Working)],
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
             Instant::now(),
         ));
         let visible_before = visible_ids(&app);
@@ -2910,8 +2781,8 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
             vec![
-                pulse_agent("alpha", AgentStatus::Working),
-                pulse_agent("beta", AgentStatus::Working),
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
             ],
             Instant::now(),
         ));
@@ -2920,10 +2791,8 @@ mod tests {
         app.apply(Action::ToggleAgentOverlay);
         assert!(!app.is_agent_overlay_open(), "Signal View suppresses `a`");
         app.apply(Action::SelectNextAgent);
-        app.apply(Action::SelectAgent("alpha".to_string()));
-        app.apply(Action::ToggleCompletedAgents);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
         assert!(app.selected_agent().is_none());
-        assert!(!app.completed_agents_disclosed());
         assert!(app.is_signal_view(), "Signal View itself is unaffected");
 
         // Leaving Signal View restores the toggle.
@@ -2943,40 +2812,42 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
             vec![
-                pulse_agent("gamma", AgentStatus::Working),
-                pulse_agent("alpha", AgentStatus::Working),
-                pulse_agent("beta", AgentStatus::Working),
+                agent("ws", "p1", Some("gamma"), AgentStatus::Working),
+                agent("ws", "p2", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p3", Some("beta"), AgentStatus::Working),
             ],
             Instant::now(),
         ));
         app.apply(Action::ToggleAgentOverlay);
 
+        let selected_name = |app: &App| app.selected_agent().and_then(|view| view.name.clone());
+
         // Next with no selection starts at the first sorted agent.
         app.apply(Action::SelectNextAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "alpha");
+        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
         app.apply(Action::SelectNextAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "beta");
+        assert_eq!(selected_name(&app).as_deref(), Some("beta"));
         app.apply(Action::SelectNextAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "gamma");
+        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
         // Down at the end stays put.
         app.apply(Action::SelectNextAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "gamma");
+        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
 
-        // Selecting an unknown pane id changes nothing.
-        app.apply(Action::SelectAgent("missing".to_string()));
-        assert_eq!(app.selected_agent().unwrap().pane_id, "gamma");
+        // Selecting an unknown identity changes nothing.
+        app.apply(Action::SelectAgent(agent_id("ws", "missing")));
+        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
 
         app.apply(Action::SelectPreviousAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "beta");
+        assert_eq!(selected_name(&app).as_deref(), Some("beta"));
         app.apply(Action::SelectPreviousAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "alpha");
+        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
         // Up at the top stays put.
         app.apply(Action::SelectPreviousAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "alpha");
+        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
 
-        // Direct selection by pane id (mouse path).
-        app.apply(Action::SelectAgent("beta".to_string()));
-        assert_eq!(app.selected_agent().unwrap().pane_id, "beta");
+        // Direct selection by identity (mouse path).
+        app.apply(Action::SelectAgent(agent_id("ws", "p3")));
+        assert_eq!(selected_name(&app).as_deref(), Some("beta"));
     }
 
     #[test]
@@ -2984,29 +2855,27 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
             vec![
-                pulse_agent("alpha", AgentStatus::Working),
-                pulse_agent("beta", AgentStatus::Working),
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
             ],
             Instant::now(),
         ));
         app.apply(Action::ToggleAgentOverlay);
         app.apply(Action::SelectPreviousAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "beta");
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("beta"));
     }
 
     #[test]
-    fn selection_and_disclosure_require_an_open_overlay() {
+    fn agent_selection_requires_an_open_overlay() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
-            vec![pulse_agent("alpha", AgentStatus::Working)],
+            vec![agent("ws", "p1", Some("alpha"), AgentStatus::Working)],
             Instant::now(),
         ));
 
         app.apply(Action::SelectNextAgent);
-        app.apply(Action::SelectAgent("alpha".to_string()));
-        app.apply(Action::ToggleCompletedAgents);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
         assert!(app.selected_agent().is_none());
-        assert!(!app.completed_agents_disclosed());
     }
 
     #[test]
@@ -3015,36 +2884,34 @@ mod tests {
         let t0 = Instant::now();
         app.apply(agent_snapshot(
             vec![
-                pulse_agent("alpha", AgentStatus::Working),
-                pulse_agent("beta", AgentStatus::Working),
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Working),
             ],
             t0,
         ));
         app.apply(Action::ToggleAgentOverlay);
-        app.apply(Action::SelectAgent("beta".to_string()));
-        assert_eq!(app.selected_agent().unwrap().pane_id, "beta");
+        app.apply(Action::SelectAgent(agent_id("ws", "p2")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("beta"));
 
         app.apply(agent_snapshot(
-            vec![pulse_agent("alpha", AgentStatus::Working)],
+            vec![agent("ws", "p1", Some("alpha"), AgentStatus::Working)],
             t0 + Duration::from_secs(5),
         ));
         assert!(app.selected_agent().is_none());
 
         // Selecting again over the fresh list works.
         app.apply(Action::SelectNextAgent);
-        assert_eq!(app.selected_agent().unwrap().pane_id, "alpha");
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
     }
 
     #[test]
-    fn completed_disclosure_toggles_while_the_overlay_is_open() {
-        let mut app = App::new(Settings::default(), Catalog::curated());
-        app.apply(agent_snapshot(vec![], Instant::now()));
+    fn selected_agent_exposes_only_the_explicit_name() {
+        // An unnamed agent stays selectable, but there is nothing else to
+        // show: the view carries no pane id, cwd, or agent-type fallback.
+        let mut app = app_with_agents(vec![agent("ws", "p1", None, AgentStatus::Working)]);
         app.apply(Action::ToggleAgentOverlay);
-
-        assert!(!app.completed_agents_disclosed());
-        app.apply(Action::ToggleCompletedAgents);
-        assert!(app.completed_agents_disclosed());
-        app.apply(Action::ToggleCompletedAgents);
-        assert!(!app.completed_agents_disclosed());
+        app.apply(Action::SelectNextAgent);
+        let selected = app.selected_agent().expect("unnamed agent is selectable");
+        assert_eq!(selected.name, None);
     }
 }

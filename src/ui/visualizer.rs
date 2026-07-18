@@ -381,7 +381,7 @@ fn waveform_columns(waveform: &[f32], width: usize) -> Vec<(f32, f32)> {
 ///
 /// Pure and deterministic; returns an empty vector for empty bands or zero
 /// width, so callers stay safe for tiny panes and silent/empty frames.
-fn spectrum_columns(bands: &[f32], width: usize) -> Vec<(f32, f32)> {
+pub(super) fn spectrum_columns(bands: &[f32], width: usize) -> Vec<(f32, f32)> {
     if bands.is_empty() || width == 0 {
         return Vec::new();
     }

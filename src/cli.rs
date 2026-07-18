@@ -1863,17 +1863,15 @@ mod tests {
     // --- Agent Pulse: flag, key routing, monitor events, and mouse --------
 
     use crate::app::AgentPulseConnection;
-    use crate::herdr::{AgentSnapshot, AgentStatus, MonitorEvent};
+    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, MonitorEvent};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
     fn pulse_agent(pane: &str) -> AgentSnapshot {
         AgentSnapshot {
-            pane_id: pane.to_string(),
-            agent: Some("claude".to_string()),
-            // Distinct names keep the reducer's display-name sort stable.
+            id: AgentId::new("ws", pane),
+            // Distinct names keep the reducer's name sort stable.
             name: Some(pane.to_string()),
-            cwd: None,
             status: AgentStatus::Working,
         }
     }
@@ -2085,7 +2083,7 @@ mod tests {
             &mut persistence,
         );
         assert_eq!(
-            app.selected_agent().map(|agent| agent.pane_id.as_str()),
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
             Some("alpha"),
             "Tab selects the first agent"
         );
@@ -2098,7 +2096,7 @@ mod tests {
             &mut persistence,
         );
         assert_eq!(
-            app.selected_agent().map(|agent| agent.pane_id.as_str()),
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
             Some("beta"),
             "Down moves the agent selection"
         );
@@ -2111,7 +2109,7 @@ mod tests {
             &mut persistence,
         );
         assert_eq!(
-            app.selected_agent().map(|agent| agent.pane_id.as_str()),
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
             Some("alpha"),
             "Up moves the agent selection back"
         );
@@ -2209,7 +2207,6 @@ mod tests {
         // exist, exactly as in run_app.
         let monitor = herdr::spawn_monitor(crate::herdr::HerdrContext {
             socket_path: "/nonexistent/wave-tui-cli-test.sock".into(),
-            workspace_id: "ws-test".to_string(),
         });
         assert!(mouse_capture_for(Some(&monitor)));
         monitor.stop();

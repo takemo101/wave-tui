@@ -68,8 +68,8 @@ pub(crate) fn render_splash(kind: SplashKind, theme: &Theme, tick: u16, frame: &
 /// This is the only entry point the controller/event loop calls each frame. It
 /// reads display data from `app` and draws into the frame's buffer; it performs
 /// no state mutation. `low_power` is the controller's `--low-power` flag: it
-/// selects static Agent Pulse node rendering, mirroring how the splash loop
-/// receives its low-power timing, without adding persistent app state.
+/// fixes Beat Orbit particle positions and trails, mirroring how the splash
+/// loop receives its low-power timing, without adding persistent app state.
 pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
     render_into(
         app,
@@ -82,15 +82,15 @@ pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
 
 /// Pure hit test for Agent Pulse mouse input.
 ///
-/// Maps a click at (`column`, `row`) within the rendered `area` to a
-/// read-only Agent Pulse action — overlay node/list selection or the
-/// `Completed (n)` disclosure — and `None` for every other click. The CLI
-/// event loop owns applying the returned action; this function never mutates
-/// `App` and never returns playback, station, search, or settings actions.
+/// Maps a click at (`column`, `row`) within the rendered `area` to the
+/// read-only Beat Orbit particle selection and `None` for every other click.
+/// The CLI event loop owns applying the returned action; this function never
+/// mutates `App` and never returns playback, station, search, or settings
+/// actions.
 ///
 /// Selection requires a live view, so a stale, unavailable, or hidden
 /// integration resolves no clicks either; the geometry lives in
-/// [`agent_pulse`], shared with the overlay renderer.
+/// [`agent_pulse`], shared with the canvas renderer.
 pub(crate) fn agent_pulse_hit_test(area: Rect, column: u16, row: u16, app: &App) -> Option<Action> {
     agent_pulse::hit_test(area, column, row, app)
 }
@@ -122,9 +122,9 @@ fn render_into(app: &App, low_power: bool, now: Instant, area: Rect, buf: &mut B
         LayoutTier::Compact => render_compact(app, &theme, area, buf),
     }
 
-    // The Agent Pulse overlay draws over the composed normal layout; a no-op
-    // for standalone/hidden launches and while the overlay is closed.
-    agent_pulse::render_overlay(app, &theme, low_power, now, area, buf);
+    // The full-screen Beat Orbit canvas draws over the composed normal
+    // layout; a no-op for standalone/hidden launches and while it is closed.
+    agent_pulse::render_canvas(app, &theme, low_power, now, area, buf);
 }
 
 // --- tier layouts --------------------------------------------------------
@@ -2360,482 +2360,198 @@ mod tests {
         }
     }
 
-    // --- Agent Pulse: Quiet Companion + Status Constellation (MIK-059) --
+    // --- Agent Pulse: quiet count + full-screen Beat Orbit ----------------
 
-    use crate::herdr::{AgentSnapshot, AgentStatus};
-    use std::time::{Duration, Instant};
+    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
+    use std::time::Duration;
 
-    fn agent_snap(pane: &str, name: &str, status: AgentStatus) -> AgentSnapshot {
+    fn orbit_agent(
+        workspace: &str,
+        pane: &str,
+        name: Option<&str>,
+        status: AgentStatus,
+    ) -> AgentSnapshot {
         AgentSnapshot {
-            pane_id: pane.to_string(),
-            agent: Some("claude".to_string()),
-            name: Some(name.to_string()),
-            cwd: Some("~/radio".to_string()),
+            id: AgentId::new(workspace, pane),
+            name: name.map(str::to_string),
             status,
         }
     }
 
-    /// An app that received one Agent Pulse snapshot observed at `at`.
-    fn app_with_agents(agents: Vec<AgentSnapshot>, at: Instant) -> App {
+    /// An app that received one Agent Pulse snapshot.
+    fn app_with_agents(agents: Vec<AgentSnapshot>) -> App {
         let mut app = base_app();
-        app.apply(Action::AgentSnapshot { agents, now: at });
+        app.apply(Action::AgentSnapshot {
+            agents,
+            now: Instant::now(),
+        });
         app
     }
 
     #[test]
-    fn wide_and_medium_show_quiet_companion_state_counts() {
-        let app = app_with_agents(
-            vec![
-                agent_snap("pane-a", "alpha", AgentStatus::Working),
-                agent_snap("pane-b", "beta", AgentStatus::Working),
-                agent_snap("pane-c", "gamma", AgentStatus::Idle),
-            ],
-            Instant::now(),
-        );
-        for (w, h) in [(130, 32), (100, 24)] {
-            let text = buffer_text(&render_buffer(&app, w, h));
+    fn normal_wide_and_medium_show_only_the_active_count() {
+        let app = app_with_agents(vec![orbit_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        for (width, height) in [(120, 36), (80, 20)] {
+            let text = buffer_text(&render_buffer(&app, width, height));
             assert!(
-                text.contains("2 working"),
-                "working count missing at {w}x{h}: {text}"
+                text.contains("● 1 active"),
+                "normal {width}x{height} view must show the tiny count: {text}"
             );
             assert!(
-                text.contains("1 idle"),
-                "idle count missing at {w}x{h}: {text}"
+                !text.contains("research"),
+                "the normal view never shows agent names: {text}"
             );
         }
     }
 
     #[test]
-    fn connected_empty_summary_reads_none_active() {
-        let app = app_with_agents(vec![], Instant::now());
-        for (w, h) in [(130, 32), (100, 24)] {
-            let text = buffer_text(&render_buffer(&app, w, h));
-            assert!(
-                text.contains("agents · none active"),
-                "connected-empty copy missing at {w}x{h}: {text}"
-            );
-        }
-    }
-
-    #[test]
-    fn compact_hides_quiet_companion_summary() {
-        let app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            Instant::now(),
-        );
-        let text = buffer_text(&render_buffer(&app, 70, 16));
+    fn compact_normal_layout_reserves_no_agent_pulse_row() {
+        let app = app_with_agents(vec![orbit_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        let text = buffer_text(&render_buffer(&app, 60, 16));
         assert!(
-            !text.contains("working"),
-            "summary leaked into compact: {text}"
+            !text.contains("active"),
+            "compact keeps no Agent Pulse line: {text}"
         );
-        assert!(
-            !text.contains("agents"),
-            "summary leaked into compact: {text}"
-        );
-    }
-
-    #[test]
-    fn signal_view_hides_quiet_companion_summary() {
-        let mut app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            Instant::now(),
-        );
-        app.apply(Action::ToggleSignalView);
-        let text = buffer_text(&render_buffer(&app, 130, 32));
-        assert!(
-            !text.contains("working"),
-            "summary leaked into Signal View: {text}"
-        );
-        assert!(
-            !text.contains("agents"),
-            "summary leaked into Signal View: {text}"
-        );
-    }
-
-    #[test]
-    fn stale_summary_dims_last_known_state_and_marks_reconnecting_once() {
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            t0,
-        );
-        app.apply(Action::AgentPollFailed { now: t0 });
-        let text = buffer_text(&render_buffer(&app, 130, 32));
-        assert_eq!(
-            text.matches("stale · reconnecting").count(),
-            1,
-            "stale marker must appear exactly once: {text}"
-        );
-        assert!(
-            text.contains("1 working"),
-            "last known state missing while stale: {text}"
-        );
-    }
-
-    #[test]
-    fn unavailable_reserves_no_rows_and_renders_exactly_like_standalone() {
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            t0,
-        );
-        app.apply(Action::AgentPollFailed {
-            now: t0 + crate::herdr::STALE_AFTER,
-        });
-        for (w, h) in TIER_SIZES {
-            let pulse = render_buffer(&app, w, h);
-            let standalone = render_buffer(&base_app(), w, h);
-            assert_eq!(
-                pulse, standalone,
-                "unavailable render must match standalone at {w}x{h}"
-            );
-        }
     }
 
     #[test]
     fn hidden_agent_actions_leave_standalone_render_unchanged() {
+        let sizes = [(120, 36), (80, 20), (60, 16)];
         let mut app = base_app();
+        let before: Vec<Buffer> = sizes
+            .iter()
+            .map(|&(width, height)| render_buffer(&app, width, height))
+            .collect();
         app.apply(Action::ToggleAgentOverlay);
         app.apply(Action::SelectNextAgent);
-        app.apply(Action::ToggleCompletedAgents);
-        for (w, h) in TIER_SIZES {
+        for (index, &(width, height)) in sizes.iter().enumerate() {
             assert_eq!(
-                render_buffer(&app, w, h),
-                render_buffer(&base_app(), w, h),
-                "hidden Agent Pulse actions changed the render at {w}x{h}"
+                render_buffer(&app, width, height),
+                before[index],
+                "hidden Agent Pulse actions changed the render at {width}x{height}"
             );
         }
     }
 
     #[test]
-    fn overlay_shows_constellation_sorted_list_and_info_card() {
-        let observed = Instant::now()
-            .checked_sub(Duration::from_secs(12 * 60))
-            .expect("clock supports a 12-minute backdate");
-        let mut app = app_with_agents(
-            vec![
-                agent_snap("pane-c", "gamma", AgentStatus::Idle),
-                agent_snap("pane-a", "alpha", AgentStatus::Working),
-                agent_snap("pane-b", "beta", AgentStatus::Blocked),
-            ],
-            observed,
-        );
+    fn beat_orbit_covers_the_full_screen() {
+        let mut app = app_with_agents(vec![orbit_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        let normal = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(normal.contains("All Stations"), "sanity: {normal}");
+
         app.apply(Action::ToggleAgentOverlay);
-        app.apply(Action::SelectAgent("pane-a".to_string()));
-
-        let text = buffer_text(&render_buffer(&app, 130, 32));
-
+        let orbit = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(orbit.contains("Agent Pulse"), "canvas title: {orbit}");
         assert!(
-            text.contains("Agent Pulse"),
-            "overlay title missing: {text}"
-        );
-        // Status-sorted active list: working, blocked, idle.
-        let alpha = line_with(&text, "alpha").expect("alpha row");
-        let beta = line_with(&text, "beta").expect("beta row");
-        let gamma = line_with(&text, "gamma").expect("gamma row");
-        assert!(
-            alpha < beta && beta < gamma,
-            "list not status-sorted: {text}"
-        );
-        // Row metadata: agent type, cwd label, state, estimated duration.
-        assert!(text.contains("claude"), "agent type missing: {text}");
-        assert!(text.contains("~/radio"), "cwd label missing: {text}");
-        for status in ["working", "blocked", "idle"] {
-            assert!(text.contains(status), "{status} state missing: {text}");
-        }
-        assert!(text.contains("~12m"), "estimated duration missing: {text}");
-        // Constellation nodes: blocked and idle carry distinct node glyphs.
-        assert!(text.contains('◆'), "blocked node missing: {text}");
-        assert!(text.contains('○'), "idle node missing: {text}");
-        // Info card for the selected agent.
-        assert!(
-            text.contains("working for ~12m"),
-            "info card missing: {text}"
+            !orbit.contains("All Stations"),
+            "the canvas replaces the whole player surface: {orbit}"
         );
     }
 
     #[test]
-    fn overlay_completed_disclosure_expands_local_history() {
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![
-                agent_snap("pane-a", "alpha", AgentStatus::Working),
-                agent_snap("pane-o", "omega", AgentStatus::Working),
-            ],
-            t0,
-        );
-        // omega's pane disappears: it moves to local completed history.
-        app.apply(Action::AgentSnapshot {
-            agents: vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            now: t0,
-        });
+    fn beat_orbit_hides_agent_details_until_selected() {
+        let mut app = app_with_agents(vec![orbit_agent(
+            "alpha",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
         app.apply(Action::ToggleAgentOverlay);
-
-        let text = buffer_text(&render_buffer(&app, 130, 32));
+        let unselected = buffer_text(&render_buffer(&app, 120, 36));
         assert!(
-            text.contains("Completed (1)"),
-            "completed disclosure missing: {text}"
-        );
-        assert!(
-            !text.contains("omega"),
-            "collapsed disclosure leaked history: {text}"
+            !unselected.contains("research"),
+            "no label before selection: {unselected}"
         );
 
-        app.apply(Action::ToggleCompletedAgents);
-        let text = buffer_text(&render_buffer(&app, 130, 32));
+        app.apply(Action::SelectNextAgent);
+        let selected = buffer_text(&render_buffer(&app, 120, 36));
         assert!(
-            text.contains("omega"),
-            "expanded disclosure missing history: {text}"
+            selected.contains("research · working"),
+            "selected explicit-name label missing: {selected}"
         );
     }
 
     #[test]
-    fn overlay_connected_empty_state_is_calm() {
-        let mut app = app_with_agents(vec![], Instant::now());
+    fn cross_workspace_agents_render_as_particles() {
+        let mut app = app_with_agents(vec![
+            orbit_agent("alpha", "p1", Some("research"), AgentStatus::Working),
+            orbit_agent("beta", "p1", Some("review"), AgentStatus::Idle),
+        ]);
         app.apply(Action::ToggleAgentOverlay);
-        let text = buffer_text(&render_buffer(&app, 130, 32));
-        assert!(text.contains("Agent Pulse"), "overlay missing: {text}");
-        assert!(
-            text.contains("agents · none active"),
-            "calm empty copy missing: {text}"
-        );
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert_eq!(text.matches('●').count(), 1, "one working particle: {text}");
+        assert_eq!(text.matches('○').count(), 1, "one idle particle: {text}");
     }
 
     #[test]
-    fn overlay_stale_state_keeps_last_known_agents_marked_stale() {
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            t0,
-        );
-        app.apply(Action::AgentPollFailed { now: t0 });
-        app.apply(Action::ToggleAgentOverlay);
-        let text = buffer_text(&render_buffer(&app, 130, 32));
-        assert!(
-            text.contains("stale · reconnecting"),
-            "overlay stale marker missing: {text}"
-        );
-        assert!(text.contains("alpha"), "last known agent missing: {text}");
-    }
-
-    #[test]
-    fn overlay_unavailable_state_reports_unavailable() {
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            t0,
-        );
-        app.apply(Action::AgentPollFailed {
-            now: t0 + crate::herdr::STALE_AFTER,
-        });
-        app.apply(Action::ToggleAgentOverlay);
-        let text = buffer_text(&render_buffer(&app, 130, 32));
-        assert!(
-            text.contains("agents · unavailable"),
-            "unavailable copy missing: {text}"
-        );
-        assert!(
-            !text.contains("alpha"),
-            "unavailable overlay must not show agents: {text}"
-        );
-    }
-
-    #[test]
-    fn overlay_falls_back_to_a_compact_layout_on_small_panes() {
-        let mut app = app_with_agents(
-            vec![
-                agent_snap("pane-a", "alpha", AgentStatus::Working),
-                agent_snap("pane-b", "beta", AgentStatus::Blocked),
-            ],
-            Instant::now(),
-        );
-        app.apply(Action::ToggleAgentOverlay);
-        let text = buffer_text(&render_buffer(&app, 70, 16));
-        assert!(
-            text.contains("Agent Pulse"),
-            "overlay title missing: {text}"
-        );
-        assert!(text.contains("alpha"), "agent row missing: {text}");
-        // The compact fallback drops the constellation row.
-        assert!(
-            !text.contains('◆'),
-            "constellation should collapse on small panes: {text}"
-        );
-    }
-
-    #[test]
-    fn working_pulse_animates_normally_and_is_static_in_low_power() {
-        // Deterministic clock: the snapshot is observed at `t0` and rendering
-        // is driven at exact offsets from it, so pulse phases cannot flake on
-        // an `Instant` boundary. Offsets 4s and 6s sit outside the one-shot
-        // status-change highlight window and on opposite pulse phases.
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            t0,
-        );
-        app.apply(Action::ToggleAgentOverlay);
-
-        let phase_a = render_buffer_at(&app, false, t0 + Duration::from_secs(4), 130, 32);
-        let phase_b = render_buffer_at(&app, false, t0 + Duration::from_secs(6), 130, 32);
-        assert_ne!(
-            phase_a, phase_b,
-            "normal rendering must pulse the working node across phases"
-        );
-
-        let static_a = render_buffer_at(&app, true, t0 + Duration::from_secs(4), 130, 32);
-        let static_b = render_buffer_at(&app, true, t0 + Duration::from_secs(6), 130, 32);
-        assert_eq!(
-            static_a, static_b,
-            "low-power rendering must be static across pulse phases"
-        );
-    }
-
-    #[test]
-    fn status_change_receives_one_restrained_highlight_then_settles() {
-        // All three instants sit on the same bright pulse phase (1, 9, and 13
-        // seconds are all 1 mod 4) with the same `<1m` duration label, so the
-        // only time-varying signal between them is the one-shot highlight.
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![agent_snap("pane-a", "alpha", AgentStatus::Working)],
-            t0,
-        );
-        app.apply(Action::ToggleAgentOverlay);
-
-        let fresh = render_buffer_at(&app, false, t0 + Duration::from_secs(1), 130, 32);
-        let settled = render_buffer_at(&app, false, t0 + Duration::from_secs(9), 130, 32);
-        let later = render_buffer_at(&app, false, t0 + Duration::from_secs(13), 130, 32);
-
-        // The fresh status renders one acknowledgement that then expires…
-        assert_ne!(
-            fresh, settled,
-            "fresh status change must be acknowledged once"
-        );
-        // …and never re-fires for an unchanged status.
-        assert_eq!(settled, later, "settled status must not be re-acknowledged");
-    }
-
-    #[test]
-    fn hit_test_maps_nodes_rows_and_disclosure_to_read_only_actions() {
-        let t0 = Instant::now();
-        let mut app = app_with_agents(
-            vec![
-                agent_snap("pane-a", "alpha", AgentStatus::Working),
-                agent_snap("pane-b", "beta", AgentStatus::Blocked),
-                agent_snap("pane-o", "omega", AgentStatus::Working),
-            ],
-            t0,
-        );
-        // omega disappears so the disclosure line exists.
-        app.apply(Action::AgentSnapshot {
-            agents: vec![
-                agent_snap("pane-a", "alpha", AgentStatus::Working),
-                agent_snap("pane-b", "beta", AgentStatus::Blocked),
-            ],
-            now: t0,
-        });
-        app.apply(Action::ToggleAgentOverlay);
-
-        let area = Rect::new(0, 0, 130, 32);
-        let mut selected = std::collections::HashSet::new();
-        let mut disclosure_hits = 0;
-        for row in 0..area.height {
-            for column in 0..area.width {
-                match agent_pulse_hit_test(area, column, row, &app) {
-                    Some(Action::SelectAgent(pane)) => {
-                        selected.insert(pane);
-                    }
-                    Some(Action::ToggleCompletedAgents) => disclosure_hits += 1,
-                    Some(other) => panic!("hit test returned non-overlay action {other:?}"),
-                    None => {}
-                }
-            }
-        }
-        assert!(selected.contains("pane-a"), "alpha not selectable");
-        assert!(selected.contains("pane-b"), "beta not selectable");
-        assert_eq!(
-            selected.len(),
-            2,
-            "unknown pane ids selectable: {selected:?}"
-        );
-        assert!(disclosure_hits >= 1, "disclosure not clickable");
-        // Clicks outside the centered overlay resolve to no action.
-        for (column, row) in [(0, 0), (129, 0), (0, 31), (129, 31)] {
-            assert!(
-                agent_pulse_hit_test(area, column, row, &app).is_none(),
-                "outside click must be a no-op"
-            );
-        }
-    }
-
-    #[test]
-    fn hit_test_is_inert_when_closed_stale_unavailable_hidden_or_signal_view() {
-        let area = Rect::new(0, 0, 130, 32);
-        let scan_none = |app: &App, case: &str| {
-            for row in 0..area.height {
-                for column in 0..area.width {
-                    assert!(
-                        agent_pulse_hit_test(area, column, row, app).is_none(),
-                        "hit test must be inert when {case}"
-                    );
-                }
-            }
-        };
-
-        let t0 = Instant::now();
-        let agents = vec![agent_snap("pane-a", "alpha", AgentStatus::Working)];
-
-        // Overlay closed.
-        scan_none(
-            &app_with_agents(agents.clone(), t0),
-            "the overlay is closed",
-        );
-
-        // Stale.
-        let mut stale = app_with_agents(agents.clone(), t0);
-        stale.apply(Action::ToggleAgentOverlay);
-        stale.apply(Action::AgentPollFailed { now: t0 });
-        scan_none(&stale, "the connection is stale");
-
-        // Unavailable.
-        let mut unavailable = app_with_agents(agents.clone(), t0);
-        unavailable.apply(Action::ToggleAgentOverlay);
-        unavailable.apply(Action::AgentPollFailed {
-            now: t0 + crate::herdr::STALE_AFTER,
-        });
-        scan_none(&unavailable, "the connection is unavailable");
-
-        // Hidden / standalone.
-        scan_none(&base_app(), "the integration is hidden");
-
-        // Signal View.
-        let mut signal = app_with_agents(agents, t0);
-        signal.apply(Action::ToggleAgentOverlay);
-        signal.apply(Action::ToggleSignalView);
-        scan_none(&signal, "Signal View is active");
-    }
-
-    #[test]
-    fn signal_view_long_title_render_stays_bounded() {
-        // The long-title constraint holds through the full render path without
-        // pushing layout regions out of view.
-        let mut app = base_app();
-        let id = app.selected_station().unwrap().id.clone();
-        play_first(&mut app);
-        app.apply(Action::Audio(AudioEvent::IcyTitle {
-            station: id,
-            title: "Extremely ".repeat(40),
-        }));
+    fn signal_view_never_shows_the_beat_orbit() {
+        let mut app = app_with_agents(vec![orbit_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
         app.apply(Action::ToggleSignalView);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(!text.contains("Agent Pulse"), "no canvas: {text}");
+        assert!(
+            !text.contains("● 1 active"),
+            "Signal View reserves no Pulse line: {text}"
+        );
 
-        for (w, h) in [(40, 12), (80, 24), (120, 40)] {
-            let buf = render_buffer(&app, w, h);
-            // The footer hint still survives below the constrained title.
-            assert!(
-                buffer_text(&buf).contains("z/Esc back"),
-                "hint pushed off-screen by long title at {w}x{h}"
-            );
-        }
+        // Even with the canvas open underneath, Signal View wins the surface.
+        app.apply(Action::LeaveSignalView);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::ToggleSignalView);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(!text.contains("Agent Pulse"), "no canvas over Signal View");
+    }
+
+    #[test]
+    fn stale_and_unavailable_canvas_states_render_calmly() {
+        let mut app = app_with_agents(vec![orbit_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        let stale = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(stale.contains("reconnecting"), "stale banner: {stale}");
+        assert!(
+            stale.matches('●').count() == 1,
+            "stale keeps the last orbit: {stale}"
+        );
+
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+        });
+        let unavailable = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            unavailable.contains("agents · unavailable · retrying"),
+            "calm unavailable copy: {unavailable}"
+        );
+        assert!(
+            !unavailable.contains('●'),
+            "unavailable hides particles: {unavailable}"
+        );
     }
 }

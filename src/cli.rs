@@ -899,11 +899,11 @@ fn handle_key(
     // handling below exactly once. That keeps the documented global player
     // controls (playback, volume, theme, favorite, visualizer) available with
     // their normal semantics and side effects, without recursive dispatch.
-    let current_open = app.is_agent_overlay_open();
-    let searching = !current_open && app.focus() == FocusPane::Search;
+    let collage_open = app.is_agent_overlay_open();
+    let searching = !collage_open && app.focus() == FocusPane::Search;
     let outcome = map_key(key, searching);
-    if current_open {
-        if let Some(flow) = handle_current_key(outcome.clone(), app) {
+    if collage_open {
+        if let Some(flow) = handle_collage_key(outcome.clone(), app) {
             return flow;
         }
     }
@@ -1116,7 +1116,7 @@ fn handle_signal_view_key(
 /// caller runs the existing non-canvas branch exactly once, so the
 /// documented global player controls keep their normal semantics and side
 /// effects without recursive dispatch.
-fn handle_current_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
+fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
     match outcome {
         KeyOutcome::Quit => Some(Flow::Quit),
         KeyOutcome::ToggleAgentPulse | KeyOutcome::ExitOrBack => {

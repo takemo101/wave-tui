@@ -1,7 +1,15 @@
 # Agent Pulse Beat Orbit redesign
 
-**Status:** Approved in design review on 2026-07-18. This document supersedes
-Agent Pulse presentation decisions in
+> **Status (2026-07-19): Superseded.** The Beat Orbit presentation was first
+> replaced by the Bioluminescent Current redesign
+> (`2026-07-18-agent-pulse-bioluminescent-current-design.md`), which was in
+> turn superseded by the Kinetic Collage redesign
+> (`2026-07-18-agent-pulse-kinetic-collage-design.md`) — the current
+> presentation decision. The privacy and local-only boundaries recorded here
+> remain in force.
+
+**Original status:** Approved in design review on 2026-07-18. This document
+superseded Agent Pulse presentation decisions in
 `2026-07-16-herdr-agent-pulse-design.md`; its privacy and local-only boundaries
 remain in force.
 

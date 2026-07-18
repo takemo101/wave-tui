@@ -1,5 +1,15 @@
 # Herdr Agent Pulse Implementation Plan
 
+> **Status (2026-07-19): Superseded as a presentation record — do not
+> re-execute.** This plan's integration work (packaging, eligibility,
+> monitoring, reducers) was implemented and remains the shipped foundation,
+> but its summary/overlay presentation was replaced by later redesigns,
+> currently the Kinetic Collage
+> (`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`,
+> plan `docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`).
+> The local-only and read-only privacy boundaries recorded here remain in
+> force.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship `wave-tui` as an official Herdr plugin and add a read-only Agent Pulse that visualizes current-workspace agents without changing standalone radio behavior.

@@ -1,7 +1,13 @@
 # Agent Pulse Bioluminescent Current redesign
 
-**Status:** Approved in design review on 2026-07-18. This document supersedes
-all Agent Pulse presentation decisions in
+> **Status (2026-07-19): Superseded.** The Kinetic Collage redesign
+> (`2026-07-18-agent-pulse-kinetic-collage-design.md`, plan
+> `../plans/2026-07-18-agent-pulse-kinetic-collage.md`) replaced this
+> presentation after design review rejected the Current direction. The
+> local-only and read-only privacy boundaries recorded here remain in force.
+
+**Original status:** Approved in design review on 2026-07-18. This document
+superseded all Agent Pulse presentation decisions in
 `2026-07-16-herdr-agent-pulse-design.md` and
 `2026-07-18-agent-pulse-beat-orbit-design.md`. Their local-only and read-only
 privacy boundaries remain in force.

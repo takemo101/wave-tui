@@ -4,10 +4,6 @@
 //! variables, the Unix socket transport, JSON-RPC framing, and raw
 //! `agent.list` payloads. Everything it exposes is typed.
 
-// Temporary dead-code allowance: nothing consumes this adapter until the
-// monitor is wired into the cli event loop and app reducer.
-#![allow(dead_code)]
-
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

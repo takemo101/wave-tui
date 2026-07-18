@@ -37,7 +37,7 @@
 - Produces: `CollageLayout { background, tiles }`, `render_canvas`, and pure `hit_test` returning only `Action::SelectAgent(AgentId)`.
 - Produces: private `AlbumMotif` values (`Record`, `Diagonal`, `Stripe`, `Frame`) picked from stable identity hash.
 
-- [ ] **Step 1: Write failing deterministic motif and layout tests.**
+- [x] **Step 1: Write failing deterministic motif and layout tests.**
 
 ```rust
 #[test]
@@ -57,13 +57,13 @@ fn dense_collage_keeps_one_tile_per_agent() {
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure.**
+- [x] **Step 2: Run focused tests and verify failure.**
 
 Run: `cargo test ui::agent_pulse::tests::tile_`
 
 Expected: FAIL because `CollageLayout` and `collage_layout` do not exist.
 
-- [ ] **Step 3: Implement deterministic staggered tile layout and motifs.**
+- [x] **Step 3: Implement deterministic staggered tile layout and motifs.**
 
 Assign each `AgentId` a stable hash. Derive a grid cell, bounded base rectangle, motif, and motif palette arrangement from that hash. At dense sizes reduce width/height before reducing visibility. Render motifs with Ratatui cell background/foreground styles and glyph patterns (`░`, `▒`, `╱`, `╲`, `◌`), never fixed RGB values.
 
@@ -75,7 +75,7 @@ let accent = state_edge_style(view.status, theme);
 render_motif(buf, base_rect, motif, theme, accent);
 ```
 
-- [ ] **Step 4: Write failing audio-motion buffer tests.**
+- [x] **Step 4: Write failing audio-motion buffer tests.**
 
 ```rust
 #[test]
@@ -99,15 +99,15 @@ fn selected_explicit_name_is_the_only_tile_detail() {
 }
 ```
 
-- [ ] **Step 5: Render background, motion, recovery, and hit targets.**
+- [x] **Step 5: Render background, motion, recovery, and hit targets.**
 
 Use RMS to set a low-contrast theme-phosphor vignette radius/intensity. Draw an actual waveform/FFT trace behind tile shadows and tiles. Compute energy as `rms * 0.55 + assigned_band * 0.45`; use it for bounded tile translation/scale and up to two soft shadow rectangles from recent history. Draw only tile rectangles as mouse targets. Render Stale from `App::stale_viz()` captured frame/history, dimmed; render Unavailable without tiles.
 
-- [ ] **Step 6: Replace Current tests with Collage contract tests.**
+- [x] **Step 6: Replace Current tests with Collage contract tests.**
 
 Add buffer tests for background trace/vignette response, stable tile art, all-tile density, state edge glow, quiet silence, low-power static geometry, stale freeze/dim, unavailable hiding, selected-name-only privacy, tile-only hit testing, full-screen coverage, and Compact/Signal/hidden absence. Remove Current-specific trace/light tests that no longer describe the product.
 
-- [ ] **Step 7: Run UI verification and commit.**
+- [x] **Step 7: Run UI verification and commit.**
 
 Run:
 
@@ -135,7 +135,7 @@ but commit herdr-agent-pulse-design -m "feat: render Kinetic Collage"
 - Consumes: existing `KeyOutcome`, `App`, audio/persistence handles, and Collage `hit_test`.
 - Produces: unchanged non-recursive full-screen input behavior with tests that find actual tile hit cells.
 
-- [ ] **Step 1: Write failing collage control tests.**
+- [x] **Step 1: Write failing collage control tests.**
 
 ```rust
 #[test]
@@ -158,17 +158,17 @@ fn collage_keeps_global_shortcuts_and_suppresses_search_navigation() {
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure.**
+- [x] **Step 2: Run focused tests and verify failure.**
 
 Run: `cargo test cli::tests::collage_`
 
 Expected: FAIL because Current-specific helper names and comments remain.
 
-- [ ] **Step 3: Adapt only geometry-facing helpers, tests, and comments.**
+- [x] **Step 3: Adapt only geometry-facing helpers, tests, and comments.**
 
 Keep Signal View-first and `handle_current_key`’s non-recursive behavior unchanged. Rename user-facing Current wording to Kinetic Collage where it describes this surface. Scan `ui::agent_pulse_hit_test` across canvas cells to find a real tile target, and pass `low_power` through the existing mouse path if the current implementation requires it for exact drawn geometry.
 
-- [ ] **Step 4: Run controller and full verification.**
+- [x] **Step 4: Run controller and full verification.**
 
 Run:
 
@@ -181,7 +181,7 @@ cargo clippy --all-targets -- -D warnings
 
 Expected: every command exits 0.
 
-- [ ] **Step 5: Commit input verification.**
+- [x] **Step 5: Commit input verification.**
 
 ```bash
 but commit herdr-agent-pulse-design -m "test: verify Kinetic Collage controls"
@@ -206,7 +206,7 @@ but commit herdr-agent-pulse-design -m "test: verify Kinetic Collage controls"
 - Consumes: final Collage behavior and existing test helpers.
 - Produces: truthful user docs, historical supersession records, no stale lints/comments, and restored Signal View regression coverage.
 
-- [ ] **Step 1: Write/update executable documentation anchors and regression coverage.**
+- [x] **Step 1: Write/update executable documentation anchors and regression coverage.**
 
 ```rust
 #[test]
@@ -230,11 +230,11 @@ fn signal_view_long_title_render_stays_bounded() {
 }
 ```
 
-- [ ] **Step 2: Remove stale allowances and synchronize docs.**
+- [x] **Step 2: Remove stale allowances and synchronize docs.**
 
 Remove now-false `#![allow(dead_code)]` in `src/herdr.rs`; remove false follow-up-task comments/attributes from `AgentView`/App accessors; delete `AgentView::observed_duration` when no production caller remains. Document Kinetic Collage’s procedural tiles, background trace/vignette, audio motion, edge glow, selected-name-only privacy, recovery, low power, controls, and unchecked manual verification. Mark all prior visual designs/plans superseded without altering their historical integration/privacy context.
 
-- [ ] **Step 3: Run final automated and manual-check recording gate.**
+- [x] **Step 3: Run final automated and manual-check recording gate.**
 
 Run:
 

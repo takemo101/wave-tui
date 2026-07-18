@@ -117,20 +117,23 @@ Implications:
 - Signal View adds no playlist, queue, search, or new selection behavior and does
   not turn compact panes into a default full-screen visualizer.
 
-### Agent Pulse: Quiet Count + Bioluminescent Current
+### Agent Pulse: Quiet Count + Kinetic Collage
 
 The optional Herdr Agent Pulse uses a one-line **quiet count** in normal
-layouts and a full-screen, music-reactive **Bioluminescent Current** canvas
-as its only rich surface. The current presentation decision is
-`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`
+layouts and a full-screen, music-reactive **Kinetic Collage** canvas as its
+only rich surface. The current presentation decision is
+`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`
 (approved 2026-07-18), which supersedes the presentation decisions of the
 original `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`
-(Quiet Companion summary + Status Constellation overlay) and the interim
+(Quiet Companion summary + Status Constellation overlay), the interim
 `docs/superpowers/specs/2026-07-18-agent-pulse-beat-orbit-design.md` (Beat
-Orbit ring canvas). The earlier modal/list/card/completed-history surfaces
-are removed; the 2026-07-16 design's local-only and read-only privacy
-boundaries remain in force. Agent Pulse presents agent activity as ambient
-light inside a music visualizer, never as a work-management dashboard.
+Orbit ring canvas), and the interim
+`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`
+(Bioluminescent Current flow canvas). The earlier
+modal/list/card/completed-history surfaces are removed; the 2026-07-16
+design's local-only and read-only privacy boundaries remain in force. Agent
+Pulse presents agent activity as stable album-art tiles inside a music
+visualizer, never as a work-management dashboard.
 
 Implications:
 
@@ -145,35 +148,41 @@ Implications:
 - **Standalone invisibility.** Ineligible and standalone launches render
   byte-identical to the pre-integration UI: no reserved rows, no empty slots,
   no "not in Herdr" hints, and mouse capture stays off.
-- **Bioluminescent Current canvas.** `a` opens a single full-screen view that
-  replaces the whole player surface. A continuous current derived from the
-  played-sample FFT bands flows across the screen — per-band magnitude sets
-  its height and glyph weight (`·`/`~`/`≈`/`≋`) — and every agent is one
-  state-glyph light (`●` working, `◆` blocked, `○` idle, `✓` done, `?`
-  unknown) at a stable, identity-derived position along the flow. Dense
-  terminals shrink spacing rather than omitting lights.
-- **Music-driven, not timer-driven.** Light glow, halo size, and a short
-  upstream trail react to the current RMS and the light's assigned FFT band;
-  trails are drawn from real recent visualizer frames. Silence leaves the
-  current and lights dim and still by construction; nothing animates on a
-  clock. Low-power mode freezes flow, light positions, and trails flat while
-  state colors and minimal brightness still update.
-- **Restrained signal color.** Only working (playing color) and blocked
-  (error color) get strong color; idle, done, and unknown stay muted, and
-  done lights fade until their snapshot removes them. Stale freezes the last
-  live field dimmed under a single `stale · reconnecting` banner; unavailable
-  hides every light behind one calm `agents · unavailable · retrying` line.
-- **Selected-name-only privacy.** Selecting a light (`Tab`/`Shift+Tab`/
-  arrows/`j`/`k`, or a click on its cells) shows only `name · status` when
-  the agent has an explicit Herdr `name`; an unnamed selection shows no label
-  at all. Pane ids, workspace ids, working directories, and agent types never
-  render.
+- **Kinetic Collage canvas.** `a` opens a single full-screen view that
+  replaces the whole player surface. Every agent is one small, stable
+  abstract album-art tile: its motif (record, diagonal, stripe, or frame
+  patterns drawn with terminal glyphs such as `░`/`▒`/`╱`/`╲`/`◌`), palette
+  arrangement, and staggered base rectangle derive deterministically from
+  the agent's private identity, so tiles stay recognizable across frames.
+  Dense terminals shrink tile size and spacing rather than grouping or
+  omitting tiles.
+- **Music-driven, not timer-driven.** A low-contrast waveform/FFT trace and
+  a breathing theme-phosphor vignette sit behind the tiles: RMS drives the
+  vignette spread and tile motion, FFT bands shape the trace. RMS plus each
+  tile's assigned FFT band moves its tile with a small bounded scale/offset
+  and adds a one- or two-layer soft shadow trail drawn from real recent
+  visualizer frames; the tile art itself never morphs or swaps with audio.
+  Silence leaves the collage dim and still by construction; nothing animates
+  on a clock. Low-power mode freezes background trace positions, tile
+  geometry, and trails while state edge glow and minimal brightness still
+  update.
+- **Restrained signal color.** State is a tile edge glow only: working
+  (playing color) glows strongest and blocked uses the error color; idle,
+  done, and unknown stay muted, and done tiles stay muted/dim until their
+  snapshot removes them. Stale freezes the last live collage dimmed under a
+  single `stale · reconnecting` banner; unavailable hides every tile behind
+  one calm `agents · unavailable · retrying` line.
+- **Selected-name-only privacy.** Selecting a tile (`Tab`/`Shift+Tab`/
+  arrows/`j`/`k`, or a click on its cells) brings it forward and shows only
+  `name · status` when the agent has an explicit Herdr `name`; an unnamed
+  selection shows no label at all. Pane ids, workspace ids, working
+  directories, and agent types never render.
 - **Player-first input.** The canvas consumes search and station
   navigation/selection keys, but the documented global player shortcuts —
   `Space`, `+`/`-`, `f`, `t`, `v`, and `z` (Signal View) — fall through with
-  their exact normal semantics. Mouse clicks only select lights and resolve
+  their exact normal semantics. Mouse clicks only select tiles and resolve
   only while the connection is live; keyboard selection over the last known
-  lights keeps working during stale/unavailable states — pointer input
+  tiles keeps working during stale/unavailable states — pointer input
   should not act on possibly outdated data.
 
 ### Theme Set: High Contrast Trio

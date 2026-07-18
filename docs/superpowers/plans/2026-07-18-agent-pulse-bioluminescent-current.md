@@ -1,5 +1,15 @@
 # Agent Pulse Bioluminescent Current Implementation Plan
 
+> **Status (2026-07-19): Superseded — do not execute.** The Kinetic Collage
+> redesign
+> (`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`,
+> plan `docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`)
+> replaced the Bioluminescent Current presentation after the user rejected
+> this direction on 2026-07-19. This plan's tasks were implemented (commits
+> `db941a5`, `ea639cd`, `5c25fd7`) and its renderer has since been rewritten
+> as the Kinetic Collage; the integration and privacy boundaries it relied on
+> remain in force.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the Beat Orbit canvas with a full-screen, FFT-derived Bioluminescent Current whose agent lights change glow, size, and short trails with real played audio.

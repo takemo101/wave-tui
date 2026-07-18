@@ -479,9 +479,9 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - `--low-power` explicitly lowers visual update cadence.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
-- The Agent Pulse Bioluminescent Current renders statically in low-power
-  mode: the flow, light positions, and trails are frozen on a flat baseline
-  while state colors and minimal brightness updates remain.
+- The Agent Pulse Kinetic Collage renders statically in low-power mode:
+  background trace positions, tile geometry, and shadow trails are frozen
+  while state edge glow and minimal brightness updates remain.
 
 ### Herdr Agent Pulse (Optional Integration)
 
@@ -492,7 +492,7 @@ ambient context beside radio playback. The integration design (packaging,
 eligibility, monitoring) is
 `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; its
 presentation is superseded by the approved
-`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`.
+`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`.
 This section records the product behavior as implemented.
 
 This is an optional Herdr integration, not a plugin system inside `wave-tui`,
@@ -558,10 +558,10 @@ enabled.
 
 | Condition | Wide/Medium summary | Canvas (`a`) |
 | --- | --- | --- |
-| Connected | `● n active` count | Live Bioluminescent Current (`agents · none active` when empty) |
-| First failed poll | Count dims | Last live current/trails frozen, dimmed, `stale · reconnecting` banner |
-| ≥ 15 seconds without success | Summary disappears | Lights hidden behind `agents · unavailable · retrying` |
-| Fresh snapshot | Live count | Live current |
+| Connected | `● n active` count | Live Kinetic Collage (`agents · none active` when empty) |
+| First failed poll | Count dims | Last live collage (background/tiles/trails) frozen, dimmed, `stale · reconnecting` banner |
+| ≥ 15 seconds without success | Summary disappears | Tiles hidden behind `agents · unavailable · retrying` |
+| Fresh snapshot | Live count | Live collage |
 
 Socket errors, malformed replies, and timeouts are recoverable: they never
 panic the TUI or interrupt playback, and polling continues. A per-loop timer
@@ -575,35 +575,45 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   only, never names. Compact shows no Agent Pulse line (but `a` still opens
   the canvas while the integration is active); Signal View never shows Agent
   Pulse and ignores `a`.
-- `a` opens the full-screen **Bioluminescent Current** canvas, replacing the
-  whole player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit.
-- The canvas draws a continuous current derived from the played-sample FFT
-  bands (per-band magnitude sets height and glyph weight), with one
-  state-colored light per agent at a stable, identity-derived position along
-  the flow. Light glow, size, and a short trail react to the current RMS and
-  the light's assigned band; trails come from real recent visualizer frames.
-  Silence leaves the field dim and still — nothing animates on a timer.
-  Dense terminals shrink spacing rather than omitting lights.
-- State colors come from the active theme only: working uses the playing
-  color (strongest), blocked the error color; idle/done/unknown stay muted
-  and done fades until removed. In `--low-power`, flow, light positions, and
-  trails are frozen flat while state colors and brightness still update.
-- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a light. Selection shows only
-  `name · status` for an explicitly named agent; an unnamed selection shows
-  no label. Search (`/`) and station navigation/selection
-  (`g`/`G`/`Home`/`End`/`Enter`) are consumed, so canvas input can never play
-  a station or move station selection.
+- `a` opens the full-screen **Kinetic Collage** canvas, replacing the whole
+  player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit.
+- The canvas renders one small, stable abstract album-art tile per agent.
+  Each tile's motif (record, diagonal, stripe, or frame patterns drawn with
+  terminal glyphs), palette arrangement, and staggered base rectangle derive
+  deterministically from the agent's private workspace-qualified identity,
+  so tiles stay recognizable across frames and never morph or swap with the
+  music. Behind the tiles, a low-contrast waveform/FFT trace and a breathing
+  theme-phosphor vignette react to the played audio: RMS drives the vignette
+  spread and tile motion, FFT bands shape the trace. RMS combined with each
+  tile's assigned FFT band moves its tile with a small bounded scale/offset
+  and adds a one- or two-layer soft shadow trail drawn from real recent
+  visualizer frames. Silence leaves the collage dim and still — nothing
+  animates on a timer. Dense terminals shrink tile size and spacing rather
+  than omitting tiles; every agent keeps one visible tile.
+- State colors come from the active theme only, as a restrained tile edge
+  glow: working strongest (the playing color), blocked the error color;
+  idle/done/unknown stay muted and a done tile stays muted/dim until its
+  snapshot omits it. In `--low-power`, background trace positions, tile
+  geometry, and shadow trails are frozen while state edge glow and minimal
+  brightness still update.
+- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a tile, bringing it forward.
+  Selection shows only `name · status` for an explicitly named agent; an
+  unnamed selection shows no label. Search (`/`) and station
+  navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed, so
+  canvas input can never play a station or move station selection.
 - The documented global player shortcuts fall through with their exact normal
   semantics and side effects: `Space` (playback toggle, still conditional on
   the station list being the focused pane underneath), `+`/`-` (volume), `f`
   (favorite for the station-list selection), `t` (theme), `v` (visualizer
   mode), and `z` (Signal View, which replaces the canvas surface).
 - Mouse capture is enabled only for eligible plugin launches, solely to feed
-  light-selection clicks; flow and trail cells resolve nothing. Clicks
-  resolve only while the connection is `Connected`; during stale/unavailable
-  states mouse clicks select nothing while keyboard selection over the last
-  known lights keeps working. This asymmetry is intentional: pointer input
-  should not act on data that may no longer be current.
+  tile-selection clicks; background trace, vignette, and shadow cells
+  resolve nothing. Clicks resolve against the tile geometry actually drawn
+  (including low-power frozen geometry) and only while the connection is
+  `Connected`; during stale/unavailable states mouse clicks select nothing
+  while keyboard selection over the last known tiles keeps working. This
+  asymmetry is intentional: pointer input should not act on data that may no
+  longer be current.
 
 #### Privacy and read-only guarantees
 
@@ -613,7 +623,7 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 - Every agent reported by the plugin invocation's local Herdr socket is
   shown, across that session's workspaces; other Herdr sessions are never
   discovered.
-- Only a selected light's explicit Herdr `name` is ever rendered. There is no
+- Only a selected tile's explicit Herdr `name` is ever rendered. There is no
   fallback label; pane ids, workspace ids, working directories, and agent
   types never appear on screen.
 - Agent activity changes colors/low-rate rendering only — never audio,
@@ -659,7 +669,7 @@ Use automated tests for core logic:
 - Herdr Agent Pulse logic without a live Herdr process, socket, or terminal:
   plugin-environment eligibility, cross-workspace `agent.list` payload
   normalization, lifecycle/stale reducers, key/mouse routing, and
-  summary/Bioluminescent Current canvas rendering
+  summary/Kinetic Collage canvas rendering
 
 Use manual verification for:
 
@@ -755,7 +765,7 @@ tier, and built-in retry candidates stay visible
 
 ### Herdr Agent Pulse — Verification Status
 
-Status as of the Bioluminescent Current documentation pass (2026-07-18).
+Status as of the Kinetic Collage documentation pass (2026-07-19).
 
 **Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
 `cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
@@ -773,14 +783,16 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   them, the stale-edge visualizer freeze capture, stale → unavailable
   (15 s) → recovery transitions, and the per-loop staleness tick (`app`);
 - `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
-  the canvas key gate (light selection, suppressed search/station
+  the canvas key gate (tile selection, suppressed search/station
   navigation, preserved global player shortcuts, Signal View delegation),
-  and monitor/mouse-capture/click routing (`cli`);
+  and monitor/mouse-capture/click routing including the low-power geometry
+  path (`cli`);
 - summary visibility per tier and connection state, full-screen canvas
-  coverage, FFT-flow/RMS-driven glow-size-trail reactivity, silence
-  stillness, low-power frozen geometry, state colors, selected-name-only
-  privacy, stale freeze/unavailable rendering, and light-only hit testing
-  (`ui`, `ui::agent_pulse`).
+  coverage, deterministic per-identity tile motifs/layout, one-tile-per-agent
+  density, RMS/FFT-driven tile motion and shadow trails, background
+  trace/vignette reactivity, silence stillness, low-power frozen geometry,
+  state edge glow, selected-name-only privacy, stale freeze/unavailable
+  rendering, and tile-only hit testing (`ui`, `ui::agent_pulse`).
 
 **Manual checklist (NOT run in this pass).** This documentation pass was
 performed without a Herdr 0.7.0+ installation, a real terminal session, or
@@ -793,16 +805,20 @@ the release as fully validated:
       runs during `herdr plugin install`/link.
 - [ ] Open the `Open wave-tui radio tab` action; confirm a dedicated tab with
       the Wide or Medium layout and working playback.
-- [ ] Play a real stream with the canvas open and judge live visual quality:
-      the current's shape follows the music, light glow/size/trails react,
-      and silence leaves a dim, still field with no timer motion.
-- [ ] Cycle all six themes on the canvas and confirm flow, lights, and state
-      colors stay legible on each.
+- [ ] Play a real stream with the canvas open and judge live composition and
+      cadence: the background trace and vignette follow the music, tiles
+      breathe with RMS/band energy and grow soft shadow trails, tile art
+      stays stable, and silence leaves a dim, still collage with no timer
+      motion.
+- [ ] Cycle all six themes on the canvas and confirm background, tile
+      motifs, and state edge glow stay legible on each.
 - [ ] With agents across multiple workspaces of the same Herdr session,
-      confirm `● n active` counts them all and the canvas keeps one light
-      per agent at stable positions, including dense agent counts.
-- [ ] Select lights with keyboard and mouse; confirm only explicit
-      `name · status` labels render and unnamed agents show no label.
+      confirm `● n active` counts them all and the canvas keeps one
+      recognizable tile per agent at stable positions, including dense
+      agent counts.
+- [ ] Select tiles with keyboard and mouse clicks; confirm clicks land only
+      on tile cells, the selected tile comes forward, only explicit
+      `name · status` labels render, and unnamed agents show no label.
 - [ ] Resize the tab through Wide/Medium/Compact; confirm the summary hides
       in Compact while `a` still opens the full-screen canvas, and the
       canvas redraws cleanly across sizes.
@@ -813,8 +829,9 @@ the release as fully validated:
       selecting nothing while stale/unavailable.
 - [ ] Detach and reattach the Herdr session; confirm the tab process and
       playback follow Herdr's normal pane lifecycle.
-- [ ] Run `wave-tui --low-power` inside Herdr and confirm a static flow with
-      fixed light positions and no trails while state colors remain.
+- [ ] Run `wave-tui --low-power` inside Herdr and confirm static background
+      trace positions, tile geometry, and trails while state edge glow
+      remains — and that clicks still select against the frozen geometry.
 - [ ] Run standalone `wave-tui --no-auto-play` outside Herdr and inside a
       plain Herdr shell pane (no plugin env); confirm zero Agent Pulse UI,
       inert `a`, and unchanged terminal mouse behavior.

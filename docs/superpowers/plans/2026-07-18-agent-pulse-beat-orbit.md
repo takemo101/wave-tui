@@ -11,7 +11,9 @@
 > Orbit ring renderer from Task 2 was rewritten as the Bioluminescent Current
 > canvas. Task 4's documentation sync was never performed under this plan; the
 > durable docs were synchronized under the Bioluminescent Current plan's
-> Task 3 instead.
+> Task 3 instead. The Bioluminescent Current presentation was itself
+> superseded on 2026-07-19 by the Kinetic Collage
+> (`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

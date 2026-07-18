@@ -40,10 +40,10 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
 - **Herdr Agent Pulse (optional)** — when launched as the official Herdr
   plugin (Herdr 0.7.0+), a quiet, read-only `● n active` count of the AI
   coding agents on the local Herdr socket appears in Wide/Medium layouts, and
-  `a` opens a full-screen, music-reactive **Bioluminescent Current** canvas
-  that renders each agent as a light inside an FFT-derived flow. It never
-  reads agent output, never controls panes, and standalone launches are
-  completely unchanged (see
+  `a` opens a full-screen, music-reactive **Kinetic Collage** canvas that
+  renders each agent as a stable procedural album-art tile over an
+  audio-driven background. It never reads agent output, never controls panes,
+  and standalone launches are completely unchanged (see
   [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
@@ -283,30 +283,35 @@ agent reported by the session's socket is shown.
   playback context, but `a` still opens the canvas while the integration is
   active.
 - **Signal View** never shows Agent Pulse and ignores `a`.
-- Press `a` for the **Bioluminescent Current** canvas: a full-screen view that
-  replaces the whole player surface. A continuous current derived from the
-  played-sample FFT bands flows across the screen — per-band magnitude sets
-  its height and glyph weight — and every agent is one state-colored light at
-  a stable position along that flow. Each light's glow, size, and short
-  trail react to the current RMS and its assigned FFT band, with trails drawn
-  from real recent visualizer frames. Silence (or no audio) leaves the
-  current and lights dim and still; nothing animates on a timer. With no
-  agents the canvas shows a calm `agents · none active`.
-- Theme colors communicate state: working lights use the playing color (the
-  strongest glow), blocked uses the error color, and idle/done/unknown stay
-  muted; a done light fades until the next snapshot omits it. Dense terminals
-  shrink spacing rather than hiding lights — every agent stays visible.
-- Selecting a light shows only `name · status` for agents with an explicit
-  Herdr `name`; an unnamed selection shows no label at all. Pane ids,
-  workspace ids, working directories, and agent types never render.
+- Press `a` for the **Kinetic Collage** canvas: a full-screen view that
+  replaces the whole player surface. Every agent is one small, stable
+  abstract album-art tile: its motif, palette arrangement, and staggered
+  position derive from the agent's private identity, so a tile stays
+  recognizable across frames and never morphs or swaps with the music.
+  Behind the tiles, a low-contrast waveform/FFT trace and a breathing
+  theme-phosphor vignette react to the played audio. RMS and each tile's
+  assigned FFT band move its tile with a small bounded scale/offset and add
+  a one- or two-layer soft shadow trail drawn from real recent visualizer
+  frames. Silence (or no audio) leaves the collage dim and still; nothing
+  animates on a timer. With no agents the canvas shows a calm
+  `agents · none active`.
+- Theme colors communicate state as a restrained tile edge glow: working
+  tiles glow strongest (the playing color), blocked uses the error color,
+  and idle/done/unknown stay muted; a done tile stays muted/dim until the
+  next snapshot omits it. Dense terminals shrink tile size and spacing
+  rather than hiding tiles — every agent keeps one visible tile.
+- Selecting a tile brings it forward and shows only `name · status` for
+  agents with an explicit Herdr `name`; an unnamed selection shows no label
+  at all. Pane ids, workspace ids, working directories, and agent types
+  never render.
 
 ### Canvas controls
 
 | Key / input        | Action                                   |
 | ------------------ | ---------------------------------------- |
 | `a` / `Esc`        | close the canvas                         |
-| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select a light         |
-| mouse click        | select a light (its cells only)          |
+| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select a tile          |
+| mouse click        | select a tile (its cells only)           |
 | `Space`, `+`/`-`, `f`, `t`, `v`, `z` | normal player behavior |
 | `q` / `Ctrl+C`     | quit the app                             |
 
@@ -320,7 +325,7 @@ capture is enabled only for eligible plugin launches (native terminal text
 selection may then need `Shift`+drag); standalone launches leave terminal
 mouse behavior untouched. Clicks resolve only while the connection is live —
 during `stale`/`unavailable` states clicks select nothing, while keyboard
-selection over the last known lights keeps working; this asymmetry is
+selection over the last known tiles keeps working; this asymmetry is
 intentional (clicks should not act on data that may no longer be current).
 
 ### Connection loss and recovery
@@ -329,10 +334,10 @@ The integration polls Herdr's `agent.list` every 5 seconds over the local Unix
 socket. Failures are recoverable and never interrupt playback:
 
 - After the first failed poll, the `● n active` count dims and the canvas
-  freezes the last live current and trails, dimmed, under a
-  `stale · reconnecting` banner.
+  freezes the last live collage — background, tiles, and shadow trails —
+  dimmed, under a `stale · reconnecting` banner.
 - After 15 seconds without a successful response, the summary disappears and
-  the canvas hides every light behind `agents · unavailable · retrying`.
+  the canvas hides every tile behind `agents · unavailable · retrying`.
 - Polling continues; a fresh successful snapshot restores the live view.
 
 ### Privacy and read-only limits
@@ -346,7 +351,7 @@ Agent Pulse is strictly observational:
 - It shows every agent reported by the plugin invocation's local Herdr
   socket, across that session's workspaces; it never discovers other Herdr
   sessions or opens another socket.
-- Only a selected light's explicit Herdr `name` is ever rendered; there is no
+- Only a selected tile's explicit Herdr `name` is ever rendered; there is no
   fallback label and no pane/workspace/cwd/agent-type detail on screen.
 - It never changes volume, theme, station, playback, search, or the
   visualizer, and never emits OS notifications.
@@ -468,15 +473,17 @@ for findings and caveats.
 - [`herdr-plugin.toml`](herdr-plugin.toml) — official Herdr plugin manifest
 - [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
   — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
-  presentation superseded by the Bioluminescent Current design)
+  presentation superseded by the Kinetic Collage design)
+- [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
+  — Agent Pulse Kinetic Collage design (current presentation decision)
 - [`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md)
-  — Agent Pulse Bioluminescent Current design (current presentation decision)
+  — Agent Pulse Bioluminescent Current design (superseded by Kinetic Collage)
 - [`docs/superpowers/plans/2026-06-27-radio-replacement.md`](docs/superpowers/plans/2026-06-27-radio-replacement.md)
   — implementation plan
 - [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
   — Herdr Agent Pulse implementation plan
-- [`docs/superpowers/plans/2026-07-18-agent-pulse-bioluminescent-current.md`](docs/superpowers/plans/2026-07-18-agent-pulse-bioluminescent-current.md)
-  — Bioluminescent Current implementation plan
+- [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md)
+  — Kinetic Collage implementation plan
 
 ## Verification
 

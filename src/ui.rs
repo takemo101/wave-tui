@@ -2372,6 +2372,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn signal_view_long_title_render_stays_bounded() {
+        // The long-title constraint holds through the full render path without
+        // pushing layout regions out of view.
+        let mut app = base_app();
+        let id = app.selected_station().unwrap().id.clone();
+        play_first(&mut app);
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station: id,
+            title: "Extremely ".repeat(40),
+        }));
+        app.apply(Action::ToggleSignalView);
+
+        for (w, h) in [(40, 12), (80, 24), (120, 40)] {
+            let buf = render_buffer(&app, w, h);
+            // The footer hint still survives below the constrained title.
+            assert!(
+                buffer_text(&buf).contains("z/Esc back"),
+                "hint pushed off-screen by long title at {w}x{h}"
+            );
+        }
+    }
+
     // --- Agent Pulse: quiet count + full-screen Kinetic Collage -----------
 
     use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};

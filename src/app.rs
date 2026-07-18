@@ -25,7 +25,7 @@ use crate::settings::Settings;
 use crate::theme::ThemeName;
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Step applied to the volume for a single `VolumeUp`/`VolumeDown` action.
 const VOLUME_STEP: i32 = 5;
@@ -124,10 +124,6 @@ pub(crate) enum AgentPulseConnection {
 /// process start time. The view deliberately carries no pane id, cwd, or
 /// agent type: the explicit `name` is the only displayable label, and the
 /// private [`AgentId`] exists solely for identity.
-// Dead-code allowance: `observed_at` is reducer-internal state (preserved
-// while identity and status are unchanged) that the Bioluminescent Current
-// UI never displays; reducer tests exercise it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentView {
     pub(crate) id: AgentId,
@@ -137,13 +133,7 @@ pub(crate) struct AgentView {
     pub(crate) observed_at: Instant,
 }
 
-#[allow(dead_code)]
 impl AgentView {
-    /// Elapsed time since the agent was first observed in its current status.
-    pub(crate) fn observed_duration(&self, now: Instant) -> Duration {
-        now.duration_since(self.observed_at)
-    }
-
     /// Sort rank per the design: working, blocked, idle, done, then unknown.
     fn status_rank(&self) -> u8 {
         match self.status {
@@ -1223,9 +1213,6 @@ impl App {
 ///
 /// These accessors are the only way UI and CLI observe Agent Pulse state;
 /// mutation goes through [`App::apply`] like every other state transition.
-// Temporary dead-code allowance: consumed by the Agent Pulse UI and CLI
-// wiring in follow-up tasks; exercised by reducer tests until then.
-#[allow(dead_code)]
 impl App {
     /// The Agent Pulse connection state; `Hidden` for standalone launches.
     pub(crate) fn agent_pulse_connection(&self) -> AgentPulseConnection {
@@ -2610,7 +2597,7 @@ mod tests {
         ));
         let view = &app.active_agents()[0];
         assert_eq!(view.observed_at, t0);
-        assert_eq!(view.observed_duration(t1), Duration::from_secs(5));
+        assert_eq!(t1.duration_since(view.observed_at), Duration::from_secs(5));
 
         // A status change resets the local observation time.
         let t2 = t0 + Duration::from_secs(9);

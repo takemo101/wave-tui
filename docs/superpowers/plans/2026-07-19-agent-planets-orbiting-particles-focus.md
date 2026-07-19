@@ -7,7 +7,10 @@
 > afterglow, Unknown near-static) and the four selection focus brackets
 > shipped instead, per the revised
 > [`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](../specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md).
-> Particle tasks below are preserved as history.
+> Particle tasks below are preserved as history. Those atmospheres are in
+> turn superseded by the interior-only surface status of
+> [`2026-07-19-agent-planets-surface-status.md`](2026-07-19-agent-planets-surface-status.md);
+> only the selection focus brackets from this plan remain current.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

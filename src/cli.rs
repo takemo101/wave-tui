@@ -821,6 +821,7 @@ fn event_loop(
                         mouse,
                         Rect::new(0, 0, size.width, size.height),
                         low_power,
+                        Instant::now(),
                         app,
                     );
                 }
@@ -1173,16 +1174,17 @@ fn apply_monitor_event(app: &mut App, event: MonitorEvent, now: Instant) {
 /// Route a mouse event through the pure UI hit test.
 ///
 /// Only actions returned by [`crate::ui::agent_pulse_hit_test`] are applied —
-/// read-only Kinetic Collage tile selection by contract — so every click
+/// read-only Agent Planets body selection by contract — so every click
 /// outside the canvas keeps its current behavior: none. `low_power` is the
-/// same controller flag the render call uses, so clicks resolve against the
-/// tile geometry that was actually drawn.
-fn handle_mouse(mouse: MouseEvent, area: Rect, low_power: bool, app: &mut App) {
+/// same controller flag the render call uses and `now` the same monotonic
+/// clock the render loop reads, so clicks resolve against the planet
+/// geometry — frozen or Working-orbit-advanced — that was actually drawn.
+fn handle_mouse(mouse: MouseEvent, area: Rect, low_power: bool, now: Instant, app: &mut App) {
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
         return;
     }
     if let Some(action) =
-        crate::ui::agent_pulse_hit_test(area, mouse.column, mouse.row, low_power, app)
+        crate::ui::agent_pulse_hit_test(area, mouse.column, mouse.row, low_power, now, app)
     {
         app.apply(action);
     }
@@ -2497,14 +2499,14 @@ mod tests {
         app
     }
 
-    /// Scan the open Kinetic Collage canvas for the first cell the pure hit
-    /// test resolves to a planet, so mouse tests target the actual drawn
-    /// planet body/ring cells instead of assuming any particular shape.
-    fn first_collage_tile_hit(app: &App) -> (u16, u16) {
+    /// Scan the open Agent Planets canvas for the first cell the pure hit
+    /// test resolves to a planet at `now`, so mouse tests target the actual
+    /// drawn planet body cells instead of assuming any particular shape.
+    fn first_collage_tile_hit(app: &App, now: Instant) -> (u16, u16) {
         let area = canvas_area();
         for row in 0..area.height {
             for column in 0..area.width {
-                if crate::ui::agent_pulse_hit_test(area, column, row, false, app).is_some() {
+                if crate::ui::agent_pulse_hit_test(area, column, row, false, now, app).is_some() {
                     return (column, row);
                 }
             }
@@ -2520,9 +2522,10 @@ mod tests {
 
         // Find a click the pure hit test maps, then route it through the
         // event-loop path.
-        let (x, y) = first_collage_tile_hit(&app);
+        let now = Instant::now();
+        let (x, y) = first_collage_tile_hit(&app, now);
 
-        handle_mouse(left_click(x, y), canvas_area(), false, &mut app);
+        handle_mouse(left_click(x, y), canvas_area(), false, now, &mut app);
         assert!(
             app.selected_agent().is_some(),
             "a tile click selects that agent"
@@ -2535,14 +2538,10 @@ mod tests {
     }
 
     #[test]
-    fn collage_low_power_mouse_path_uses_frozen_tile_geometry() {
+    fn collage_low_power_mouse_path_resolves_the_frozen_orbit_layout() {
         let mut app = connected_collage_app();
         app.configure_low_power_visuals(true);
         app.apply(Action::ToggleAgentOverlay);
-        // The first audible frame — quiet enough to sit on base geometry —
-        // becomes the App-captured frozen low-power geometry; the later loud
-        // frame moves normal-power tiles off their base rectangles while low
-        // power keeps drawing the capture.
         app.apply(Action::Audio(AudioEvent::Viz(
             crate::model::VizFrame::with_phase(
                 vec![0.0; 16],
@@ -2552,27 +2551,27 @@ mod tests {
                 crate::model::PhaseTrace::empty(),
             ),
         )));
-        app.apply(Action::Audio(AudioEvent::Viz(crate::model::VizFrame::new(
-            vec![0.9; 16],
-            0.9,
-            Vec::<f32>::new(),
-        ))));
         let area = canvas_area();
 
-        // A discriminating cell: covered by an audio-moved planet's body or
-        // ring, but empty in the frozen low-power collage.
-        let moved_only = (0..area.height)
+        // The audible frame froze the whole solar layout. A discriminating
+        // cell: covered by a frozen planet body at the captured angle, but
+        // left behind by the live orbit-advanced position at `later` — a
+        // hit test that tracked the clock would miss it.
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(40);
+        let frozen_only = (0..area.height)
             .flat_map(|row| (0..area.width).map(move |column| (column, row)))
             .find(|&(column, row)| {
-                crate::ui::agent_pulse_hit_test(area, column, row, false, &app).is_some()
-                    && crate::ui::agent_pulse_hit_test(area, column, row, true, &app).is_none()
+                crate::ui::agent_pulse_hit_test(area, column, row, true, t0, &app).is_some()
+                    && crate::ui::agent_pulse_hit_test(area, column, row, false, later, &app)
+                        .is_none()
             });
-        let (x, y) = moved_only.expect("a loud frame moves some tile cell off its base rect");
+        let (x, y) = frozen_only.expect("elapsed Working time moves some live planet cell");
 
-        handle_mouse(left_click(x, y), area, true, &mut app);
+        handle_mouse(left_click(x, y), area, true, later, &mut app);
         assert!(
-            app.selected_agent().is_none(),
-            "a low-power click resolves only the frozen drawn tiles"
+            app.selected_agent().is_some(),
+            "a low-power click resolves the frozen captured orbit angle"
         );
     }
 
@@ -2661,7 +2660,7 @@ mod tests {
 
         // The hit test is the only source of mouse actions; a click that
         // lands on no tile cell changes nothing.
-        handle_mouse(left_click(5, 5), area, false, &mut app);
+        handle_mouse(left_click(5, 5), area, false, Instant::now(), &mut app);
         assert_eq!(app.selected_index(), station_before);
         assert!(app.selected_agent().is_none());
         assert_eq!(app.playback(), &PlaybackState::Stopped);
@@ -2674,7 +2673,7 @@ mod tests {
             row: 5,
             modifiers: KeyModifiers::NONE,
         };
-        handle_mouse(moved, area, false, &mut app);
+        handle_mouse(moved, area, false, Instant::now(), &mut app);
         assert_eq!(app.selected_index(), station_before);
         assert!(app.selected_agent().is_none());
     }

@@ -16,8 +16,12 @@ cycling remain unchanged.
 > **Note (2026-07-19):** the status rings left unchanged above were later
 > replaced by the thin status atmospheres and selection focus brackets of
 > [`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](2026-07-19-agent-planets-orbiting-particles-focus-design.md)
-> as revised (no orbiting particles). This modal design itself remains
-> current.
+> as revised (no orbiting particles); those atmospheres were in turn
+> replaced by the interior-only surface status of
+> [`2026-07-19-agent-planets-surface-status-design.md`](2026-07-19-agent-planets-surface-status-design.md),
+> and planet body motion by the solar orbits of
+> [`2026-07-19-agent-planets-solar-orbit-design.md`](2026-07-19-agent-planets-solar-orbit-design.md).
+> This modal design itself remains current.
 
 ## User flow
 

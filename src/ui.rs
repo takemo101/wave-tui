@@ -94,16 +94,19 @@ pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
 /// integration resolves no clicks either; the geometry lives in
 /// [`agent_pulse`], shared with the canvas renderer. `low_power` must be the
 /// same controller flag passed to [`render`], so clicks resolve against
-/// exactly the tile rectangles that were drawn — frozen base geometry in low
-/// power, audio-transformed geometry otherwise.
+/// exactly the tile rectangles that were drawn — frozen orbit geometry in
+/// low power, live Working orbit positions otherwise — and `now` must be the
+/// same monotonic instant a render uses, since Working planets advance with
+/// elapsed time.
 pub(crate) fn agent_pulse_hit_test(
     area: Rect,
     column: u16,
     row: u16,
     low_power: bool,
+    now: Instant,
     app: &App,
 ) -> Option<Action> {
-    agent_pulse::hit_test(area, column, row, low_power, app)
+    agent_pulse::hit_test(area, column, row, low_power, now, app)
 }
 
 /// Render into an explicit area and buffer.
@@ -2615,7 +2618,7 @@ mod tests {
         for row in 0..36 {
             for column in 0..120 {
                 if let Some(Action::SelectAgent(id)) =
-                    agent_pulse_hit_test(area, column, row, false, &app)
+                    agent_pulse_hit_test(area, column, row, false, Instant::now(), &app)
                 {
                     if !hit_ids.contains(&id) {
                         hit_ids.push(id);

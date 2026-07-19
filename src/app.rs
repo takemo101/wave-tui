@@ -24,8 +24,8 @@ use crate::search::SearchResults;
 use crate::settings::Settings;
 use crate::theme::ThemeName;
 
-use std::collections::VecDeque;
-use std::time::Instant;
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 /// Step applied to the volume for a single `VolumeUp`/`VolumeDown` action.
 const VOLUME_STEP: i32 = 5;
@@ -169,6 +169,22 @@ struct StaleViz {
     history: Vec<VizFrame>,
 }
 
+/// One agent's private solar-orbit phase source: the Working time banked by
+/// completed Working stretches plus the start of the still-running stretch.
+///
+/// The reducer captures a stretch into `banked` when the agent stops Working
+/// (or at the Connected→Stale freeze edge) and re-opens `working_since` when
+/// Working returns, so a planet resumes its orbit from the captured angle.
+/// Process-local presentation state — never persisted, never exposed beyond
+/// the derived elapsed-seconds accessors.
+#[derive(Debug, Default)]
+struct AgentOrbit {
+    /// Working time captured from completed Working stretches.
+    banked: Duration,
+    /// When the current Working stretch began; `None` while not Working.
+    working_since: Option<Instant>,
+}
+
 /// All Agent Pulse state owned by [`App`]: live agents only.
 ///
 /// Process-local only: nothing here is persisted, no completed history is
@@ -192,6 +208,9 @@ struct AgentPulse {
     /// Display snapshot captured when the connection dims to `Stale`;
     /// cleared by a fresh agent snapshot and by `Unavailable`.
     stale_viz: Option<StaleViz>,
+    /// Per-agent solar-orbit phase sources, keyed by the private identity;
+    /// entries live exactly as long as their agent stays in a snapshot.
+    orbits: HashMap<AgentId, AgentOrbit>,
 }
 
 impl AgentPulse {
@@ -206,6 +225,7 @@ impl AgentPulse {
             last_success: None,
             first_failure: None,
             stale_viz: None,
+            orbits: HashMap::new(),
         }
     }
 
@@ -459,6 +479,16 @@ pub struct App {
     /// policy, so low-power rendering keeps stable geometry while the live
     /// frame keeps updating for colors.
     low_power_viz: Option<(VizFrame, Vec<VizFrame>)>,
+    /// Per-agent effective orbit seconds captured together with the
+    /// low-power frame, so the whole solar layout — orbit angles included —
+    /// freezes at low-power entry. Agents unknown to the capture read zero.
+    /// Process-local presentation state; never persisted.
+    low_power_orbit: Option<HashMap<AgentId, f32>>,
+    /// The most recent visually audible frame, held indefinitely as the
+    /// silence rest source for interior status treatment: the bounded
+    /// display history may evict every audible frame, this capture never
+    /// does. Process-local presentation state; never persisted.
+    status_viz: Option<VizFrame>,
     offline: bool,
     search_query: String,
     search_status: SearchStatus,
@@ -496,6 +526,8 @@ impl App {
             viz_history,
             low_power_visuals: false,
             low_power_viz: None,
+            low_power_orbit: None,
+            status_viz: None,
             offline: false,
             search_query: String::new(),
             search_status: SearchStatus::Idle,
@@ -845,16 +877,33 @@ impl App {
     /// Store the latest visualizer frame and retain the short history used by
     /// PeakDots to render real, audio-frame-driven trails.
     ///
+    /// Every visually audible frame also refreshes the `status_viz` capture,
+    /// the indefinite silence rest source for interior status treatment.
+    ///
     /// Under the low-power visual policy the first visually audible frame
     /// (plus its trail) is captured once as the frozen low-power geometry
-    /// source; startup-silent frames retain no capture, so rendering falls
-    /// back to the live frame until real audio arrives. Later frames keep
-    /// updating `viz`/`viz_history` for colors without replacing the capture.
+    /// source, together with every agent's effective orbit seconds at that
+    /// instant — the whole solar layout freezes at low-power entry, so the
+    /// wall clock is read exactly here (audio events carry no timestamp).
+    /// Startup-silent frames retain no capture, so rendering falls back to
+    /// the live frame until real audio arrives. Later frames keep updating
+    /// `viz`/`viz_history` for colors without replacing the capture.
     fn set_viz_frame(&mut self, frame: VizFrame) {
         self.viz = frame.clone();
         self.viz_history.push_front(frame);
         self.viz_history.truncate(VIZ_HISTORY_FRAMES);
+        if self.viz.is_audible() {
+            self.status_viz = Some(self.viz.clone());
+        }
         if self.low_power_visuals && self.low_power_viz.is_none() && self.viz.is_audible() {
+            let now = Instant::now();
+            self.low_power_orbit = Some(
+                self.agent_pulse
+                    .orbits
+                    .keys()
+                    .map(|id| (id.clone(), self.agent_orbit_secs(id, now)))
+                    .collect(),
+            );
             self.low_power_viz = Some((
                 self.viz.clone(),
                 self.viz_history.iter().skip(1).cloned().collect(),
@@ -944,12 +993,29 @@ impl App {
     fn apply_agent_snapshot(&mut self, agents: Vec<AgentSnapshot>, now: Instant) {
         let pulse = &mut self.agent_pulse;
         let previous = std::mem::take(&mut pulse.active);
+        let mut previous_orbits = std::mem::take(&mut pulse.orbits);
+        let mut orbits = HashMap::new();
         let mut active: Vec<AgentView> = agents
             .into_iter()
             .map(|snapshot| {
                 let carried = previous
                     .iter()
                     .find(|view| view.id == snapshot.id && view.status == snapshot.status);
+                // Orbit phase: a Working→non-Working transition banks the
+                // stretch (freezing the planet at its current angle); a
+                // non-Working→Working transition re-opens a stretch so the
+                // orbit resumes from the captured phase. Omitted agents are
+                // simply never carried over.
+                let mut orbit = previous_orbits.remove(&snapshot.id).unwrap_or_default();
+                match (orbit.working_since, snapshot.status == AgentStatus::Working) {
+                    (Some(since), false) => {
+                        orbit.banked += now.saturating_duration_since(since);
+                        orbit.working_since = None;
+                    }
+                    (None, true) => orbit.working_since = Some(now),
+                    _ => {}
+                }
+                orbits.insert(snapshot.id.clone(), orbit);
                 AgentView {
                     observed_at: carried.map_or(now, |view| view.observed_at),
                     id: snapshot.id,
@@ -961,6 +1027,7 @@ impl App {
             .collect();
         sort_active_agents(&mut active);
         pulse.active = active;
+        pulse.orbits = orbits;
         pulse.clamp_selection();
         pulse.connection = AgentPulseConnection::Connected;
         pulse.last_success = Some(now);
@@ -980,6 +1047,14 @@ impl App {
                 frame: self.viz.clone(),
                 history: self.viz_history.iter().skip(1).cloned().collect(),
             });
+            // Freeze every Working orbit at the same edge so the solar layout
+            // holds its exact last live positions; a recovery snapshot
+            // re-opens Working stretches from the frozen phase.
+            for orbit in self.agent_pulse.orbits.values_mut() {
+                if let Some(since) = orbit.working_since.take() {
+                    orbit.banked += now.saturating_duration_since(since);
+                }
+            }
         }
         let pulse = &mut self.agent_pulse;
         if pulse.first_failure.is_none() {
@@ -1328,6 +1403,23 @@ impl App {
         (&selected.id == id).then_some(&selected.details)
     }
 
+    /// Total Working seconds behind an agent's solar-orbit phase at `now`:
+    /// the time banked by completed Working stretches plus the live current
+    /// stretch. A frozen (non-Working) agent ignores `now` entirely, so its
+    /// planet holds the captured angle; an unknown identity is zero. Live
+    /// and stale rendering read this directly; low-power rendering prefers
+    /// the frozen [`Self::low_power_orbit_secs`] capture once it exists, so
+    /// the captured solar layout never moves.
+    pub(crate) fn agent_orbit_secs(&self, id: &AgentId, now: Instant) -> f32 {
+        let Some(orbit) = self.agent_pulse.orbits.get(id) else {
+            return 0.0;
+        };
+        let live = orbit
+            .working_since
+            .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
+        (orbit.banked + live).as_secs_f32()
+    }
+
     /// The visualizer display captured when the connection dimmed to
     /// `Stale`: the frozen current frame plus the prior trail frames.
     /// `None` while connected, unavailable, or hidden.
@@ -1343,6 +1435,7 @@ impl App {
         self.low_power_visuals = enabled;
         if !enabled {
             self.low_power_viz = None;
+            self.low_power_orbit = None;
         }
     }
 
@@ -1352,6 +1445,24 @@ impl App {
     pub(crate) fn low_power_viz(&self) -> Option<(&VizFrame, &[VizFrame])> {
         let (frame, history) = self.low_power_viz.as_ref()?;
         Some((frame, history.as_slice()))
+    }
+
+    /// The frozen per-agent orbit seconds captured with the low-power frame:
+    /// the whole solar layout freezes at low-power entry, so later Working
+    /// time and status transitions never move a low-power planet. `None`
+    /// until a capture exists; a captured map reads zero for agents it never
+    /// saw, resting them on their initial angle.
+    pub(crate) fn low_power_orbit_secs(&self, id: &AgentId) -> Option<f32> {
+        let orbits = self.low_power_orbit.as_ref()?;
+        Some(orbits.get(id).copied().unwrap_or(0.0))
+    }
+
+    /// The most recent visually audible frame: the indefinite rest source
+    /// for interior status treatment. Unlike the bounded display history it
+    /// survives silence of any length; it refreshes on every audible frame
+    /// and is `None` only before the first one.
+    pub(crate) fn status_viz(&self) -> Option<&VizFrame> {
+        self.status_viz.as_ref()
     }
 }
 
@@ -2857,6 +2968,135 @@ mod tests {
             .unwrap();
         assert_eq!(research.observed_at, t0);
         assert_eq!(review.observed_at, t1);
+    }
+
+    // --- solar orbit phase capture ----------------------------------------
+
+    #[test]
+    fn working_orbit_time_accrues_and_freezes_at_the_non_working_transition() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let id = agent_id("ws", "p1");
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t0,
+        ));
+        assert_eq!(
+            app.agent_orbit_secs(&id, t0 + Duration::from_secs(10)),
+            10.0
+        );
+
+        // An unchanged Working snapshot never restarts the stretch.
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t0 + Duration::from_secs(4),
+        ));
+        assert_eq!(
+            app.agent_orbit_secs(&id, t0 + Duration::from_secs(10)),
+            10.0
+        );
+
+        // Working→Idle captures the elapsed phase time; the clock never
+        // advances a frozen planet afterward.
+        let t1 = t0 + Duration::from_secs(10);
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Idle)],
+            t1,
+        ));
+        assert_eq!(
+            app.agent_orbit_secs(&id, t1 + Duration::from_secs(100)),
+            10.0
+        );
+
+        // A later Working transition resumes from the captured phase, and
+        // the live stretch counts toward the current effective angle
+        // immediately — there is no separate banked-only phase source.
+        let t2 = t1 + Duration::from_secs(50);
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t2,
+        ));
+        assert_eq!(app.agent_orbit_secs(&id, t2), 10.0);
+        assert_eq!(app.agent_orbit_secs(&id, t2 + Duration::from_secs(5)), 15.0);
+    }
+
+    #[test]
+    fn orbit_phase_is_dropped_when_a_snapshot_omits_the_agent() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let id = agent_id("ws", "p1");
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t0,
+        ));
+        let t1 = t0 + Duration::from_secs(20);
+        app.apply(agent_snapshot(vec![], t1));
+        assert_eq!(
+            app.agent_orbit_secs(&id, t1),
+            0.0,
+            "an omitted agent retains no orbit phase"
+        );
+
+        // Re-appearing is a fresh identity stretch, not a resume.
+        let t2 = t1 + Duration::from_secs(30);
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t2,
+        ));
+        assert_eq!(app.agent_orbit_secs(&id, t2 + Duration::from_secs(3)), 3.0);
+    }
+
+    #[test]
+    fn stale_edge_freezes_working_orbits_until_recovery_resumes_them() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let id = agent_id("ws", "p1");
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t0,
+        ));
+
+        // The Connected→Stale edge freezes the solar layout: the still-Working
+        // agent's phase stops at the edge instead of drifting off-screen.
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(8),
+        });
+        assert_eq!(
+            app.agent_orbit_secs(&id, t0 + Duration::from_secs(100)),
+            8.0
+        );
+
+        // A recovery snapshot resumes the Working stretch from the frozen
+        // phase.
+        let t1 = t0 + Duration::from_secs(20);
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t1,
+        ));
+        assert_eq!(app.agent_orbit_secs(&id, t1 + Duration::from_secs(5)), 13.0);
+    }
+
+    #[test]
+    fn orbit_transitions_change_no_persisted_settings() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        let before = app.settings().clone();
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Working)],
+            t0,
+        ));
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", None, AgentStatus::Idle)],
+            t0 + Duration::from_secs(10),
+        ));
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(12),
+        });
+        assert_eq!(
+            app.settings(),
+            &before,
+            "orbit capture is process-local and never touches settings"
+        );
     }
 
     #[test]

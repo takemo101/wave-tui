@@ -738,12 +738,15 @@ struct SurfaceStatus {
     error_lift: bool,
 }
 
-/// The played frame that drives interior status treatment. An audible
-/// current frame drives it directly; a silent one freezes the treatment on
-/// the most recent audible frame still in the display history rather than
-/// advancing or suppressing it. With no audible frame in reach the silent
-/// frame itself is the rest source — analyzer silence repeats a stable
-/// frame, so the treatment stays still by construction.
+/// The played frame that drives interior status treatment for a captured
+/// (stale or low-power) composition, and the live fallback while the App
+/// holds no audible capture yet. An audible current frame drives it
+/// directly; a silent one freezes the treatment on the most recent audible
+/// frame still in the handed-in history. With no audible frame in reach the
+/// silent frame itself is the rest source — analyzer silence repeats a
+/// stable frame, so the treatment stays still by construction. Live
+/// rendering prefers `App::status_viz`, which survives silence beyond the
+/// bounded history.
 fn status_frame<'a>(frame: &'a VizFrame, history: &'a [VizFrame]) -> &'a VizFrame {
     if frame.is_audible() {
         return frame;
@@ -909,6 +912,27 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 
 // --- hit testing ------------------------------------------------------------
 
+/// The per-agent orbit seconds behind a composition at `now`. Low power
+/// prefers the App-captured frozen layout — every planet, an active Working
+/// stretch included, holds the angle captured at low-power entry, and agents
+/// unknown to the capture rest at phase zero — falling back to the live
+/// effective Working time until a capture exists. Live and stale read the
+/// live time directly: stale phases were banked by the reducer at the
+/// Connected→Stale edge, so they hold still on their own.
+fn orbit_secs_for(app: &App, agents: &[AgentView], low_power: bool, now: Instant) -> Vec<f32> {
+    agents
+        .iter()
+        .map(|view| {
+            if low_power {
+                if let Some(secs) = app.low_power_orbit_secs(&view.id) {
+                    return secs;
+                }
+            }
+            app.agent_orbit_secs(&view.id, now)
+        })
+        .collect()
+}
+
 /// Pure mouse hit test for the Dual Phase Scope canvas.
 ///
 /// Maps a click on a planet's drawn disc body cells — the exact
@@ -920,11 +944,12 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 /// resolve
 /// topmost-first, with the selected planet in front, matching draw order.
 /// `low_power` must mirror the render flag: it resolves against the
-/// App-captured frozen frame exactly as [`render_canvas`] draws it (hit
-/// testing is Connected-only, so the stale capture never applies here).
-/// `now` must be the same instant handed to [`render_canvas`], so a click
-/// resolves against the current effective Working orbit positions that
-/// were drawn — in low power exactly as live.
+/// App-captured frozen frame and frozen orbit layout exactly as
+/// [`render_canvas`] draws them (hit testing is Connected-only, so the
+/// stale capture never applies here). `now` must be the same instant handed
+/// to [`render_canvas`], so a click resolves against the exact orbit
+/// positions that were drawn — live positions normally, the frozen captured
+/// layout in low power.
 pub(super) fn hit_test(
     area: Rect,
     column: u16,
@@ -950,10 +975,7 @@ pub(super) fn hit_test(
     } else {
         app.viz()
     };
-    let orbit_secs: Vec<f32> = agents
-        .iter()
-        .map(|view| app.agent_orbit_secs(&view.id, now))
-        .collect();
+    let orbit_secs = orbit_secs_for(app, agents, low_power, now);
     let canvas = agent_stage_layout(area).field;
     let layout = collage_layout(agents, &orbit_secs, frame, &[], canvas);
     let selected_index = app
@@ -999,12 +1021,12 @@ pub(super) fn hit_test(
 /// `reconnecting` note, its orbit phases banked by the reducer at the same
 /// edge; Unavailable hides the sun, field, and tags behind calm
 /// copy; `--low-power` renders the App-captured first frame so scope and
-/// status geometry stay frozen while state colors refresh, and places
-/// planets at their current effective orbit angles exactly as live
-/// rendering would. `now` is the monotonic render
+/// status geometry stay frozen while state colors refresh, and holds every
+/// planet at the orbit angle the App captured with that frame — the whole
+/// solar layout freezes at low-power entry. `now` is the monotonic render
 /// instant and feeds exactly one thing: the elapsed Working time advancing
-/// current Working orbit phases — scope traces and every other cell still
-/// derive from audio frames only.
+/// current Working orbit phases in live rendering — scope traces and every
+/// other cell still derive from audio frames only.
 pub(super) fn render_canvas(
     app: &App,
     theme: &Theme,
@@ -1060,16 +1082,13 @@ fn render_agent_planets_stage(
     } else {
         fallback
     };
-    // Orbit phases always read the current effective Working time at `now`:
-    // stale phases were banked by the reducer at the Connected→Stale edge,
-    // so they hold still on their own, and low power keeps the true current
-    // angle — including the live Working stretch — instead of snapping back
-    // to banked time. Only the slow monotonic clock moves a planet; audio
-    // never does.
-    let orbit_secs: Vec<f32> = agents
-        .iter()
-        .map(|view| app.agent_orbit_secs(&view.id, now))
-        .collect();
+    // Orbit phases share the render's freeze rules: live and stale read the
+    // current effective Working time at `now` — stale phases were banked by
+    // the reducer at the Connected→Stale edge, so they hold still on their
+    // own — while low power reads the layout captured at low-power entry,
+    // so no planet moves at all. Only the slow monotonic clock moves a
+    // planet; audio never does.
+    let orbit_secs = orbit_secs_for(app, agents, low_power, now);
     let layout = collage_layout(agents, &orbit_secs, frame, history, field);
 
     render_vignette(buf, field, layout.background.vignette, theme, stale);
@@ -1108,10 +1127,17 @@ fn render_agent_planets_stage(
         .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
 
     // One geometry per tile, shared by every planet pass; the selected
-    // planet alone derives its focus brackets. Interior status treatment
-    // reads the last played (audible) frame, so a silent current frame
-    // freezes it instead of advancing or suppressing it.
-    let treatment_frame = status_frame(frame, history);
+    // planet alone derives its focus brackets. Live interior status
+    // treatment reads the App-held last audible frame, so silence of any
+    // length — beyond the bounded display history — freezes it instead of
+    // advancing or suppressing it. Stale and low power keep deriving from
+    // their own captured frames, never a later live capture.
+    let treatment_frame = if stale || low_power {
+        status_frame(frame, history)
+    } else {
+        app.status_viz()
+            .unwrap_or_else(|| status_frame(frame, history))
+    };
     let geometries: Vec<PlanetGeometry> = layout
         .tiles
         .iter()
@@ -1701,6 +1727,24 @@ mod tests {
             .count()
     }
 
+    /// The bright Working-band cells inside the stage field: planet glyphs
+    /// drawn with the band's BOLD emphasis.
+    fn bold_planet_cells(buf: &Buffer) -> Vec<(u16, u16)> {
+        let field = stage_field();
+        let mut cells = Vec::new();
+        for y in field.y..field.y + field.height {
+            for x in field.x..field.x + field.width {
+                let cell = buf.cell((x, y)).unwrap();
+                if cell.style().add_modifier.contains(Modifier::BOLD)
+                    && PLANET_GLYPHS.contains(&cell.symbol())
+                {
+                    cells.push((x, y));
+                }
+            }
+        }
+        cells
+    }
+
     /// Every non-blank cell of the stage field — vignette, phase layers,
     /// planets, and tags — as `(x, y, symbol)`, so tests can compare
     /// whole-field geometry between renders.
@@ -2227,26 +2271,7 @@ mod tests {
         let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         push_frame(&mut app, phase_frame());
         let t0 = Instant::now();
-        let bold_cells = |buf: &Buffer| -> Vec<(u16, u16)> {
-            let field = stage_field();
-            let mut cells = Vec::new();
-            for y in field.y..field.y + field.height {
-                for x in field.x..field.x + field.width {
-                    if buf
-                        .cell((x, y))
-                        .unwrap()
-                        .style()
-                        .add_modifier
-                        .contains(Modifier::BOLD)
-                        && PLANET_GLYPHS.contains(&buf.cell((x, y)).unwrap().symbol())
-                    {
-                        cells.push((x, y));
-                    }
-                }
-            }
-            cells
-        };
-        let played = bold_cells(&render_collage_for(&app, false, t0));
+        let played = bold_planet_cells(&render_collage_for(&app, false, t0));
         assert_eq!(
             played.len(),
             WORKING_BAND,
@@ -2254,7 +2279,7 @@ mod tests {
         );
 
         push_frame(&mut app, silent_phase_frame());
-        let silent = bold_cells(&render_collage_for(&app, false, t0));
+        let silent = bold_planet_cells(&render_collage_for(&app, false, t0));
         assert_eq!(
             silent, played,
             "silence freezes the bright band at its last played cells"
@@ -2292,6 +2317,80 @@ mod tests {
             dim_at(&blocked_app),
             played_dim,
             "silence freezes the pulse in its last played half"
+        );
+    }
+
+    #[test]
+    fn sustained_silence_beyond_the_display_history_holds_the_treatment() {
+        // The App-held audible capture — not the bounded display history —
+        // is the silence rest source, so the Working band and Blocked pulse
+        // hold from the silence edge indefinitely, long after every audible
+        // frame has been evicted from the trail, and resume only when real
+        // audio returns.
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        push_frame(&mut app, phase_frame());
+        let t0 = Instant::now();
+        let played = bold_planet_cells(&render_collage_for(&app, false, t0));
+        assert_eq!(
+            played.len(),
+            WORKING_BAND,
+            "sanity: the played frame draws its bright band"
+        );
+
+        for _ in 0..32 {
+            push_frame(&mut app, silent_phase_frame());
+        }
+        assert!(
+            app.viz_history().all(|frame| !frame.is_audible()),
+            "sanity: sustained silence evicted every audible frame"
+        );
+        assert_eq!(
+            bold_planet_cells(&render_collage_for(&app, false, t0)),
+            played,
+            "the band holds its last played cells beyond the display history"
+        );
+
+        // The Blocked pulse likewise holds the half it froze in across the
+        // same sustained silence.
+        let mut blocked = collage_app(vec![snap("ws", "b", Some("b"), AgentStatus::Blocked)]);
+        push_frame(&mut blocked, phase_frame());
+        let layout = layout_at_rest(blocked.active_agents(), blocked.viz(), &[], stage_field());
+        let pulse = planet_geometry(
+            &layout.tiles[0],
+            stage_field(),
+            AgentStatus::Blocked,
+            &phase_frame(),
+            false,
+        )
+        .error_cell
+        .expect("blocked keeps its error cell");
+        let dim_at = |app: &App| {
+            render_collage_for(app, false, t0)
+                .cell(pulse)
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::DIM)
+        };
+        let played_dim = dim_at(&blocked);
+        for _ in 0..32 {
+            push_frame(&mut blocked, silent_phase_frame());
+        }
+        assert_eq!(
+            dim_at(&blocked),
+            played_dim,
+            "the pulse holds its frozen half beyond the display history"
+        );
+
+        // A resumed audible frame drives the treatment again exactly as it
+        // would drive a session that never went silent.
+        push_frame(&mut app, phase_frame_with_offset(0.9));
+        let mut fresh = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        push_frame(&mut fresh, phase_frame_with_offset(0.9));
+        assert_eq!(
+            bold_planet_cells(&render_collage_for(&app, false, t0)),
+            bold_planet_cells(&render_collage_for(&fresh, false, t0)),
+            "an audible frame resumes the live treatment"
         );
     }
 
@@ -3155,7 +3254,7 @@ mod tests {
     }
 
     #[test]
-    fn low_power_orbits_include_the_active_working_stretch() {
+    fn low_power_freezes_working_orbits_at_the_captured_layout() {
         let t0 = Instant::now();
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.configure_low_power_visuals(true);
@@ -3166,28 +3265,24 @@ mod tests {
         app.apply(Action::ToggleAgentOverlay);
         push_frame(&mut app, phase_frame());
 
-        // The active Working stretch advances the low-power orbit exactly
-        // as it does live: low power freezes audio-driven geometry, never
-        // the current effective orbit angle.
-        let early = render_collage_for(&app, true, t0);
-        let at_40 = render_collage_for(&app, true, t0 + Duration::from_secs(40));
-        assert_ne!(
-            planet_cells_of(&early),
-            planet_cells_of(&at_40),
-            "an active Working stretch advances the low-power orbit"
-        );
-        assert_eq!(
-            planet_cells_of(&at_40),
-            planet_cells_of(&render_collage_for(
-                &app,
-                false,
-                t0 + Duration::from_secs(40)
-            )),
-            "low power draws the same current angle as live rendering"
-        );
+        // The audible capture freezes the whole solar layout: later clock
+        // time never advances a low-power orbit, an active Working stretch
+        // included.
+        let at_capture = render_collage_for(&app, true, t0);
+        for later in [40u64, 400] {
+            assert_eq!(
+                planet_cells_of(&render_collage_for(
+                    &app,
+                    true,
+                    t0 + Duration::from_secs(later)
+                )),
+                planet_cells_of(&at_capture),
+                "the low-power orbit holds the captured angle at +{later}s"
+            );
+        }
 
-        // Leaving Working banks the stretch at that same angle: the planet
-        // freezes where it was drawn, with no snap to an earlier position.
+        // Status transitions after the capture bank real orbit time, but
+        // the frozen layout never reflects it.
         app.apply(Action::AgentSnapshot {
             agents: vec![snap("ws", "p1", Some("one"), AgentStatus::Idle)],
             now: t0 + Duration::from_secs(40),
@@ -3196,19 +3291,48 @@ mod tests {
             planet_cells_of(&render_collage_for(
                 &app,
                 true,
-                t0 + Duration::from_secs(40)
-            )),
-            planet_cells_of(&at_40),
-            "the transition freezes the planet at the angle it showed"
-        );
-        assert_eq!(
-            planet_cells_of(&render_collage_for(
-                &app,
-                true,
                 t0 + Duration::from_secs(140)
             )),
-            planet_cells_of(&at_40),
-            "the frozen angle holds across later clock time"
+            planet_cells_of(&at_capture),
+            "banked transitions never move the frozen planet"
+        );
+    }
+
+    #[test]
+    fn low_power_hit_testing_resolves_the_frozen_orbit_layout() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.configure_low_power_visuals(true);
+        app.apply(Action::AgentSnapshot {
+            agents: vec![snap("ws", "p1", Some("one"), AgentStatus::Working)],
+            now: t0,
+        });
+        app.apply(Action::ToggleAgentOverlay);
+        push_frame(&mut app, phase_frame());
+
+        // Every cell resolves identically at any later instant: hit testing
+        // reads the same frozen orbit layout the renderer draws.
+        let hits_at = |now: Instant| -> Vec<(u16, u16)> {
+            let field = stage_field();
+            let mut cells = Vec::new();
+            for y in field.y..field.y + field.height {
+                for x in field.x..field.x + field.width {
+                    if hit_test(CANVAS, x, y, true, now, &app).is_some() {
+                        cells.push((x, y));
+                    }
+                }
+            }
+            cells
+        };
+        let at_capture = hits_at(t0);
+        assert!(
+            !at_capture.is_empty(),
+            "sanity: the planet body is clickable"
+        );
+        assert_eq!(
+            hits_at(t0 + Duration::from_secs(40)),
+            at_capture,
+            "a later clock never moves the low-power hit targets"
         );
     }
 
@@ -3560,15 +3684,15 @@ mod tests {
     }
 
     #[test]
-    fn low_power_hit_testing_tracks_the_current_orbit_angle_like_live() {
+    fn low_power_hit_testing_holds_the_frozen_orbit_angle() {
         let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
         app.configure_low_power_visuals(true);
         push_frame(&mut app, phase_frame());
         let canvas = stage_field();
 
-        // Elapsed Working time moves the orbit position for low power and
-        // live alike: the freeze covers audio-driven geometry, never the
-        // active Working stretch behind the current angle.
+        // Elapsed Working time moves the live orbit position; the low-power
+        // capture holds the whole layout at the angle it froze with the
+        // frame, so hit testing never advances with the clock.
         let later = Instant::now() + Duration::from_secs(40);
         let moved_layout = collage_layout(app.active_agents(), &[40.0], app.viz(), &[], canvas);
         let moved = &moved_layout.tiles[0];
@@ -3576,42 +3700,42 @@ mod tests {
         let rest = &rest_layout.tiles[0];
         assert_ne!(
             moved.rect, rest.rect,
-            "sanity: elapsed Working time moves the tile"
+            "sanity: elapsed Working time moves the live tile"
         );
 
-        // The current-angle planet's body cells select in low power exactly
-        // as they do live.
-        let moved_cells = tile_hit_cells(moved, canvas);
-        let &(x, y) = moved_cells.first().expect("the moved planet has cells");
+        // A cell only the frozen (captured) position covers still selects in
+        // low power at `later`, while live hit testing has moved off it.
+        let rest_cells = tile_hit_cells(rest, canvas);
+        let moved_set: HashSet<(u16, u16)> = tile_hit_cells(moved, canvas).into_iter().collect();
+        let &(x, y) = rest_cells
+            .iter()
+            .find(|cell| !moved_set.contains(cell))
+            .expect("the frozen position exposes cells off the moved planet");
         assert!(
             hit_test(CANVAS, x, y, true, later, &app).is_some(),
-            "a low-power click resolves the current orbit position"
+            "a low-power click resolves the frozen orbit position"
         );
         assert!(
-            hit_test(CANVAS, x, y, false, later, &app).is_some(),
-            "the same cell selects live"
+            hit_test(CANVAS, x, y, false, later, &app).is_none(),
+            "live hit testing has moved off the frozen cell"
         );
 
-        // A cell only the banked-time rest position covers holds no drawn
-        // planet at `later` in either mode — low power must not snap back.
-        let moved_set: HashSet<(u16, u16)> = moved_cells.into_iter().collect();
+        // A cell only the live moved position covers holds no frozen planet:
+        // low power never advances with the clock.
+        let rest_set: HashSet<(u16, u16)> = rest_cells.into_iter().collect();
         let mut checked = false;
-        for &(x, y) in &tile_hit_cells(rest, canvas) {
-            if !moved_set.contains(&(x, y)) {
+        for &(x, y) in &moved_set {
+            if !rest_set.contains(&(x, y)) {
                 checked = true;
                 assert!(
                     hit_test(CANVAS, x, y, true, later, &app).is_none(),
-                    "a rest-position-only cell ({x}, {y}) resolves nothing in low power"
-                );
-                assert!(
-                    hit_test(CANVAS, x, y, false, later, &app).is_none(),
-                    "the same cell resolves nothing live"
+                    "a moved-position-only cell ({x}, {y}) resolves nothing in low power"
                 );
             }
         }
         assert!(
             checked,
-            "sanity: the rest position exposes cells off the moved planet"
+            "sanity: the moved position exposes cells off the frozen planet"
         );
     }
 

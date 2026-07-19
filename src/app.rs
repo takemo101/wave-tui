@@ -479,6 +479,16 @@ pub struct App {
     /// policy, so low-power rendering keeps stable geometry while the live
     /// frame keeps updating for colors.
     low_power_viz: Option<(VizFrame, Vec<VizFrame>)>,
+    /// Per-agent effective orbit seconds captured together with the
+    /// low-power frame, so the whole solar layout — orbit angles included —
+    /// freezes at low-power entry. Agents unknown to the capture read zero.
+    /// Process-local presentation state; never persisted.
+    low_power_orbit: Option<HashMap<AgentId, f32>>,
+    /// The most recent visually audible frame, held indefinitely as the
+    /// silence rest source for interior status treatment: the bounded
+    /// display history may evict every audible frame, this capture never
+    /// does. Process-local presentation state; never persisted.
+    status_viz: Option<VizFrame>,
     offline: bool,
     search_query: String,
     search_status: SearchStatus,
@@ -516,6 +526,8 @@ impl App {
             viz_history,
             low_power_visuals: false,
             low_power_viz: None,
+            low_power_orbit: None,
+            status_viz: None,
             offline: false,
             search_query: String::new(),
             search_status: SearchStatus::Idle,
@@ -865,16 +877,33 @@ impl App {
     /// Store the latest visualizer frame and retain the short history used by
     /// PeakDots to render real, audio-frame-driven trails.
     ///
+    /// Every visually audible frame also refreshes the `status_viz` capture,
+    /// the indefinite silence rest source for interior status treatment.
+    ///
     /// Under the low-power visual policy the first visually audible frame
     /// (plus its trail) is captured once as the frozen low-power geometry
-    /// source; startup-silent frames retain no capture, so rendering falls
-    /// back to the live frame until real audio arrives. Later frames keep
-    /// updating `viz`/`viz_history` for colors without replacing the capture.
+    /// source, together with every agent's effective orbit seconds at that
+    /// instant — the whole solar layout freezes at low-power entry, so the
+    /// wall clock is read exactly here (audio events carry no timestamp).
+    /// Startup-silent frames retain no capture, so rendering falls back to
+    /// the live frame until real audio arrives. Later frames keep updating
+    /// `viz`/`viz_history` for colors without replacing the capture.
     fn set_viz_frame(&mut self, frame: VizFrame) {
         self.viz = frame.clone();
         self.viz_history.push_front(frame);
         self.viz_history.truncate(VIZ_HISTORY_FRAMES);
+        if self.viz.is_audible() {
+            self.status_viz = Some(self.viz.clone());
+        }
         if self.low_power_visuals && self.low_power_viz.is_none() && self.viz.is_audible() {
+            let now = Instant::now();
+            self.low_power_orbit = Some(
+                self.agent_pulse
+                    .orbits
+                    .keys()
+                    .map(|id| (id.clone(), self.agent_orbit_secs(id, now)))
+                    .collect(),
+            );
             self.low_power_viz = Some((
                 self.viz.clone(),
                 self.viz_history.iter().skip(1).cloned().collect(),
@@ -1377,10 +1406,10 @@ impl App {
     /// Total Working seconds behind an agent's solar-orbit phase at `now`:
     /// the time banked by completed Working stretches plus the live current
     /// stretch. A frozen (non-Working) agent ignores `now` entirely, so its
-    /// planet holds the captured angle; an unknown identity is zero. This is
-    /// the single orbit-phase source for every render mode — low power
-    /// included, so a frozen layout still shows the current effective angle
-    /// of an active Working stretch instead of snapping back to banked time.
+    /// planet holds the captured angle; an unknown identity is zero. Live
+    /// and stale rendering read this directly; low-power rendering prefers
+    /// the frozen [`Self::low_power_orbit_secs`] capture once it exists, so
+    /// the captured solar layout never moves.
     pub(crate) fn agent_orbit_secs(&self, id: &AgentId, now: Instant) -> f32 {
         let Some(orbit) = self.agent_pulse.orbits.get(id) else {
             return 0.0;
@@ -1406,6 +1435,7 @@ impl App {
         self.low_power_visuals = enabled;
         if !enabled {
             self.low_power_viz = None;
+            self.low_power_orbit = None;
         }
     }
 
@@ -1415,6 +1445,24 @@ impl App {
     pub(crate) fn low_power_viz(&self) -> Option<(&VizFrame, &[VizFrame])> {
         let (frame, history) = self.low_power_viz.as_ref()?;
         Some((frame, history.as_slice()))
+    }
+
+    /// The frozen per-agent orbit seconds captured with the low-power frame:
+    /// the whole solar layout freezes at low-power entry, so later Working
+    /// time and status transitions never move a low-power planet. `None`
+    /// until a capture exists; a captured map reads zero for agents it never
+    /// saw, resting them on their initial angle.
+    pub(crate) fn low_power_orbit_secs(&self, id: &AgentId) -> Option<f32> {
+        let orbits = self.low_power_orbit.as_ref()?;
+        Some(orbits.get(id).copied().unwrap_or(0.0))
+    }
+
+    /// The most recent visually audible frame: the indefinite rest source
+    /// for interior status treatment. Unlike the bounded display history it
+    /// survives silence of any length; it refreshes on every audible frame
+    /// and is `None` only before the first one.
+    pub(crate) fn status_viz(&self) -> Option<&VizFrame> {
+        self.status_viz.as_ref()
     }
 }
 

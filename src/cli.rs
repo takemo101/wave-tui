@@ -2538,7 +2538,7 @@ mod tests {
     }
 
     #[test]
-    fn collage_low_power_mouse_path_tracks_the_current_orbit_angle() {
+    fn collage_low_power_mouse_path_resolves_the_frozen_orbit_layout() {
         let mut app = connected_collage_app();
         app.configure_low_power_visuals(true);
         app.apply(Action::ToggleAgentOverlay);
@@ -2553,24 +2553,25 @@ mod tests {
         )));
         let area = canvas_area();
 
-        // Elapsed Working time moves orbit positions for low power and live
-        // alike. A discriminating cell: covered by an orbit-advanced planet
-        // body at `later`, but empty at the earlier rest position — a
-        // banked-time snap-back would miss it.
+        // The audible frame froze the whole solar layout. A discriminating
+        // cell: covered by a frozen planet body at the captured angle, but
+        // left behind by the live orbit-advanced position at `later` — a
+        // hit test that tracked the clock would miss it.
         let t0 = Instant::now();
         let later = t0 + Duration::from_secs(40);
-        let moved_only = (0..area.height)
+        let frozen_only = (0..area.height)
             .flat_map(|row| (0..area.width).map(move |column| (column, row)))
             .find(|&(column, row)| {
-                crate::ui::agent_pulse_hit_test(area, column, row, false, later, &app).is_some()
-                    && crate::ui::agent_pulse_hit_test(area, column, row, false, t0, &app).is_none()
+                crate::ui::agent_pulse_hit_test(area, column, row, true, t0, &app).is_some()
+                    && crate::ui::agent_pulse_hit_test(area, column, row, false, later, &app)
+                        .is_none()
             });
-        let (x, y) = moved_only.expect("elapsed Working time moves some planet cell");
+        let (x, y) = frozen_only.expect("elapsed Working time moves some live planet cell");
 
         handle_mouse(left_click(x, y), area, true, later, &mut app);
         assert!(
             app.selected_agent().is_some(),
-            "a low-power click resolves the current effective orbit angle"
+            "a low-power click resolves the frozen captured orbit angle"
         );
     }
 

@@ -483,11 +483,15 @@ MVP includes automatic and CLI-controlled low-power behavior.
   phase-trace/persistence positions, planet disc and orbit-phase geometry,
   interior status cells, and focus-bracket geometry are frozen while fresh
   agent snapshots may still update the per-status interior treatment and
-  colors. The frozen visualizer geometry is captured from the first
-  *audible* visualizer frame after startup (RMS above the silence threshold
-  with real phase data); until such a frame arrives, low power renders the
-  live frame. Working orbit phases stay frozen rather than advancing from
-  the clock.
+  colors. The frozen geometry — the whole solar orbit layout included — is
+  captured from the first *audible* visualizer frame after startup (RMS
+  above the silence threshold with real phase data): every planet's orbit
+  angle is captured at that same instant, later Working time and status
+  transitions never move a captured planet, and an agent first observed
+  after the capture rests on its initial angle. Until such a frame
+  arrives, low power renders the live frame, so a silent startup keeps
+  live geometry — Working orbit drift included — until audio becomes
+  audible.
 
 ### Herdr Agent Pulse (Optional Integration)
 
@@ -668,10 +672,12 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   snapshot omits it; Unknown stays muted and nearly still. Silence rests
   every interior treatment. One-cell discs keep their body but omit status
   detail. In `--low-power`, phase-trace/persistence positions and planet
-  disc/orbit-phase/bracket geometry are frozen (from the first audible
-  frame captured after startup, with Working orbit phases held rather than
-  advancing) while fresh agent snapshots may still update the per-status
-  interior treatment and colors.
+  disc/orbit-phase/bracket geometry are frozen (the whole solar orbit
+  layout freezes at the first audible frame captured after startup — every
+  orbit angle holds its captured value rather than advancing — while a
+  silent startup renders the live frame, Working orbit drift included,
+  until audio becomes audible) while fresh agent snapshots may still
+  update the per-status interior treatment and colors.
 - Planets keep no permanent label. While the stage selection is
   interactive (overlay open on a live connection), `Tab`/`↓`/`j` select the
   next planet and wrap from the last agent back to the first, and
@@ -898,8 +904,10 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   path (`cli`);
 - the App-owned low-power visual capture: silent startup frames capture
   nothing, the first audible frame (RMS above the silence threshold with
-  real phase data) becomes the frozen geometry source while live frames
-  still update colors, and disabling the policy clears the capture (`app`);
+  real phase data) becomes the frozen geometry source and captures every
+  agent's orbit angle at that same instant (agents unseen at capture rest
+  on their initial angle) while live frames still update colors, and
+  disabling the policy clears the capture (`app`);
 - summary visibility per tier and connection state, the eligible-only
   Wide/Medium `a Agent Planets` footer hint with byte-identical
   standalone/disabled footers and compact suppression, full-screen stage
@@ -1007,11 +1015,12 @@ the release as fully validated:
       playback follow Herdr's normal pane lifecycle.
 - [ ] Run `wave-tui --low-power` inside Herdr and confirm frozen trace,
       persistence, and planet disc/orbit-phase/bracket geometry (Working
-      planets stop drifting)
+      planets stop drifting once the first audible frame is captured)
       while fresh snapshots still update per-status interior treatment
       and colors — including that a launch into silence
-      renders the live frame until audio becomes audible, after which the
-      first audible frame stays the frozen geometry — and that clicks still
+      renders the live frame, Working planets still drifting, until audio
+      becomes audible, after which the first audible capture stays the
+      frozen geometry and orbit layout — and that clicks still
       select against the frozen geometry.
 - [ ] Run standalone `wave-tui --no-auto-play` outside Herdr and inside a
       plain Herdr shell pane (no plugin env); confirm zero Agent Pulse UI,

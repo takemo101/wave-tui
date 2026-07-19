@@ -344,7 +344,9 @@ Update docs when changing:
 - UI direction, themes, or responsive layout decisions:
   `docs/ui-design-decisions.md`;
 - audio architecture findings or spike conclusions: `docs/audio-spike.md`;
-- Herdr plugin packaging or Agent Pulse behavior: `README.md`, `docs/SPEC.md`,
+- Herdr plugin packaging or Agent Pulse behavior: `README.md`,
+  `docs/herdr-plugin.md` (the plugin install/open/update/uninstall and
+  troubleshooting manual), `docs/SPEC.md`,
   and `docs/ui-design-decisions.md` (current agent details design record:
   `docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`;
   current interior surface-status design record:

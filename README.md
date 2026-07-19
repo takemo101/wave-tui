@@ -232,6 +232,10 @@ control socket, across the session's workspaces. The feature is a read-only
 companion to radio playback: it never affects audio, search, settings, or
 standalone use, and it is invisible outside Herdr.
 
+The full plugin manual — install, verify, open, local development,
+update/reinstall, uninstall, and troubleshooting — is
+[`docs/herdr-plugin.md`](docs/herdr-plugin.md).
+
 ### Requirements and installation
 
 - Herdr **0.7.0 or newer** (plugin manifests, plugin runtime context, and the
@@ -249,7 +253,9 @@ herdr plugin install takemo101/wave-tui
 Installation builds the release binary with `cargo build --release`. Use
 `just herdr-open` to rebuild and open the installed plugin's dedicated radio
 tab. For development from this checkout, `just herdr-dev` rebuilds, links this
-repository with `herdr plugin link`, and opens that tab.
+repository with `herdr plugin link`, and opens that tab. Verification,
+update/reinstall, uninstall, and plugin troubleshooting steps are in
+[`docs/herdr-plugin.md`](docs/herdr-plugin.md).
 
 ### Launching the radio tab
 
@@ -357,10 +363,12 @@ agent reported by the session's socket is shown.
   Activity truncates rather than overflowing.
 - In `--low-power`, trace, persistence, disc, orbit-phase, and selection
   bracket geometry are frozen while fresh agent snapshots may still update
-  status colors. The frozen geometry is captured
-  from the first *audible* visualizer frame after startup (RMS above the
-  silence threshold with real phase data); until audio becomes audible, low
-  power simply renders the current live frame.
+  status colors. The frozen geometry — the whole solar orbit layout
+  included — is captured from the first *audible* visualizer frame after
+  startup (RMS above the silence threshold with real phase data), and every
+  planet's orbit angle holds that captured value from then on; until audio
+  becomes audible, low power simply renders the live frame, Working orbit
+  drift included.
 
 ### Stage controls
 
@@ -536,6 +544,8 @@ for findings and caveats.
   decisions
 - [`docs/audio-spike.md`](docs/audio-spike.md) — native audio spike results
 - [`herdr-plugin.toml`](herdr-plugin.toml) — official Herdr plugin manifest
+- [`docs/herdr-plugin.md`](docs/herdr-plugin.md) — Herdr plugin manual
+  (install, verify, open, local dev, update, uninstall, troubleshooting)
 - [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
   — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
   presentation superseded by the Lissajous Scope design)

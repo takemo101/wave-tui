@@ -235,8 +235,10 @@ Implications:
   visualizer data at identical orbit phases renders identical cells;
   silence leaves the scope dim and still. Low-power mode
   freezes trace, persistence, and planet disc/orbit-phase/bracket
-  geometry — using the first audible visualizer frame captured after
-  startup (until audio becomes audible, the live frame renders) — while
+  geometry — the whole solar orbit layout is captured with the first
+  audible visualizer frame after startup, and every orbit angle holds
+  that captured value (until audio becomes audible, the live frame
+  renders, Working orbit drift included) — while
   fresh agent snapshots may still update the per-status interior
   treatment and colors.
 - **State inside the surface, never a cross.** Status never draws outside

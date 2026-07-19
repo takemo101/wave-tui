@@ -115,9 +115,11 @@ hides the stage field and tags behind calm unavailable copy. Low power preserves
 its current first-audible geometry capture; fresh agent snapshots may update
 status treatment but not disc/tag positions.
 
-`Tab`, arrows, `j`/`k`, and clicks keep selecting live planets. `Space`, volume,
-theme, favorite, and visualizer controls keep their documented player behavior.
-`z` is ignored only while Agent Planets is open.
+`Tab`/Down and `Shift+Tab`/Up cycle live-planet selection, wrapping at both ends;
+`j`/`k` follow those same next/previous cyclic actions. Clicks select their
+hit planet directly. `Space`, volume, theme, favorite, and visualizer controls
+keep their documented player behavior. `z` is ignored only while Agent Planets
+is open.
 
 ## Architecture
 

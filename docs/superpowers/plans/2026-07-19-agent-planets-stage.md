@@ -21,6 +21,7 @@
 - Tags prefer right, then left, below, above; non-overlap checks cover other discs and tags. Long names truncate, status remains. Selected tag is bright and draws last.
 - Keep state ring vocabulary: Working audio-driven arc, Idle muted ring, Blocked broken error arc without cross glyph, Done satellite, Unknown muted.
 - Preserve planet-only selection; tags/scope/persistence/empty cells are not hit targets.
+- In the interactive Agent Planets overlay only, next (`Tab`/Down/`j`) wraps last→first and previous (`Shift+Tab`/Up/`k`) wraps first→last; stale/unavailable selection remains inert and normal-layout navigation is unchanged.
 - Run format, focused tests, full tests, check, Clippy, and release build; live manual checks remain unchecked.
 
 ---
@@ -245,6 +246,77 @@ Expected: every command exits 0; Signal View snapshots remain unchanged.
 
 ```bash
 but commit agent-pulse-ringed-planets -m "fix: align Agent Planets volume with Single View"
+```
+
+### Task 1C: Cycle Agent Planets keyboard selection at both ends
+
+**Files:**
+
+- Modify: `src/app.rs:1016-1054, 2965-3050`
+- Modify: `src/cli.rs:1118-1158, 2310-2405` only if an existing key-routing test needs an explicit wrap assertion
+
+**Interfaces:**
+
+- Consumes: existing overlay-only `Action::SelectNextAgent` and `Action::SelectPreviousAgent` reducer paths plus the existing `Tab`/arrow/`j`/`k` key mapping.
+- Produces: cyclic selection over sorted live agents while the Agent Planets overlay is interactive.
+- Preserves: no-selection starts (next→first, previous→last), stale/unavailable inertness, direct click selection, and normal-layout navigation.
+
+- [ ] **Step 1: Change focused reducer tests to require wraparound.**
+
+```rust
+#[test]
+fn agent_selection_next_wraps_last_to_first() {
+    let mut app = app_with_agents(named_agents(3));
+    app.apply(Action::ToggleAgentOverlay);
+    app.apply(Action::SelectAgent(agent_id("ws", "gamma")));
+    app.apply(Action::SelectNextAgent);
+    assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
+}
+
+#[test]
+fn agent_selection_previous_wraps_first_to_last() {
+    let mut app = app_with_agents(named_agents(3));
+    app.apply(Action::ToggleAgentOverlay);
+    app.apply(Action::SelectAgent(agent_id("ws", "alpha")));
+    app.apply(Action::SelectPreviousAgent);
+    assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
+}
+```
+
+Keep/assert tests that stale and unavailable selection stays inert. If the CLI suite does not already establish key routing, add a canvas-only test for `Tab`, Down, `Shift+Tab`, and Up reaching the corresponding cyclic actions.
+
+- [ ] **Step 2: Run reducer/key tests and verify failure.**
+
+Run:
+
+```bash
+cargo test app::tests::agent_selection
+cargo test cli::tests::collage
+```
+
+Expected: the end-boundary assertions fail because selection currently clamps.
+
+- [ ] **Step 3: Implement overlay-local cyclic reducers.**
+
+In `select_next_agent`, after the existing `agent_selection_interactive` guard and empty-list guard, choose `(current + 1) % len` or first on no selection. In `select_previous_agent`, choose `len - 1` from first or no selection, otherwise `current - 1`. Do not alter `handle_key` or navigation outside Agent Planets; existing canvas mapping supplies `Tab`/Down as next and `Shift+Tab`/Up as previous.
+
+- [ ] **Step 4: Run verification and commit the behavior repair.**
+
+Run:
+
+```bash
+cargo fmt --check
+cargo test app::tests::agent_selection
+cargo test cli::tests::collage
+cargo test
+cargo check
+cargo clippy --all-targets -- -D warnings
+```
+
+Expected: every command exits 0 and stale/unavailable tests remain unchanged.
+
+```bash
+but commit agent-pulse-ringed-planets -m "feat: cycle Agent Planets selection"
 ```
 
 ### Task 2: Add normal footer hint and suppress z inside Agent Planets

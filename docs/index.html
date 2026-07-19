@@ -650,6 +650,7 @@
         <div class="nav-links">
           <a href="#features">Features</a>
           <a href="#install">Install</a>
+          <a href="#herdr-plugin">Herdr</a>
           <a href="#usage">Usage</a>
           <a href="#controls">Controls</a>
           <a href="https://github.com/takemo101/wave-tui">GitHub</a>
@@ -875,6 +876,58 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
                 </tr>
               </tbody>
             </table>
+          </article>
+        </div>
+      </section>
+
+      <section id="herdr-plugin" class="container">
+        <div class="section-head">
+          <div class="section-kicker">Herdr plugin</div>
+          <h2>Open Agent Planets from a dedicated Herdr tab.</h2>
+        </div>
+        <div class="install-grid">
+          <article class="panel">
+            <h3>Install and open</h3>
+            <p>
+              Requires Herdr 0.7.0+ on macOS or Linux. The plugin builds its
+              release binary with Cargo during installation.
+            </p>
+            <div class="command-block" data-copy-command>
+              <button
+                class="copy-command"
+                type="button"
+                data-copy-button
+                aria-label="Copy Herdr plugin install commands"
+              >
+                Copy
+              </button>
+              <pre><code>herdr plugin install takemo101/wave-tui
+herdr plugin action invoke open --plugin wave-tui.radio</code></pre>
+            </div>
+            <p>
+              No <code>config.toml</code> change is required. Herdr reads the
+              plugin manifest automatically; optional future plugin settings
+              belong in <code>~/.config/herdr/plugins/config/wave-tui.radio/</code>.
+            </p>
+          </article>
+          <article class="panel">
+            <h3>Local development</h3>
+            <p>From a checkout, link the plugin and open the same dedicated tab:</p>
+            <div class="command-block" data-copy-command>
+              <button
+                class="copy-command"
+                type="button"
+                data-copy-button
+                aria-label="Copy Herdr local development command"
+              >
+                Copy
+              </button>
+              <pre><code>just herdr-dev</code></pre>
+            </div>
+            <p>
+              See the <a href="https://github.com/takemo101/wave-tui/blob/main/docs/herdr-plugin.md">Herdr plugin manual</a> for
+              verification, updates, removal, and troubleshooting.
+            </p>
           </article>
         </div>
       </section>

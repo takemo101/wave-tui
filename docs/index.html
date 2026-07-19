@@ -918,20 +918,23 @@ herdr plugin action invoke open --plugin wave-tui.radio</code></pre>
                 Copy
               </button>
               <pre><code>[[keys.command]]
-key = "prefix+r"
+key = "prefix+shift+r"
 type = "plugin_action"
 command = "wave-tui.radio.open"
 description = "Open wave-tui Agent Planets"</code></pre>
             </div>
             <p>
               Put it in <code>~/.config/herdr/config.toml</code>, then reload
-              Herdr. Plugin-specific settings are not currently used; any
-              future settings belong in <code>~/.config/herdr/plugins/config/wave-tui.radio/</code>.
+              Herdr. Plugin-specific settings are not currently used; any future
+              settings belong in
+              <code>~/.config/herdr/plugins/config/wave-tui.radio/</code>.
             </p>
           </article>
           <article class="panel">
             <h3>Local development</h3>
-            <p>From a checkout, link the plugin and open the same dedicated tab:</p>
+            <p>
+              From a checkout, link the plugin and open the same dedicated tab:
+            </p>
             <div class="command-block" data-copy-command>
               <button
                 class="copy-command"
@@ -944,8 +947,12 @@ description = "Open wave-tui Agent Planets"</code></pre>
               <pre><code>just herdr-dev</code></pre>
             </div>
             <p>
-              See the <a href="https://github.com/takemo101/wave-tui/blob/main/docs/herdr-plugin.md">Herdr plugin manual</a> for
-              verification, updates, removal, and troubleshooting.
+              See the
+              <a
+                href="https://github.com/takemo101/wave-tui/blob/main/docs/herdr-plugin.md"
+                >Herdr plugin manual</a
+              >
+              for verification, updates, removal, and troubleshooting.
             </p>
           </article>
         </div>

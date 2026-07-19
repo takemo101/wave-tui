@@ -153,6 +153,13 @@ pub(crate) enum AgentOverlay {
     Open,
 }
 
+/// Ephemeral details modal for the selected Agent Planets identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentDetailsOverlay {
+    Closed,
+    Open(AgentId),
+}
+
 /// The visualizer display frozen at the Connected→Stale edge: the
 /// then-current frame plus the prior frames behind it (most recent first),
 /// so the canvas can keep drawing the exact last live current and trails.
@@ -177,6 +184,7 @@ struct AgentPulse {
     /// Identity of the selected active agent.
     selected: Option<AgentId>,
     overlay: AgentOverlay,
+    details: AgentDetailsOverlay,
     /// When the last successful snapshot arrived.
     last_success: Option<Instant>,
     /// When the current failure streak began; cleared by any success.
@@ -194,6 +202,7 @@ impl AgentPulse {
             active: Vec::new(),
             selected: None,
             overlay: AgentOverlay::Closed,
+            details: AgentDetailsOverlay::Closed,
             last_success: None,
             first_failure: None,
             stale_viz: None,
@@ -211,6 +220,7 @@ impl AgentPulse {
     fn clamp_selection(&mut self) {
         if self.selected_index().is_none() {
             self.selected = None;
+            self.details = AgentDetailsOverlay::Closed;
         }
     }
 }
@@ -411,6 +421,10 @@ pub enum Action {
     SelectNextAgent,
     /// Move the overlay selection up the sorted active-agent list.
     SelectPreviousAgent,
+    /// Open details for the selected live agent; no-op with no selection.
+    OpenAgentDetails,
+    /// Close the temporary Agent Planets details modal.
+    CloseAgentDetails,
     /// Select an active agent by its stable identity (mouse/particle
     /// selection).
     SelectAgent(AgentId),
@@ -538,6 +552,8 @@ impl App {
             Action::CloseAgentOverlay => self.close_agent_overlay(),
             Action::SelectNextAgent => self.select_next_agent(),
             Action::SelectPreviousAgent => self.select_previous_agent(),
+            Action::OpenAgentDetails => self.open_agent_details(),
+            Action::CloseAgentDetails => self.close_agent_details(),
             Action::SelectAgent(id) => self.select_agent(id),
         }
     }
@@ -768,7 +784,10 @@ impl App {
     /// playback state, so background activity continues unchanged underneath.
     fn toggle_signal_view(&mut self) {
         self.display_mode = match self.display_mode {
-            DisplayMode::Normal => DisplayMode::SignalView,
+            DisplayMode::Normal => {
+                self.agent_pulse.details = AgentDetailsOverlay::Closed;
+                DisplayMode::SignalView
+            }
             DisplayMode::SignalView => DisplayMode::Normal,
         };
     }
@@ -973,6 +992,7 @@ impl App {
         };
         if pulse.connection == AgentPulseConnection::Unavailable {
             pulse.stale_viz = None;
+            pulse.details = AgentDetailsOverlay::Closed;
         }
     }
 
@@ -988,6 +1008,7 @@ impl App {
         if Self::agent_response_overdue(pulse, now) {
             pulse.connection = AgentPulseConnection::Unavailable;
             pulse.stale_viz = None;
+            pulse.details = AgentDetailsOverlay::Closed;
         }
     }
 
@@ -1026,7 +1047,10 @@ impl App {
         }
         self.agent_pulse.overlay = match self.agent_pulse.overlay {
             AgentOverlay::Closed => AgentOverlay::Open,
-            AgentOverlay::Open => AgentOverlay::Closed,
+            AgentOverlay::Open => {
+                self.agent_pulse.details = AgentDetailsOverlay::Closed;
+                AgentOverlay::Closed
+            }
         };
     }
 
@@ -1035,6 +1059,20 @@ impl App {
             return;
         }
         self.agent_pulse.overlay = AgentOverlay::Closed;
+        self.agent_pulse.details = AgentDetailsOverlay::Closed;
+    }
+
+    fn open_agent_details(&mut self) {
+        if !self.agent_selection_interactive() {
+            return;
+        }
+        if let Some(id) = self.agent_pulse.selected.clone() {
+            self.agent_pulse.details = AgentDetailsOverlay::Open(id);
+        }
+    }
+
+    fn close_agent_details(&mut self) {
+        self.agent_pulse.details = AgentDetailsOverlay::Closed;
     }
 
     /// Move the overlay selection to the next sorted agent, wrapping from
@@ -1274,6 +1312,22 @@ impl App {
     /// Whether the Agent Pulse overlay is open.
     pub(crate) fn is_agent_overlay_open(&self) -> bool {
         self.agent_pulse.overlay == AgentOverlay::Open
+    }
+
+    /// Whether Agent Planets is currently showing details for its selection.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn is_agent_details_open(&self) -> bool {
+        matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
+    }
+
+    /// Approved details for the identity whose modal is open.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn selected_agent_details(&self) -> Option<&AgentDetails> {
+        let AgentDetailsOverlay::Open(id) = &self.agent_pulse.details else {
+            return None;
+        };
+        let selected = self.selected_agent()?;
+        (&selected.id == id).then_some(&selected.details)
     }
 
     /// The visualizer display captured when the connection dimmed to
@@ -3017,6 +3071,89 @@ mod tests {
         assert_eq!(app.playback(), &PlaybackState::Connecting);
         assert_eq!(app.current_station().unwrap().id.as_str(), "a");
         assert_eq!(app.display_mode(), DisplayMode::Normal);
+    }
+
+    #[test]
+    fn details_open_only_for_a_selected_connected_agent_and_close_without_radio_mutation() {
+        let mut app = app_with_agents(vec![agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        let playback = app.playback().clone();
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::OpenAgentDetails);
+        assert!(!app.is_agent_details_open());
+
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        assert!(app.is_agent_details_open());
+        assert_eq!(
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref()),
+            Some("research")
+        );
+        app.apply(Action::CloseAgentDetails);
+        assert!(!app.is_agent_details_open());
+        assert_eq!(app.playback(), &playback);
+    }
+
+    #[test]
+    fn details_close_on_overlay_close_signal_view_unavailable_and_missing_selection() {
+        let mut app = app_with_agents(vec![agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::CloseAgentOverlay);
+        assert!(!app.is_agent_details_open());
+
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::ToggleSignalView);
+        assert!(!app.is_agent_details_open());
+        app.apply(Action::LeaveSignalView);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + herdr::STALE_AFTER,
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+        assert!(!app.is_agent_details_open());
+    }
+
+    #[test]
+    fn stale_details_remain_for_the_selected_identity_and_recover_live() {
+        let now = Instant::now();
+        let mut app = app_with_agents(vec![agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::AgentPollFailed { now });
+        assert!(app.is_agent_details_open());
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", Some("review"), AgentStatus::Working)],
+            now + Duration::from_secs(1),
+        ));
+        assert_eq!(
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref()),
+            Some("review")
+        );
     }
 
     #[test]

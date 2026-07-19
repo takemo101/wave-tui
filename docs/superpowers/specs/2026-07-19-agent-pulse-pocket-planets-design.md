@@ -9,6 +9,23 @@ presentation in
 The existing Dual Phase Scope, Ringed Planets state language, selected callout,
 and all local-only/read-only/privacy/recovery/input contracts remain current.
 
+> **Historical presentation note (2026-07-19):** this document's scope,
+> privacy, and Banded Worlds theme-surface contracts remain current context,
+> but its shadowed full-canvas layout, selected-only callout, and calculated
+> (ellipse-derived, 9×5-capped) planet geometry are superseded by the Agent
+> Planets Stage redesign in
+> [`2026-07-19-agent-planets-stage-design.md`](2026-07-19-agent-planets-stage-design.md)
+> (centered stage chrome, explicit round disc masks, no shadows). The stage
+> design's own Side Tags were in turn superseded by the Agent details modal
+> of
+> [`2026-07-19-agent-planets-details-modal-design.md`](2026-07-19-agent-planets-details-modal-design.md),
+> and the Ringed Planets state-ring language and selected callout named as
+> current in the status line above are likewise historical now — replaced
+> by the thin status atmospheres and focus brackets of
+> [`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](2026-07-19-agent-planets-orbiting-particles-focus-design.md)
+> as revised (no orbiting particles). The original body below is preserved
+> unchanged as design history.
+
 ## Goal
 
 Make Agent Pulse planets feel like small, varied worlds scattered around the

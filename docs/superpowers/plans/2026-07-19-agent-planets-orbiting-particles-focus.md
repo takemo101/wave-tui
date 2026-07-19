@@ -1,5 +1,14 @@
 # Agent Planets Orbiting Particles and Focus Implementation Plan
 
+> **Revision note (2026-07-19):** the approved atmosphere-only revision
+> removed the orbiting-particle decoration from this plan's scope — no
+> particles ship. Thin per-status atmospheres (Working traveling accent,
+> Idle breathing muted, Blocked weak deterministic error pulse, Done dim
+> afterglow, Unknown near-static) and the four selection focus brackets
+> shipped instead, per the revised
+> [`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](../specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md).
+> Particle tasks below are preserved as history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace status rings with decorative regular orbiting particles,

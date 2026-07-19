@@ -1,5 +1,16 @@
 # Agent Planets Stage Implementation Plan
 
+> **Historical presentation note (2026-07-19):** this plan's centered stage,
+> disc masks, scope, footer, Single View volume parity, `z` suppression, and
+> cyclic selection remain current. Its permanent Side Tag presentation and
+> runtime-label fallback are superseded by
+> [`2026-07-19-agent-planets-details-modal.md`](2026-07-19-agent-planets-details-modal.md),
+> and its ring/arc/satellite status vocabulary by
+> [`2026-07-19-agent-planets-orbiting-particles-focus.md`](2026-07-19-agent-planets-orbiting-particles-focus.md)
+> as revised — the approved revision dropped that plan's orbiting particles,
+> shipping thin per-status atmospheres and selection focus brackets instead.
+> The implementation record below is preserved as history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the `a` canvas into a centered Agent Planets stage with true round disc-mask planets, per-planet name/state side tags, station title and volume context, a normal footer hint, and `z` suppression while the stage is open.

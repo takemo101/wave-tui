@@ -2,9 +2,14 @@
 
 **Status:** Approved for implementation on 2026-07-19; its rendering slices
 shipped on 2026-07-19. **Historical note (2026-07-19):** this document's
-local-only, read-only, privacy, selection, and recovery contracts — and its
-ring/satellite state language and selected `name · status` callout — remain
-current, while its larger grey planet scale and surface presentation is
+local-only, read-only, privacy, selection, and recovery contracts remain
+current. Its ring/satellite state language is superseded by the thin status
+atmospheres of
+[`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](2026-07-19-agent-planets-orbiting-particles-focus-design.md)
+(as revised, without orbiting particles), its selected `name · status`
+callout by the Agent details modal of
+[`2026-07-19-agent-planets-details-modal-design.md`](2026-07-19-agent-planets-details-modal-design.md),
+and its larger grey planet scale and surface presentation is
 superseded by
 [`2026-07-19-agent-pulse-pocket-planets-design.md`](2026-07-19-agent-pulse-pocket-planets-design.md)
 (9×5-capped bodies with theme-colored Banded Worlds surfaces). This document

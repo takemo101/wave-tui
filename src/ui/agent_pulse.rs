@@ -99,12 +99,12 @@ const PERSISTENCE_GLYPH: &str = "·";
 const PLANET_BODY_GLYPH: &str = "▓";
 /// Glyph shading a stable seed-derived crater inside a planet body.
 const CRATER_GLYPH: &str = "░";
-/// Glyph tracing a planet's orbit ring.
-const RING_GLYPH: &str = "∘";
-/// Glyph for the bright audio-positioned arc on a Working planet's ring.
-const WORKING_ARC_GLYPH: &str = "●";
-/// Glyph for the small satellite a Done planet keeps on its orbit.
-const SATELLITE_GLYPH: &str = "▪";
+/// Glyph for one thin status-atmosphere cell outside the body gap.
+const ATMOSPHERE_GLYPH: &str = "▒";
+/// Ring cells in the Working atmosphere's traveling accent segment.
+const WORKING_SEGMENT: u64 = 3;
+/// Ring cells in the Blocked atmosphere's short pulsing error segment.
+const BLOCKED_SEGMENT: u64 = 2;
 /// Minimum body cells before optional crater detail appears.
 const CRATER_MIN_BODY: usize = 6;
 /// Normalized breathing vignette ring radius at silence.
@@ -476,53 +476,52 @@ const SMALL_DISC: [&str; 3] = [" █ ", "███", " █ "];
 /// The one-cell fallback disc for the densest fields.
 const DOT_DISC: [&str; 1] = ["█"];
 
-/// Explicit clockwise orbit cells around each mask, as offsets from the mask
-/// origin. Every ring is an octagon hugging the disc silhouette — diagonal
-/// corner steps included — so the orbit can never read as a vertical or
-/// horizontal cross.
-const LARGE_RING: [(i32, i32); 16] = [
-    (2, -1),
-    (3, -1),
-    (4, -1),
-    (5, 0),
+/// Explicit clockwise thin-atmosphere offset cycle around the 7×5 mask: an
+/// octagon one gap cell outside the disc silhouette, as offsets from the
+/// mask origin. Every cell keeps at least a one-cell gap off the disc body.
+const LARGE_ATMOSPHERE: [(i32, i32); 16] = [
+    (2, -2),
+    (3, -2),
+    (4, -2),
+    (6, -1),
+    (7, 0),
+    (8, 2),
+    (7, 4),
+    (6, 5),
+    (4, 6),
+    (3, 6),
+    (2, 6),
+    (0, 5),
+    (-1, 4),
+    (-2, 2),
+    (-1, 0),
+    (0, -1),
+];
+/// Clockwise thin-atmosphere offsets around the 5×3 mask.
+const MEDIUM_ATMOSPHERE: [(i32, i32); 12] = [
+    (1, -2),
+    (2, -2),
+    (3, -2),
+    (5, -1),
     (6, 1),
-    (7, 2),
-    (6, 3),
-    (5, 4),
-    (4, 5),
-    (3, 5),
-    (2, 5),
+    (5, 3),
+    (3, 4),
+    (2, 4),
     (1, 4),
-    (0, 3),
-    (-1, 2),
-    (0, 1),
-    (1, 0),
+    (-1, 3),
+    (-2, 1),
+    (-1, -1),
 ];
-/// Clockwise orbit offsets around the 5×3 mask.
-const MEDIUM_RING: [(i32, i32); 12] = [
-    (1, -1),
-    (2, -1),
+/// Clockwise thin-atmosphere offsets around the 3×3 mask.
+const SMALL_ATMOSPHERE: [(i32, i32); 8] = [
+    (1, -2),
     (3, -1),
-    (4, 0),
-    (5, 1),
-    (4, 2),
+    (4, 1),
     (3, 3),
-    (2, 3),
-    (1, 3),
-    (0, 2),
-    (-1, 1),
-    (0, 0),
-];
-/// Clockwise orbit offsets around the 3×3 mask.
-const SMALL_RING: [(i32, i32); 8] = [
-    (1, -1),
-    (2, 0),
-    (3, 1),
-    (2, 2),
-    (1, 3),
-    (0, 2),
-    (-1, 1),
-    (0, 0),
+    (1, 4),
+    (-1, 3),
+    (-2, 1),
+    (-1, -1),
 ];
 
 impl DiscMask {
@@ -558,19 +557,20 @@ impl DiscMask {
     }
 }
 
-/// The clockwise orbit offsets for `mask`; the one-cell disc keeps none.
-fn ring_mask(mask: DiscMask) -> &'static [(i32, i32)] {
+/// The clockwise thin-atmosphere offsets for `mask`; the one-cell disc
+/// cannot keep the required body gap, so it keeps no decoration at all.
+fn atmosphere_cycle(mask: DiscMask) -> &'static [(i32, i32)] {
     match mask {
-        DiscMask::Large7x5 => &LARGE_RING,
-        DiscMask::Medium5x3 => &MEDIUM_RING,
-        DiscMask::Small3x3 => &SMALL_RING,
+        DiscMask::Large7x5 => &LARGE_ATMOSPHERE,
+        DiscMask::Medium5x3 => &MEDIUM_ATMOSPHERE,
+        DiscMask::Small3x3 => &SMALL_ATMOSPHERE,
         DiscMask::Dot => &[],
     }
 }
 
 /// One placed disc: its chosen mask, its top-left mask origin (kept signed
-/// so ring overhang can clip at the field edge), and its body cells inside
-/// `area`.
+/// so decoration overhang can clip at the field edge), and its body cells
+/// inside `area`.
 struct DiscGeometry {
     mask: DiscMask,
     origin: (i32, i32),
@@ -601,40 +601,46 @@ fn disc_geometry(bound: Rect, area: Rect) -> DiscGeometry {
     DiscGeometry { mask, origin, body }
 }
 
-/// The full orbit cells for a placed mask, clipped to `area`, in the stable
-/// clockwise mask order the Working arc and Blocked gap index into.
-fn ring_cells(mask: DiscMask, origin: (i32, i32), area: Rect) -> Vec<(u16, u16)> {
-    ring_mask(mask)
-        .iter()
-        .filter_map(|&(dx, dy)| {
-            let x = origin.0 + dx;
-            let y = origin.1 + dy;
-            (x >= 0 && y >= 0 && rect_contains(area, x as u16, y as u16))
-                .then_some((x as u16, y as u16))
-        })
-        .collect()
+/// One thin status-atmosphere cell; `accent` marks membership in the
+/// status segment — Working's traveling accent or Blocked's short pulse —
+/// selected by the played phase signature plus the identity seed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AtmosphereCell {
+    cell: (u16, u16),
+    accent: bool,
+}
+
+/// One selection focus bracket: a corner cell of the selected planet's
+/// tile and its corner glyph. Decorative only, never a hit target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FocusBracket {
+    cell: (u16, u16),
+    glyph: &'static str,
 }
 
 /// One agent's planet in field cells, derived purely from its tile, status,
-/// and the current phase frame. `base_body` follows the stable `base_rect`
-/// so tests can pin identity geometry; every other field follows the
-/// audio-transformed `rect`. Only `working_arc` consults phase data — every
-/// other status keeps still geometry across audio frames.
+/// selection, and the current phase frame — every field follows the
+/// audio-transformed `rect`. Only the atmosphere's segment and lift state
+/// consult phase data — every other cell keeps still geometry across audio
+/// frames.
 struct PlanetGeometry {
-    /// The disc body derived from the stable pre-transform rectangle.
-    #[cfg_attr(not(test), allow(dead_code))]
-    base_body: Vec<(u16, u16)>,
     /// The fixed mask this planet's slot chose.
     #[cfg_attr(not(test), allow(dead_code))]
     mask: DiscMask,
     body: Vec<(u16, u16)>,
     craters: Vec<(u16, u16)>,
-    /// The status-drawn orbit cells: Blocked's stable gap already removed.
-    ring: Vec<(u16, u16)>,
-    working_arc: Vec<(u16, u16)>,
-    satellite: Option<(u16, u16)>,
-    /// Body plus drawn ring cells only: the planet-only selection targets
-    /// shared by [`hit_test`] and rendering.
+    /// The thin status atmosphere outside the one-cell body gap — the only
+    /// planet decoration.
+    atmosphere: Vec<AtmosphereCell>,
+    /// Whether the atmosphere's breathing/pulse treatment sits in its
+    /// bright half for this frame: Idle's regular breathing, Done's slow
+    /// afterglow pulse, and Blocked's weak segment pulse. Always false for
+    /// Unknown and at silence.
+    atmosphere_lift: bool,
+    /// Four corner focus brackets; empty unless this planet is selected.
+    brackets: Vec<FocusBracket>,
+    /// Only visible disc body cells select a planet; atmosphere and
+    /// brackets are decorative.
     hit_cells: Vec<(u16, u16)>,
 }
 
@@ -715,53 +721,128 @@ fn surface_cells(surface: PlanetSurface, geometry: &PlanetGeometry, seed: u64) -
     }
 }
 
-/// The Blocked orbit: the complete ring minus one deterministic contiguous
-/// arc segment, so the gap is stable across audio frames and wall-clock
-/// time and never reads as a cross.
-fn broken_ring(ring: &[(u16, u16)], seed: u64) -> Vec<(u16, u16)> {
-    if ring.len() < 3 {
-        return ring.to_vec();
+/// Admit one decorative offset: the cell must stay inside the field and
+/// the planet's tile and keep at least a one-cell gap off every body cell.
+/// Offsets that fail are dropped rather than moved, so decoration never
+/// crowds the disc or leaks outside its tile.
+fn decorative_cell(
+    disc: &DiscGeometry,
+    tile: &CollageTile,
+    area: Rect,
+    dx: i32,
+    dy: i32,
+) -> Option<(u16, u16)> {
+    let x = disc.origin.0 + dx;
+    let y = disc.origin.1 + dy;
+    if x < 0 || y < 0 {
+        return None;
     }
-    let gap_len = (ring.len() / 4).max(2);
-    let gap_start = (seed % ring.len() as u64) as usize;
-    ring.iter()
+    let cell = (x as u16, y as u16);
+    (rect_contains(area, cell.0, cell.1)
+        && rect_contains(tile.rect, cell.0, cell.1)
+        && !disc
+            .body
+            .iter()
+            .any(|&(bx, by)| (bx as i32 - x).abs() <= 1 && (by as i32 - y).abs() <= 1))
+    .then_some(cell)
+}
+
+/// The thin status atmosphere — the only planet decoration: the mask's
+/// full atmosphere cycle with the out-of-tile and gap-crowding cells
+/// dropped, so the ring cells themselves never move. Every animation state
+/// derives only from the played phase signature plus the identity seed —
+/// never wall-clock — and a silent frame rests every treatment. Working
+/// selects a traveling accent segment; Blocked a short segment whose hop
+/// and weak pulse come from a scrambled phase, keeping it irregular where
+/// Working travels; Idle a slow regular breathing lift; Done a slow
+/// afterglow pulse; Unknown stays near-static with neither.
+fn atmosphere_ring(
+    tile: &CollageTile,
+    disc: &DiscGeometry,
+    status: AgentStatus,
+    frame: &VizFrame,
+    area: Rect,
+) -> (Vec<AtmosphereCell>, bool) {
+    let cells: Vec<(u16, u16)> = atmosphere_cycle(disc.mask)
+        .iter()
+        .filter_map(|&(dx, dy)| decorative_cell(disc, tile, area, dx, dy))
+        .collect();
+    if cells.is_empty() {
+        return (Vec::new(), false);
+    }
+    let silent = tile.energy <= SILENCE_ENERGY;
+    let len = cells.len() as u64;
+    let phase = phase_signature(&frame.primary_phase).wrapping_add(tile.seed);
+    let segment = if silent {
+        None
+    } else {
+        match status {
+            AgentStatus::Working => Some((phase % len, WORKING_SEGMENT)),
+            AgentStatus::Blocked => Some(((phase ^ (phase >> 7)) % len, BLOCKED_SEGMENT)),
+            _ => None,
+        }
+    };
+    let lift = !silent
+        && match status {
+            AgentStatus::Working => true,
+            AgentStatus::Idle => phase % 6 < 3,
+            AgentStatus::Blocked => (phase ^ (phase >> 5)) % 5 < 2,
+            AgentStatus::Done => phase % 9 < 3,
+            AgentStatus::Unknown => false,
+        };
+    let atmosphere = cells
+        .into_iter()
         .enumerate()
-        .filter_map(|(index, &cell)| {
-            let offset = (index + ring.len() - gap_start) % ring.len();
-            (offset >= gap_len).then_some(cell)
+        .map(|(index, cell)| AtmosphereCell {
+            cell,
+            accent: segment
+                .is_some_and(|(start, span)| (index as u64 + len - start) % len < span.min(len)),
+        })
+        .collect();
+    (atmosphere, lift)
+}
+
+/// The selected planet's four corner focus brackets: the tile's own corner
+/// cells, so the brackets surround the allocated disc area, bounded to the
+/// tile by construction. A corner that would crowd the body gap, leave the
+/// field, or land on an atmosphere cell is dropped.
+fn focus_brackets(
+    tile: &CollageTile,
+    disc: &DiscGeometry,
+    atmosphere: &[AtmosphereCell],
+    area: Rect,
+) -> Vec<FocusBracket> {
+    let right = (tile.rect.x + tile.rect.width - 1) as i32;
+    let bottom = (tile.rect.y + tile.rect.height - 1) as i32;
+    let corners = [
+        (tile.rect.x as i32, tile.rect.y as i32, "┌"),
+        (right, tile.rect.y as i32, "┐"),
+        (tile.rect.x as i32, bottom, "└"),
+        (right, bottom, "┘"),
+    ];
+    corners
+        .into_iter()
+        .filter_map(|(x, y, glyph)| {
+            let cell = decorative_cell(disc, tile, area, x - disc.origin.0, y - disc.origin.1)?;
+            let occupied = atmosphere.iter().any(|glow| glow.cell == cell);
+            (!occupied).then_some(FocusBracket { cell, glyph })
         })
         .collect()
 }
 
-/// The bright Working arc: a short contiguous segment of the complete ring
-/// whose position is a pure function of the real primary-phase data plus
-/// the identity seed — new audio moves it; elapsed time cannot.
-fn working_arc(ring: &[(u16, u16)], seed: u64, frame: &VizFrame) -> Vec<(u16, u16)> {
-    if ring.is_empty() {
-        return Vec::new();
-    }
-    let len = ring.len();
-    let arc_len = (len / 6).clamp(2, len);
-    let start = (phase_signature(&frame.primary_phase).wrapping_add(seed) % len as u64) as usize;
-    (0..arc_len)
-        .map(|step| ring[(start + step) % len])
-        .collect()
-}
-
-/// Derive one planet's full cell geometry from its tile. Craters index into
-/// the body by identity seed, so their arrangement rides along with the
-/// bounded audio transform but never reshuffles; tiny dense bounds drop the
-/// optional crater/ring/satellite detail before ever omitting the body.
+/// Derive one planet's body, thin status atmosphere, and — for the
+/// selected planet only — focus brackets from its tile. Craters and
+/// atmosphere cells stay identity-stable; only the atmosphere's segment
+/// and lift state follow the played phase frame.
 fn planet_geometry(
     tile: &CollageTile,
     area: Rect,
     status: AgentStatus,
     frame: &VizFrame,
+    selected: bool,
 ) -> PlanetGeometry {
-    let base_body = disc_geometry(tile.base_rect, area).body;
     let disc = disc_geometry(tile.rect, area);
-    let full_ring = ring_cells(disc.mask, disc.origin, area);
-    let body = disc.body;
+    let body = disc.body.clone();
     let craters = if body.len() >= CRATER_MIN_BODY {
         let first = (tile.seed % body.len() as u64) as usize;
         let second = ((tile.seed >> 11) % body.len() as u64) as usize;
@@ -773,31 +854,20 @@ fn planet_geometry(
     } else {
         Vec::new()
     };
-    let working_arc = if status == AgentStatus::Working {
-        working_arc(&full_ring, tile.seed, frame)
+    let (atmosphere, atmosphere_lift) = atmosphere_ring(tile, &disc, status, frame, area);
+    let brackets = if selected {
+        focus_brackets(tile, &disc, &atmosphere, area)
     } else {
         Vec::new()
     };
-    let satellite = if status == AgentStatus::Done && !full_ring.is_empty() {
-        Some(full_ring[((tile.seed >> 7) % full_ring.len() as u64) as usize])
-    } else {
-        None
-    };
-    let ring = if status == AgentStatus::Blocked {
-        broken_ring(&full_ring, tile.seed)
-    } else {
-        full_ring
-    };
-    let hit_cells = body.iter().chain(&ring).copied().collect();
     PlanetGeometry {
-        base_body,
         mask: disc.mask,
-        body,
+        body: body.clone(),
         craters,
-        ring,
-        working_arc,
-        satellite,
-        hit_cells,
+        atmosphere,
+        atmosphere_lift,
+        brackets,
+        hit_cells: body,
     }
 }
 
@@ -850,12 +920,12 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 
 /// Pure mouse hit test for the Dual Phase Scope canvas.
 ///
-/// Maps a click on a planet's drawn body or ring cells — the exact
+/// Maps a click on a planet's drawn disc body cells — the exact
 /// [`planet_geometry`] hit cells the renderer draws — to the read-only
 /// [`Action::SelectAgent`]; returns `None` whenever the canvas is closed, the
 /// integration is hidden, the connection is stale or unavailable, Signal View
-/// is active, or the click misses every planet. Scope phase, vignette,
-/// side-tag, and empty cells resolve nothing. Overlapping planets resolve
+/// is active, or the click misses every planet body. Scope phase, vignette,
+/// atmosphere, bracket, and empty cells resolve nothing. Overlapping planets resolve
 /// topmost-first, with the selected planet in front, matching draw order.
 /// `low_power` must mirror the render flag: it resolves against the
 /// App-captured frozen frame exactly as [`render_canvas`] draws it (hit
@@ -904,7 +974,7 @@ pub(super) fn hit_test(
         let Some(view) = agents.get(tile.index) else {
             continue;
         };
-        let geometry = planet_geometry(tile, canvas, view.status, frame);
+        let geometry = planet_geometry(tile, canvas, view.status, frame, false);
         if geometry.hit_cells.contains(&(column, row)) {
             return Some(Action::SelectAgent(view.id.clone()));
         }
@@ -920,10 +990,11 @@ pub(super) fn hit_test(
 /// untouched. Clears the full area, then draws the centered stage chrome
 /// (heading, the current ICY/station title with the exact Single View
 /// volume line beneath it, and footer) and, inside the stage field, the
-/// breathing vignette, the
-/// phosphor-persistence and dual phase-trace layers, each planet's disc-mask
-/// body, craters, and status orbit ring, and every named planet's permanent
-/// two-line side tag with the selected tag bright and drawn last. Stale
+/// breathing vignette, the phosphor-persistence and dual phase-trace
+/// layers, and each planet in ordered passes — thin status atmosphere,
+/// disc-mask body with its Banded Worlds surface, then the selected
+/// planet's four corner focus brackets — with the selected planet drawn
+/// last. Stale
 /// renders the reducer-captured final composition dimmed under a
 /// `reconnecting` note; Unavailable hides the field and tags behind calm
 /// copy; `--low-power` renders the App-captured first frame so geometry
@@ -972,9 +1043,9 @@ fn render_agent_planets_stage(
     let field = stage.field;
     // Geometry-source precedence: stale always wins with the display captured
     // by the reducer at the Connected→Stale edge; otherwise `--low-power`
-    // renders the App-captured first frame so no trace, disc, ring-arc, or
-    // tag geometry advances; live renders use the current frame plus the
-    // real prior frames behind it.
+    // renders the App-captured first frame so no trace, disc, atmosphere,
+    // or bracket geometry advances; live renders use the current frame plus
+    // the real prior frames behind it.
     let live_history: Vec<VizFrame> = app.viz_history().skip(1).cloned().collect();
     let fallback = (app.viz(), live_history.as_slice());
     let (frame, history) = if stale {
@@ -1007,8 +1078,8 @@ fn render_agent_planets_stage(
         .selected_agent()
         .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
 
-    // One geometry per tile, shared by planet rendering and tag layout so a
-    // tag can never disagree with the disc it annotates.
+    // One geometry per tile, shared by every planet pass; the selected
+    // planet alone derives its focus brackets.
     let geometries: Vec<PlanetGeometry> = layout
         .tiles
         .iter()
@@ -1017,7 +1088,13 @@ fn render_agent_planets_stage(
                 .get(tile.index)
                 .map(|view| view.status)
                 .unwrap_or(AgentStatus::Unknown);
-            planet_geometry(tile, field, status, frame)
+            planet_geometry(
+                tile,
+                field,
+                status,
+                frame,
+                Some(tile.index) == selected_index,
+            )
         })
         .collect();
 
@@ -1027,7 +1104,7 @@ fn render_agent_planets_stage(
         if Some(tile.index) == selected_index {
             continue;
         }
-        render_planet(buf, tile, geometry, agents, theme, false, stale, low_power);
+        render_planet(buf, tile, geometry, agents, theme, stale, low_power);
     }
     if let Some(selected) = selected_index {
         if let Some((tile, geometry)) = layout
@@ -1036,7 +1113,7 @@ fn render_agent_planets_stage(
             .zip(&geometries)
             .find(|(tile, _)| tile.index == selected)
         {
-            render_planet(buf, tile, geometry, agents, theme, true, stale, low_power);
+            render_planet(buf, tile, geometry, agents, theme, stale, low_power);
         }
     }
 
@@ -1230,21 +1307,23 @@ fn render_agent_details_modal(
         .render(area, buf);
 }
 
-/// Draw one agent planet in order: disc-mask body fill, stable crater
-/// shading, then the status orbit language — a complete playing-colored
-/// ring with a bright audio-positioned arc while Working, a muted still
-/// ring while Idle, an error-colored broken orbit while Blocked (never a
-/// cross), a dim ring plus a small satellite while Done, and a dim muted
-/// ring for Unknown. Selection restyles the existing body/ring cells; it
-/// never draws a rectangle.
-#[allow(clippy::too_many_arguments)]
+/// Draw one agent planet in order: its thin status atmosphere in the
+/// status color — Working's traveling accent segment bolds, Blocked's
+/// short segment stands out of a dim error ring and weakly pulses, Idle
+/// breathes and Done slowly pulses between dim and plain muted, Unknown
+/// stays dim and near-static — then the disc-mask body with its stable
+/// Banded Worlds surface, and — for the selected planet only — its four
+/// corner focus brackets drawn as a foreground line color in the theme
+/// selection accent, never a painted selection background. Silence and
+/// low power rest every brightening so frozen frames stay calm. Selection
+/// never restyles the atmosphere; the brackets are the only focus
+/// treatment.
 fn render_planet(
     buf: &mut Buffer,
     tile: &CollageTile,
     geometry: &PlanetGeometry,
     agents: &[AgentView],
     theme: &Theme,
-    selected: bool,
     stale: bool,
     low_power: bool,
 ) {
@@ -1260,8 +1339,39 @@ fn render_planet(
         }
     };
 
+    let animate = !silent && !low_power;
+    for glow in &geometry.atmosphere {
+        let mut style = Style::default().fg(status_color(view.status, theme));
+        match view.status {
+            AgentStatus::Working => {
+                if glow.accent && animate {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+            }
+            AgentStatus::Blocked => {
+                if !glow.accent {
+                    style = style.add_modifier(Modifier::DIM);
+                } else if geometry.atmosphere_lift && animate {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+            }
+            AgentStatus::Idle | AgentStatus::Done | AgentStatus::Unknown => {
+                if !(geometry.atmosphere_lift && animate) {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+            }
+        }
+        buf.set_string(
+            glow.cell.0,
+            glow.cell.1,
+            ATMOSPHERE_GLYPH,
+            own_emphasis(with_stale(quiet_dim(style), stale)),
+        );
+    }
+
     // Banded Worlds surface: identity chooses the family and the theme
-    // spectrum pair; status never colors the body — state stays on the ring.
+    // spectrum pair; status never colors the body — state stays on the
+    // atmosphere.
     let surface = planet_surface(tile.seed);
     let palette = planet_palette(tile.seed);
     let paint = |color: Color| {
@@ -1289,47 +1399,20 @@ fn render_planet(
         }
     }
 
-    // The drawn ring cells already carry Blocked's stable gap; status only
-    // picks the orbit's color language here.
-    let ring_style = match view.status {
-        AgentStatus::Working => edge_style(view.status, theme, tile.energy, low_power),
-        AgentStatus::Idle => quiet_dim(Style::default().fg(theme.muted)),
-        AgentStatus::Blocked => quiet_dim(Style::default().fg(theme.error)),
-        AgentStatus::Done | AgentStatus::Unknown => {
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM)
-        }
-    };
-    let ring_style = if selected {
-        theme.selection_style()
-    } else {
-        ring_style
-    };
-    let ring_style = own_emphasis(with_stale(ring_style, stale));
-    for &(x, y) in &geometry.ring {
-        buf.set_string(x, y, RING_GLYPH, ring_style);
-    }
-
-    // The bright arc rides the complete Working ring; only new real audio
-    // data repositions it.
-    let mut arc = if selected {
-        theme.selection_style()
-    } else {
-        edge_style(AgentStatus::Working, theme, tile.energy, low_power)
-    };
-    if !silent && !low_power {
-        arc = arc.add_modifier(Modifier::BOLD);
-    }
-    let arc = own_emphasis(with_stale(arc, stale));
-    for &(x, y) in &geometry.working_arc {
-        buf.set_string(x, y, WORKING_ARC_GLYPH, arc);
-    }
-
-    if let Some((x, y)) = geometry.satellite {
-        let satellite = own_emphasis(with_stale(
-            quiet_dim(Style::default().fg(theme.muted).add_modifier(Modifier::DIM)),
-            stale,
-        ));
-        buf.set_string(x, y, SATELLITE_GLYPH, satellite);
+    for bracket in &geometry.brackets {
+        buf.set_string(
+            bracket.cell.0,
+            bracket.cell.1,
+            bracket.glyph,
+            own_emphasis(with_stale(
+                quiet_dim(
+                    Style::default()
+                        .fg(theme.selection_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                stale,
+            )),
+        );
     }
 }
 
@@ -1366,21 +1449,6 @@ fn render_vignette(buf: &mut Buffer, area: Rect, radius: f32, theme: &Theme, sta
             }
         }
     }
-}
-
-/// Edge glow style: theme status color, silence dims, strong signal emboldens
-/// working frames (never in low power), done is always faded.
-fn edge_style(status: AgentStatus, theme: &Theme, energy: f32, low_power: bool) -> Style {
-    let mut style = Style::default().fg(status_color(status, theme));
-    if status == AgentStatus::Done {
-        style = style.add_modifier(Modifier::DIM);
-    }
-    if energy <= SILENCE_ENERGY {
-        style = style.add_modifier(Modifier::DIM);
-    } else if status == AgentStatus::Working && energy > BRIGHT_ENERGY && !low_power {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    style
 }
 
 fn with_stale(style: Style, stale: bool) -> Style {
@@ -1423,16 +1491,10 @@ mod tests {
         agent_stage_layout(CANVAS).field
     }
 
-    /// Glyphs only agent planets (bodies, craters, orbit rings, Working
-    /// arcs, and Done satellites) may use. `·` stays excluded: the vignette,
-    /// phosphor persistence, and copy separators share it.
-    const PLANET_GLYPHS: [&str; 5] = [
-        PLANET_BODY_GLYPH,
-        CRATER_GLYPH,
-        RING_GLYPH,
-        WORKING_ARC_GLYPH,
-        SATELLITE_GLYPH,
-    ];
+    /// Glyphs only agent planets (bodies, craters, and status atmospheres)
+    /// may use. `·` stays excluded: the vignette, phosphor persistence,
+    /// and copy separators share it.
+    const PLANET_GLYPHS: [&str; 3] = [PLANET_BODY_GLYPH, CRATER_GLYPH, ATMOSPHERE_GLYPH];
 
     fn view(workspace: &str, pane: &str, status: AgentStatus) -> AgentView {
         AgentView {
@@ -1575,9 +1637,9 @@ mod tests {
         buffer_text(buf).matches('◦').count()
     }
 
-    /// Cells drawn with agent-planet glyphs (bodies, craters, or rings)
-    /// inside the stage field, so chrome rows (heading, title block, and
-    /// footer) never count as planets.
+    /// Cells drawn with agent-planet glyphs (bodies, craters, or
+    /// atmospheres) inside the stage field, so chrome rows (heading, title
+    /// block, and footer) never count as planets.
     fn count_planet_cells(buf: &Buffer) -> usize {
         field_cells(buf)
             .iter()
@@ -1654,11 +1716,11 @@ mod tests {
         render_collage_for(app, low_power, Instant::now())
     }
 
-    /// The selectable body/ring cells of one laid-out tile — the same union
+    /// The selectable disc body cells of one laid-out tile — exactly what
     /// `planet_geometry` exposes as `hit_cells`. Independent of the phase
-    /// frame: only the Working arc (a ring subset) consults it.
+    /// frame, status, and selection: decoration never joins the hit set.
     fn tile_hit_cells(tile: &CollageTile, canvas: Rect) -> Vec<(u16, u16)> {
-        planet_geometry(tile, canvas, AgentStatus::Working, &phase_frame()).hit_cells
+        planet_geometry(tile, canvas, AgentStatus::Working, &phase_frame(), false).hit_cells
     }
 
     fn cell_text(buf: &Buffer, x: u16, y: u16) -> String {
@@ -1820,7 +1882,7 @@ mod tests {
         assert!(grown, "a real history frame grows dim persistence dots");
     }
 
-    // --- ringed planets ----------------------------------------------------
+    // --- status atmosphere and focus brackets --------------------------------
 
     /// The laid-out tile for one agent alone in `area` under `frame`.
     fn tile_for(agent: &AgentView, area: Rect, frame: &VizFrame) -> CollageTile {
@@ -1829,53 +1891,29 @@ mod tests {
             .remove(0)
     }
 
-    /// Every drawn planet cell (body, status ring, arc, satellite) of the
-    /// first agent with `status`, as `(x, y, symbol)` from the buffer. The
-    /// geometry's `ring` already carries Blocked's stable gap.
-    fn planet_cells_for(app: &App, status: AgentStatus) -> Vec<(u16, u16, String)> {
-        let buf = render_collage_for(app, false, Instant::now());
-        let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
-        let index = app
-            .active_agents()
-            .iter()
-            .position(|view| view.status == status)
-            .unwrap();
-        let tile = layout
-            .tiles
-            .iter()
-            .find(|tile| tile.index == index)
-            .unwrap();
-        let geometry = planet_geometry(tile, stage_field(), status, app.viz());
-        let mut cells: Vec<(u16, u16)> = geometry.body.clone();
-        cells.extend(geometry.ring.iter().copied());
-        cells.extend(geometry.working_arc.iter().copied());
-        cells.extend(geometry.satellite);
-        cells.sort_unstable();
-        cells.dedup();
-        cells
-            .into_iter()
-            .map(|(x, y)| (x, y, buf.cell((x, y)).unwrap().symbol().to_string()))
-            .collect()
+    /// A hand-built tile roomy enough for the complete atmosphere
+    /// cycle: an 18×9 slot holding the centered 7×5 disc with
+    /// two rows and five columns of margin, well inside the area.
+    fn roomy_tile(area: Rect) -> CollageTile {
+        let rect = Rect::new(area.x + 10, area.y + 10, 18, 9);
+        CollageTile {
+            index: 0,
+            seed: 21,
+            base_rect: rect,
+            rect,
+            energy: 0.5,
+        }
     }
 
-    /// The audio-positioned Working arc cells of the first working agent.
-    fn arc_cells_for(app: &App) -> Vec<(u16, u16)> {
-        let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
-        let index = app
-            .active_agents()
-            .iter()
-            .position(|view| view.status == AgentStatus::Working)
-            .unwrap();
-        let tile = layout
-            .tiles
-            .iter()
-            .find(|tile| tile.index == index)
-            .unwrap();
-        planet_geometry(tile, stage_field(), AgentStatus::Working, app.viz()).working_arc
+    /// Whether `cell` keeps at least a one-cell gap off every body cell.
+    fn gapped_from_body(geometry: &PlanetGeometry, cell: (u16, u16)) -> bool {
+        geometry.body.iter().all(|&(bx, by)| {
+            (bx as i32 - cell.0 as i32).abs() > 1 || (by as i32 - cell.1 as i32).abs() > 1
+        })
     }
 
     #[test]
-    fn stable_identity_produces_a_round_body_craters_and_ring() {
+    fn stable_identity_produces_a_round_body_craters_and_gapped_atmosphere() {
         let area = Rect::new(0, 0, 120, 36);
         let agent = view("work-a", "pane-1", AgentStatus::Working);
         let first = planet_geometry(
@@ -1883,132 +1921,460 @@ mod tests {
             area,
             AgentStatus::Working,
             &phase_frame(),
+            false,
         );
-        let later = planet_geometry(
-            &tile_for(&agent, area, &phase_frame_with_offset(0.8)),
-            area,
-            AgentStatus::Working,
-            &phase_frame_with_offset(0.8),
-        );
-        assert_eq!(
-            first.base_body, later.base_body,
-            "identity fixes the base body"
-        );
-        assert_eq!(first.craters, later.craters, "identity fixes the craters");
         assert!(!first.body.is_empty(), "the live body renders cells");
-        assert!(first.ring.len() >= 2, "a roomy planet keeps an orbit ring");
-        let expected: Vec<(u16, u16)> = first.body.iter().chain(&first.ring).copied().collect();
-        assert_eq!(
-            first.hit_cells, expected,
-            "hit cells are exactly the body and ring cells"
-        );
+        assert!(!first.atmosphere.is_empty(), "a roomy slot keeps a glow");
+        assert_eq!(first.hit_cells, first.body, "only body cells select");
+        assert!(first
+            .atmosphere
+            .iter()
+            .all(|glow| gapped_from_body(&first, glow.cell)));
+    }
+
+    /// The atmosphere ring cells of `status` on the roomy tile under
+    /// `offset` audio, so animation tests can separate the still ring from
+    /// its moving treatment.
+    fn roomy_atmosphere(status: AgentStatus, offset: f32) -> PlanetGeometry {
+        let area = Rect::new(0, 0, 120, 36);
+        planet_geometry(
+            &roomy_tile(area),
+            area,
+            status,
+            &phase_frame_with_offset(offset),
+            false,
+        )
+    }
+
+    /// The accent-segment cells of `geometry` in ring order.
+    fn accent_cells(geometry: &PlanetGeometry) -> Vec<(u16, u16)> {
+        geometry
+            .atmosphere
+            .iter()
+            .filter(|glow| glow.accent)
+            .map(|glow| glow.cell)
+            .collect()
+    }
+
+    /// A deterministic spread of audio-frame offsets for treatment
+    /// searches: enough distinct frames that every duty cycle shows both
+    /// halves.
+    fn offset_sweep() -> impl Iterator<Item = f32> {
+        (1..=24).map(|step| step as f32 * 0.13)
     }
 
     #[test]
-    fn blocked_planet_uses_a_broken_error_orbit_without_cross_glyphs() {
-        let mut app = collage_app(vec![snap("ws", "b", Some("b"), AgentStatus::Blocked)]);
-        push_frame(&mut app, phase_frame());
-        let buf = render_collage_for(&app, false, Instant::now());
-        // The cross prohibition guards the planet field; the chrome footer
-        // legitimately spells `+/-` for the volume hint.
-        let field_text: String = field_cells(&buf)
-            .into_iter()
-            .map(|(_, _, symbol)| symbol)
-            .collect();
-        for cross in ['×', '╳', '╲', '╱', '✕', '+'] {
-            assert!(
-                !field_text.contains(cross),
-                "no cross-like glyph {cross} may render in the field"
-            );
-        }
-
-        let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
-        let tile = &layout.tiles[0];
-        let blocked = planet_geometry(tile, stage_field(), AgentStatus::Blocked, app.viz());
-        let full = planet_geometry(tile, stage_field(), AgentStatus::Idle, app.viz());
-        assert!(
-            blocked.ring.len() >= 2,
-            "the broken orbit keeps visible cells"
-        );
-        assert!(
-            blocked.ring.len() < full.ring.len(),
-            "the blocked orbit must carry a gap"
-        );
-        let theme = Theme::for_name(ThemeName::Minimal);
-        for &(x, y) in &blocked.ring {
-            assert_eq!(buf.cell((x, y)).unwrap().symbol(), RING_GLYPH);
-            assert_eq!(buf.cell((x, y)).unwrap().style().fg, Some(theme.error));
-        }
-        for cell in full.ring.iter().filter(|cell| !blocked.ring.contains(cell)) {
-            assert_ne!(
-                buf.cell((cell.0, cell.1)).unwrap().symbol(),
-                RING_GLYPH,
-                "gap cell {cell:?} must stay free of ring cells"
-            );
-        }
-    }
-
-    #[test]
-    fn working_arc_changes_with_audio_but_other_planet_states_do_not() {
-        let quiet = status_app(phase_frame_with_offset(0.1));
-        let loud = status_app(phase_frame_with_offset(0.7));
-        assert!(
-            !arc_cells_for(&quiet).is_empty(),
-            "working keeps a bright arc"
-        );
-        assert_ne!(
-            arc_cells_for(&quiet),
-            arc_cells_for(&loud),
-            "new audio data moves the working arc"
-        );
+    fn atmosphere_is_the_only_decoration_and_its_ring_never_moves() {
         for status in [
+            AgentStatus::Working,
             AgentStatus::Idle,
             AgentStatus::Blocked,
             AgentStatus::Done,
             AgentStatus::Unknown,
         ] {
+            let first = roomy_atmosphere(status, 0.2);
+            let later = roomy_atmosphere(status, 0.7);
+            assert!(
+                !first.atmosphere.is_empty(),
+                "{status:?} keeps a visible atmosphere"
+            );
+            let ring = |geometry: &PlanetGeometry| -> Vec<(u16, u16)> {
+                geometry.atmosphere.iter().map(|glow| glow.cell).collect()
+            };
             assert_eq!(
-                planet_cells_for(&quiet, status),
-                planet_cells_for(&loud, status),
-                "{status:?} planet geometry must ignore audio frames"
+                ring(&first),
+                ring(&later),
+                "{status:?} ring cells never move with audio"
             );
         }
     }
 
     #[test]
-    fn done_planet_keeps_a_dim_satellite_and_unknown_has_none() {
-        let app = status_app(phase_frame());
+    fn working_accent_segment_travels_only_with_the_played_phase_frame() {
+        let first = roomy_atmosphere(AgentStatus::Working, 0.2);
+        let again = roomy_atmosphere(AgentStatus::Working, 0.2);
+        assert_eq!(
+            first.atmosphere, again.atmosphere,
+            "identical frames keep an identical segment"
+        );
+        let later = roomy_atmosphere(AgentStatus::Working, 0.7);
+        assert_eq!(accent_cells(&first).len(), WORKING_SEGMENT as usize);
+        assert_eq!(accent_cells(&later).len(), WORKING_SEGMENT as usize);
+        assert_ne!(
+            accent_cells(&first),
+            accent_cells(&later),
+            "new played audio moves the accent segment"
+        );
+
+        let area = Rect::new(0, 0, 120, 36);
+        let mut shifted_tile = roomy_tile(area);
+        shifted_tile.seed += 1;
+        let shifted = planet_geometry(
+            &shifted_tile,
+            area,
+            AgentStatus::Working,
+            &phase_frame_with_offset(0.2),
+            false,
+        );
+        assert_ne!(
+            accent_cells(&first),
+            accent_cells(&shifted),
+            "the identity seed fixes each planet's segment phase"
+        );
+    }
+
+    #[test]
+    fn idle_and_done_breathe_with_audio_while_unknown_stays_static() {
+        for status in [AgentStatus::Idle, AgentStatus::Done] {
+            let lifts: HashSet<bool> = offset_sweep()
+                .map(|offset| roomy_atmosphere(status, offset).atmosphere_lift)
+                .collect();
+            assert_eq!(
+                lifts,
+                HashSet::from([false, true]),
+                "{status:?} breathing takes both halves across played audio"
+            );
+            assert!(
+                offset_sweep()
+                    .all(|offset| accent_cells(&roomy_atmosphere(status, offset)).is_empty()),
+                "{status:?} never carries an accent segment"
+            );
+        }
+
+        let reference = roomy_atmosphere(AgentStatus::Unknown, 0.2);
+        for offset in offset_sweep() {
+            let unknown = roomy_atmosphere(AgentStatus::Unknown, offset);
+            assert_eq!(
+                unknown.atmosphere, reference.atmosphere,
+                "unknown atmosphere ignores played audio"
+            );
+            assert!(!unknown.atmosphere_lift, "unknown never lifts");
+            assert!(accent_cells(&unknown).is_empty());
+        }
+    }
+
+    #[test]
+    fn silence_rests_every_atmosphere_treatment() {
+        let area = Rect::new(0, 0, 120, 36);
+        let mut tile = roomy_tile(area);
+        tile.energy = 0.0;
+        for status in [
+            AgentStatus::Working,
+            AgentStatus::Idle,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+            AgentStatus::Unknown,
+        ] {
+            let geometry = planet_geometry(&tile, area, status, &silent_phase_frame(), false);
+            assert!(
+                !geometry.atmosphere.is_empty(),
+                "{status:?} keeps its still ring at silence"
+            );
+            assert!(
+                accent_cells(&geometry).is_empty(),
+                "{status:?} keeps no accent segment at silence"
+            );
+            assert!(
+                !geometry.atmosphere_lift,
+                "{status:?} keeps no lift at silence"
+            );
+        }
+    }
+
+    #[test]
+    fn selected_planets_keep_four_bounded_corner_brackets() {
+        let area = Rect::new(0, 0, 120, 36);
+        let tile = roomy_tile(area);
+        let unselected = planet_geometry(&tile, area, AgentStatus::Working, &phase_frame(), false);
+        assert!(
+            unselected.brackets.is_empty(),
+            "brackets exist only for the selected planet"
+        );
+
+        let selected = planet_geometry(&tile, area, AgentStatus::Working, &phase_frame(), true);
+        assert_eq!(selected.brackets.len(), 4, "four corner brackets");
+        let glyphs: HashSet<&str> = selected
+            .brackets
+            .iter()
+            .map(|bracket| bracket.glyph)
+            .collect();
+        assert_eq!(
+            glyphs,
+            HashSet::from(["┌", "┐", "└", "┘"]),
+            "one bracket per corner glyph"
+        );
+        let corners: HashSet<(u16, u16)> = HashSet::from([
+            (tile.rect.x, tile.rect.y),
+            (tile.rect.x + tile.rect.width - 1, tile.rect.y),
+            (tile.rect.x, tile.rect.y + tile.rect.height - 1),
+            (
+                tile.rect.x + tile.rect.width - 1,
+                tile.rect.y + tile.rect.height - 1,
+            ),
+        ]);
+        for bracket in &selected.brackets {
+            assert!(
+                corners.contains(&bracket.cell),
+                "brackets sit on the tile corners, bounded to the tile"
+            );
+        }
+        assert_eq!(
+            selected.hit_cells, unselected.hit_cells,
+            "selection never grows the hit set"
+        );
+    }
+
+    #[test]
+    fn decorative_cells_stay_gapped_inside_the_tile_and_out_of_hit_cells() {
+        let area = Rect::new(0, 0, 120, 36);
+        let tile = roomy_tile(area);
+        for status in [
+            AgentStatus::Working,
+            AgentStatus::Idle,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+            AgentStatus::Unknown,
+        ] {
+            let geometry = planet_geometry(&tile, area, status, &phase_frame(), true);
+            let hit: HashSet<(u16, u16)> = geometry.hit_cells.iter().copied().collect();
+            let decorative: Vec<(u16, u16)> = geometry
+                .atmosphere
+                .iter()
+                .map(|glow| glow.cell)
+                .chain(geometry.brackets.iter().map(|bracket| bracket.cell))
+                .collect();
+            assert!(!decorative.is_empty(), "{status:?} keeps decoration");
+            for cell in decorative {
+                assert!(
+                    rect_contains(tile.rect, cell.0, cell.1),
+                    "{status:?} decorative cell {cell:?} stays inside the tile"
+                );
+                assert!(
+                    gapped_from_body(&geometry, cell),
+                    "{status:?} decorative cell {cell:?} keeps the body gap"
+                );
+                assert!(
+                    !hit.contains(&cell),
+                    "{status:?} decorative cell {cell:?} never joins hit_cells"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn blocked_atmosphere_keeps_a_short_irregular_error_segment() {
+        let mut app = collage_app(vec![snap("ws", "b", Some("b"), AgentStatus::Blocked)]);
+        push_frame(&mut app, phase_frame());
+        let buf = render_collage_for(&app, false, Instant::now());
+        let field_text: String = field_cells(&buf)
+            .into_iter()
+            .map(|(_, _, symbol)| symbol)
+            .collect();
+        for cross in ['×', '╳', '╲', '╱', '✕', '+'] {
+            assert!(!field_text.contains(cross));
+        }
+        let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
+        let blocked = planet_geometry(
+            &layout.tiles[0],
+            stage_field(),
+            AgentStatus::Blocked,
+            app.viz(),
+            false,
+        );
+        let theme = Theme::for_name(ThemeName::Minimal);
+        assert!(!blocked.atmosphere.is_empty());
+        assert_eq!(
+            accent_cells(&blocked).len(),
+            BLOCKED_SEGMENT as usize,
+            "blocked keeps its short segment"
+        );
+        for glow in &blocked.atmosphere {
+            let cell = buf.cell(glow.cell).unwrap();
+            assert_eq!(cell.symbol(), ATMOSPHERE_GLYPH);
+            assert_eq!(
+                cell.style().fg,
+                Some(theme.error),
+                "the whole blocked atmosphere stays on the error color"
+            );
+            assert_eq!(
+                cell.style().add_modifier.contains(Modifier::DIM),
+                !glow.accent,
+                "the segment stands out of the dim error ring"
+            );
+        }
+
+        // The segment hops and weakly pulses with new played audio —
+        // deterministically, never from a timer.
+        assert_eq!(
+            accent_cells(&roomy_atmosphere(AgentStatus::Blocked, 0.2)),
+            accent_cells(&roomy_atmosphere(AgentStatus::Blocked, 0.2)),
+            "identical frames keep an identical segment"
+        );
+        let positions: HashSet<Vec<(u16, u16)>> = offset_sweep()
+            .map(|offset| accent_cells(&roomy_atmosphere(AgentStatus::Blocked, offset)))
+            .collect();
+        assert!(
+            positions.len() > 1,
+            "the blocked segment hops across played audio frames"
+        );
+        let pulses: HashSet<bool> = offset_sweep()
+            .map(|offset| roomy_atmosphere(AgentStatus::Blocked, offset).atmosphere_lift)
+            .collect();
+        assert_eq!(
+            pulses,
+            HashSet::from([false, true]),
+            "the blocked segment pulse takes both halves across played audio"
+        );
+    }
+
+    #[test]
+    fn stage_renders_no_old_ring_arc_or_satellite_glyphs() {
+        let mut app = status_app(phase_frame());
+        app.apply(Action::SelectNextAgent);
+        let buf = render_collage_for(&app, false, Instant::now());
+        let field: String = field_cells(&buf)
+            .into_iter()
+            .map(|(_, _, symbol)| symbol)
+            .collect();
+        for glyph in ["∘", "●", "▪"] {
+            assert!(
+                !field.contains(glyph),
+                "old ring/arc/satellite glyph {glyph} may not render"
+            );
+        }
+    }
+
+    #[test]
+    fn no_decorative_orbit_particle_cells_render_inside_the_tile() {
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Idle)]);
+        push_frame(&mut app, phase_frame());
         let buf = render_collage_for(&app, false, Instant::now());
         let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
-        let geometry_for = |status: AgentStatus| {
-            let index = app
-                .active_agents()
+        let tile = &layout.tiles[0];
+        for y in tile.rect.y..tile.rect.y + tile.rect.height {
+            for x in tile.rect.x..tile.rect.x + tile.rect.width {
+                assert_ne!(
+                    buf.cell((x, y)).unwrap().symbol(),
+                    "·",
+                    "no orbit-particle dot may render inside the tile at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn working_accent_segment_bolds_and_advances_in_the_buffer() {
+        let drawn_accent = |offset: f32| -> Vec<(u16, u16)> {
+            let app = connected_app_with_phase(offset);
+            let buf = render_collage_for(&app, false, Instant::now());
+            let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
+            let geometry = planet_geometry(
+                &layout.tiles[0],
+                stage_field(),
+                AgentStatus::Working,
+                app.viz(),
+                false,
+            );
+            let bold: Vec<(u16, u16)> = geometry
+                .atmosphere
                 .iter()
-                .position(|view| view.status == status)
-                .unwrap();
-            let tile = layout
-                .tiles
-                .iter()
-                .find(|tile| tile.index == index)
-                .unwrap();
-            planet_geometry(tile, stage_field(), status, app.viz())
+                .map(|glow| glow.cell)
+                .filter(|&cell| {
+                    buf.cell(cell)
+                        .unwrap()
+                        .style()
+                        .add_modifier
+                        .contains(Modifier::BOLD)
+                })
+                .collect();
+            let accent = accent_cells(&geometry);
+            assert_eq!(bold, accent, "the buffer bolds exactly the accent segment");
+            assert_eq!(
+                bold.len(),
+                WORKING_SEGMENT as usize,
+                "the drawn working segment keeps its length"
+            );
+            bold
         };
-        let (x, y) = geometry_for(AgentStatus::Done)
-            .satellite
-            .expect("a done planet keeps a satellite");
-        assert_eq!(buf.cell((x, y)).unwrap().symbol(), SATELLITE_GLYPH);
-        assert!(
-            buf.cell((x, y))
-                .unwrap()
-                .style()
-                .add_modifier
-                .contains(Modifier::DIM),
-            "the satellite stays dim"
+        assert_ne!(
+            drawn_accent(0.2),
+            drawn_accent(0.7),
+            "new played audio advances the drawn segment"
         );
-        assert!(
-            geometry_for(AgentStatus::Unknown).satellite.is_none(),
-            "unknown never gains a satellite"
+    }
+
+    #[test]
+    fn selected_planet_draws_four_selection_brackets_that_never_select() {
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        push_frame(&mut app, phase_frame());
+        let unselected = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        for bracket in ['┌', '┐', '└', '┘'] {
+            assert!(
+                !unselected.contains(bracket),
+                "brackets render only for the selected planet"
+            );
+        }
+
+        app.apply(Action::SelectNextAgent);
+        let buf = render_collage_for(&app, false, Instant::now());
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
+        let geometry = planet_geometry(
+            &layout.tiles[0],
+            stage_field(),
+            AgentStatus::Working,
+            app.viz(),
+            true,
         );
+        assert_eq!(geometry.brackets.len(), 4, "four drawn corner brackets");
+        for bracket in &geometry.brackets {
+            let cell = buf.cell(bracket.cell).unwrap();
+            assert_eq!(cell.symbol(), bracket.glyph);
+            let style = cell.style();
+            assert_eq!(
+                style.fg,
+                Some(theme.selection_bg),
+                "focus brackets use the visible selection accent as a line color",
+            );
+            assert_ne!(
+                style.bg,
+                Some(theme.selection_bg),
+                "focus brackets never paint the selection background",
+            );
+            assert!(style.add_modifier.contains(Modifier::BOLD));
+            assert!(
+                hit_test(CANVAS, bracket.cell.0, bracket.cell.1, false, &app).is_none(),
+                "a bracket cell never selects"
+            );
+        }
+    }
+
+    #[test]
+    fn low_power_render_keeps_the_frozen_atmosphere_unbrightened() {
+        let app = low_power_app_captured_from(0.3, 0.9);
+        let buf = render_collage_for(&app, true, Instant::now());
+        let (captured, _) = app.low_power_viz().expect("policy captured a frame");
+        let layout = collage_layout(app.active_agents(), captured, &[], stage_field());
+        let geometry = planet_geometry(
+            &layout.tiles[0],
+            stage_field(),
+            AgentStatus::Working,
+            captured,
+            false,
+        );
+        let mut checked = 0;
+        for glow in &geometry.atmosphere {
+            checked += 1;
+            assert!(
+                !buf.cell(glow.cell)
+                    .unwrap()
+                    .style()
+                    .add_modifier
+                    .contains(Modifier::BOLD),
+                "low power never brightens the frozen accent segment"
+            );
+        }
+        assert!(checked > 0, "sanity: the frozen planet keeps its glow");
     }
 
     #[test]
@@ -2022,7 +2388,8 @@ mod tests {
         assert_eq!(layout.tiles.len(), 80);
         let mut bodies = std::collections::HashSet::new();
         for tile in &layout.tiles {
-            let geometry = planet_geometry(tile, stage_field(), AgentStatus::Working, app.viz());
+            let geometry =
+                planet_geometry(tile, stage_field(), AgentStatus::Working, app.viz(), false);
             assert!(!geometry.body.is_empty(), "every dense planet keeps a body");
             let disc = disc_geometry(tile.rect, stage_field());
             let center = (
@@ -2056,7 +2423,8 @@ mod tests {
         );
 
         // Scope cells outside every planet's bounds (rect plus the one-cell
-        // ring overhang) must not care which statuses the planets carry.
+        // decoration overhang) must not care which statuses the planets
+        // carry.
         let reference = phase_frame();
         let layout = collage_layout(&agents(3), &reference, &[], stage_field());
         let outside_planets = |x: u16, y: u16| {
@@ -2119,7 +2487,7 @@ mod tests {
             .tiles
             .iter()
             .filter(|tile| {
-                !planet_geometry(tile, area, AgentStatus::Working, &phase_frame())
+                !planet_geometry(tile, area, AgentStatus::Working, &phase_frame(), false)
                     .body
                     .is_empty()
             })
@@ -2155,7 +2523,7 @@ mod tests {
     fn disc_mask_caps_oversized_bounds_and_keeps_dense_body_cells() {
         let area = Rect::new(0, 0, 120, 36);
         let tile = oversized_tile(area);
-        let geometry = planet_geometry(&tile, area, AgentStatus::Idle, &phase_frame());
+        let geometry = planet_geometry(&tile, area, AgentStatus::Idle, &phase_frame(), false);
         assert_eq!(
             geometry.mask,
             DiscMask::Large7x5,
@@ -2196,7 +2564,7 @@ mod tests {
         let canvas = stage_field();
         let layout = collage_layout(app.active_agents(), app.viz(), &[], canvas);
         let tile = &layout.tiles[0];
-        let geometry = planet_geometry(tile, canvas, AgentStatus::Working, app.viz());
+        let geometry = planet_geometry(tile, canvas, AgentStatus::Working, app.viz(), false);
         let theme = Theme::for_name(ThemeName::Minimal);
         let palette = planet_palette(tile.seed);
         let base = theme.spectrum_color(palette.base_position);
@@ -2228,16 +2596,20 @@ mod tests {
             tile.rect.width > 7,
             "sanity: the sparse layout offers an oversized bound"
         );
-        let geometry = planet_geometry(tile, canvas, AgentStatus::Working, app.viz());
+        let geometry = planet_geometry(tile, canvas, AgentStatus::Working, app.viz(), false);
         let &(x, y) = geometry.body.first().expect("a disc body");
         assert!(
             hit_test(CANVAS, x, y, false, &app).is_some(),
             "a disc body cell selects"
         );
-        let &(x, y) = geometry.ring.first().expect("a disc ring");
+        let (x, y) = geometry
+            .atmosphere
+            .first()
+            .expect("a roomy disc keeps an atmosphere")
+            .cell;
         assert!(
-            hit_test(CANVAS, x, y, false, &app).is_some(),
-            "a disc ring cell selects"
+            hit_test(CANVAS, x, y, false, &app).is_none(),
+            "an atmosphere cell never selects"
         );
 
         let hit: HashSet<(u16, u16)> = geometry.hit_cells.iter().copied().collect();
@@ -2348,14 +2720,15 @@ mod tests {
         assert_eq!(
             field_cells(&first),
             field_cells(&later),
-            "low power freezes trace, disc, ring, and tag geometry"
+            "low power freezes trace, disc, atmosphere, and bracket geometry"
         );
 
         // The same later frame in normal power does move the scope.
         let live = render_collage_for(&app, false, Instant::now());
         assert_ne!(field_cells(&later), field_cells(&live));
 
-        // A fresh snapshot still recolors the frozen planet's orbit in place.
+        // A fresh snapshot still recolors the frozen planet's atmosphere in
+        // place.
         app.apply(Action::AgentSnapshot {
             agents: vec![snap("ws", "p1", Some("one"), AgentStatus::Blocked)],
             now: Instant::now(),
@@ -2365,12 +2738,16 @@ mod tests {
         let (captured, _) = app.low_power_viz().expect("policy captured a frame");
         let layout = collage_layout(app.active_agents(), captured, &[], stage_field());
         let tile = &layout.tiles[0];
-        let geometry = planet_geometry(tile, stage_field(), AgentStatus::Blocked, captured);
-        let (x, y) = geometry.ring[0];
+        let geometry = planet_geometry(tile, stage_field(), AgentStatus::Blocked, captured, false);
+        let (x, y) = geometry
+            .atmosphere
+            .first()
+            .expect("the frozen planet keeps its atmosphere")
+            .cell;
         assert_eq!(
             recolored.cell((x, y)).unwrap().style().fg,
             Some(theme.error),
-            "the frozen orbit takes the fresh blocked color"
+            "the frozen atmosphere takes the fresh blocked color"
         );
     }
 
@@ -2409,32 +2786,71 @@ mod tests {
     // --- state, selection, and privacy -------------------------------------
 
     #[test]
-    fn state_ring_colors_come_from_the_theme() {
-        let mut app = collage_app(vec![
-            snap("ws", "p1", Some("w"), AgentStatus::Working),
-            snap("ws", "p2", Some("b"), AgentStatus::Blocked),
-            snap("ws", "p3", Some("i"), AgentStatus::Idle),
-            snap("ws", "p4", Some("d"), AgentStatus::Done),
-        ]);
-        push_frame(&mut app, frame(0.5, vec![0.4; 16]));
+    fn atmosphere_renders_all_five_status_treatments_from_the_theme() {
         let theme = Theme::for_name(ThemeName::Minimal);
-        let buf = render_collage_for(&app, false, Instant::now());
-        let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
-        for tile in &layout.tiles {
-            let status = app.active_agents()[tile.index].status;
-            let geometry = planet_geometry(tile, stage_field(), status, app.viz());
-            let (x, y) = geometry.ring[0];
-            let style = buf.cell((x, y)).unwrap().style();
-            assert_eq!(
-                style.fg,
-                Some(status_color(status, &theme)),
-                "{status:?} orbit ring must take its theme color"
+        for status in [
+            AgentStatus::Working,
+            AgentStatus::Idle,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+            AgentStatus::Unknown,
+        ] {
+            let mut app = collage_app(vec![snap("ws", "p1", Some("one"), status)]);
+            push_frame(&mut app, phase_frame());
+            let buf = render_collage_for(&app, false, Instant::now());
+            let layout = collage_layout(app.active_agents(), app.viz(), &[], stage_field());
+            let geometry =
+                planet_geometry(&layout.tiles[0], stage_field(), status, app.viz(), false);
+            assert!(
+                !geometry.atmosphere.is_empty(),
+                "{status:?} keeps a visible atmosphere"
             );
+            let expected_accents = match status {
+                AgentStatus::Working => WORKING_SEGMENT as usize,
+                AgentStatus::Blocked => BLOCKED_SEGMENT as usize,
+                _ => 0,
+            };
             assert_eq!(
-                style.add_modifier.contains(Modifier::DIM),
-                status == AgentStatus::Done,
-                "only done fades while energy is up: {status:?}"
+                accent_cells(&geometry).len(),
+                expected_accents,
+                "{status:?} keeps its segment length"
             );
+            for glow in &geometry.atmosphere {
+                let cell = buf.cell(glow.cell).unwrap();
+                assert_eq!(cell.symbol(), ATMOSPHERE_GLYPH);
+                let style = cell.style();
+                assert_eq!(
+                    style.fg,
+                    Some(status_color(status, &theme)),
+                    "{status:?} atmosphere must take its theme color"
+                );
+                let bold = style.add_modifier.contains(Modifier::BOLD);
+                let dim = style.add_modifier.contains(Modifier::DIM);
+                match status {
+                    AgentStatus::Working => {
+                        assert_eq!(bold, glow.accent, "working bolds exactly its segment");
+                        assert!(!dim, "the working ring never fades while energy is up");
+                    }
+                    AgentStatus::Blocked => {
+                        assert_eq!(dim, !glow.accent, "the blocked ring dims off the segment");
+                        assert_eq!(
+                            bold,
+                            glow.accent && geometry.atmosphere_lift,
+                            "the blocked segment bolds only on its pulse"
+                        );
+                    }
+                    AgentStatus::Idle | AgentStatus::Done => {
+                        assert!(!bold, "{status:?} never bolds");
+                        assert_eq!(
+                            dim, !geometry.atmosphere_lift,
+                            "{status:?} brightness follows its breathing/pulse lift"
+                        );
+                    }
+                    AgentStatus::Unknown => {
+                        assert!(!bold && dim, "unknown stays dim and neutral");
+                    }
+                }
+            }
         }
     }
 
@@ -2475,6 +2891,7 @@ mod tests {
     #[test]
     fn stale_freezes_the_last_live_collage_dimmed_and_time_invariant() {
         let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        app.apply(Action::SelectNextAgent);
         push_frame(&mut app, older_phase_frame());
         push_frame(&mut app, phase_frame());
         let live = render_collage_for(&app, false, Instant::now());
@@ -2482,6 +2899,10 @@ mod tests {
         assert!(
             count_primary_phase_cells(&live) > 0,
             "sanity: the final live frame has a phase trace to freeze"
+        );
+        assert!(
+            buffer_text(&live).contains('┌'),
+            "sanity: the selected planet keeps focus brackets to freeze"
         );
 
         app.apply(Action::AgentPollFailed {
@@ -2491,7 +2912,7 @@ mod tests {
         assert_eq!(
             field_cells(&stale_buf),
             live_field,
-            "stale freezes the exact background, disc, and tag geometry of the last live frame"
+            "stale freezes the exact background, disc, and decoration geometry of the last live frame"
         );
         assert!(buffer_text(&stale_buf).contains("reconnecting"));
         for (x, y, _) in field_cells(&stale_buf) {
@@ -2519,6 +2940,7 @@ mod tests {
     #[test]
     fn unavailable_hides_frames_and_traces_behind_calm_copy() {
         let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        app.apply(Action::SelectNextAgent);
         push_frame(&mut app, phase_frame());
         app.apply(Action::AgentPollFailed {
             now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
@@ -2527,7 +2949,14 @@ mod tests {
         assert_eq!(count_planet_cells(&buf), 0, "no agent planets render");
         assert_eq!(count_primary_phase_cells(&buf), 0, "no phase trace renders");
         assert_eq!(count_secondary_phase_cells(&buf), 0);
-        assert!(buffer_text(&buf).contains("agents · unavailable · retrying"));
+        let text = buffer_text(&buf);
+        for bracket in ['┌', '┐', '└', '┘'] {
+            assert!(
+                !text.contains(bracket),
+                "unavailable hides the selected planet's focus brackets"
+            );
+        }
+        assert!(text.contains("agents · unavailable · retrying"));
     }
 
     #[test]
@@ -2604,7 +3033,7 @@ mod tests {
     }
 
     #[test]
-    fn ring_or_body_click_selects_but_scope_tags_and_empty_cells_do_not() {
+    fn body_click_selects_but_decoration_scope_and_empty_cells_do_not() {
         let mut app = collage_app(vec![
             snap("ws", "p1", Some("one"), AgentStatus::Working),
             snap("ws", "p2", Some("two"), AgentStatus::Idle),
@@ -2621,19 +3050,20 @@ mod tests {
 
         let tile = &layout.tiles[0];
         let status = app.active_agents()[tile.index].status;
-        let geometry = planet_geometry(tile, canvas, status, app.viz());
+        let geometry = planet_geometry(tile, canvas, status, app.viz(), false);
         let &(x, y) = geometry.body.first().expect("a planet keeps body cells");
         assert!(
             hit_test(CANVAS, x, y, false, &app).is_some(),
             "a body cell selects"
         );
-        let &(x, y) = geometry
-            .ring
+        let (x, y) = geometry
+            .atmosphere
             .first()
-            .expect("a roomy planet keeps ring cells");
+            .expect("a roomy planet keeps an atmosphere")
+            .cell;
         assert!(
-            hit_test(CANVAS, x, y, false, &app).is_some(),
-            "a ring cell selects"
+            hit_test(CANVAS, x, y, false, &app).is_none(),
+            "an atmosphere cell never selects"
         );
 
         let (x, y) = layout
@@ -2719,7 +3149,7 @@ mod tests {
             "sanity: a loud frame moves the tile off base"
         );
 
-        // The frozen planet's own body/ring cells still select in low power.
+        // The frozen planet's own body cells still select in low power.
         let frozen_cells = tile_hit_cells(frozen, canvas);
         let &(x, y) = frozen_cells.first().expect("the frozen planet has cells");
         assert!(
@@ -2756,7 +3186,7 @@ mod tests {
         let &(x, y) = cells.first().expect("the frozen planet keeps cells");
         assert!(
             hit_test(CANVAS, x, y, true, &app).is_some(),
-            "a frozen body/ring cell selects in low power"
+            "a frozen body cell selects in low power"
         );
 
         let planet_cells: HashSet<(u16, u16)> = cells.into_iter().collect();
@@ -2807,7 +3237,7 @@ mod tests {
         let layout = collage_layout(app.active_agents(), app.viz(), &[], field);
         assert!(
             layout.tiles.iter().any(|tile| {
-                planet_geometry(tile, field, AgentStatus::Working, app.viz()).mask
+                planet_geometry(tile, field, AgentStatus::Working, app.viz(), false).mask
                     == DiscMask::Large7x5
             }),
             "a sparse stage keeps at least one 7x5 disc"
@@ -2832,7 +3262,14 @@ mod tests {
         let sparse_area = Rect::new(0, 0, 120, 28);
         let sparse = collage_layout(&agents(3), &frame(0.0, vec![0.0; 16]), &[], sparse_area);
         assert!(sparse.tiles.iter().any(|tile| {
-            planet_geometry(tile, sparse_area, AgentStatus::Working, &phase_frame()).mask
+            planet_geometry(
+                tile,
+                sparse_area,
+                AgentStatus::Working,
+                &phase_frame(),
+                false,
+            )
+            .mask
                 == DiscMask::Large7x5
         }));
 
@@ -2840,12 +3277,23 @@ mod tests {
         let dense = collage_layout(&agents(80), &frame(0.5, vec![0.5; 16]), &[], dense_area);
         assert_eq!(dense.tiles.len(), 80);
         for tile in &dense.tiles {
+            let geometry = planet_geometry(
+                tile,
+                dense_area,
+                AgentStatus::Working,
+                &phase_frame(),
+                false,
+            );
             assert!(
-                !planet_geometry(tile, dense_area, AgentStatus::Working, &phase_frame())
-                    .body
-                    .is_empty(),
+                !geometry.body.is_empty(),
                 "every dense planet keeps at least one body cell"
             );
+            if geometry.mask == DiscMask::Dot {
+                assert!(
+                    geometry.atmosphere.is_empty(),
+                    "a one-cell disc suppresses decoration instead of crowding"
+                );
+            }
         }
     }
 

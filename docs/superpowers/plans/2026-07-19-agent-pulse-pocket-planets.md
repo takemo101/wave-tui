@@ -1,5 +1,15 @@
 # Agent Pulse Pocket Planets Implementation Plan
 
+> **Historical note (2026-07-19):** this plan completed (rendering slice
+> committed as `feat: refine Agent Pulse pocket planets`, docs pass as
+> `docs: document Agent Pulse pocket planets`). Its stage layout, shadow,
+> and selected-only callout presentation is superseded by
+> [`2026-07-19-agent-planets-stage.md`](2026-07-19-agent-planets-stage.md),
+> and the ring/satellite status language it preserved is superseded by
+> [`2026-07-19-agent-planets-orbiting-particles-focus.md`](2026-07-19-agent-planets-orbiting-particles-focus.md)
+> as revised (thin status atmospheres, no orbiting particles);
+> the completed task record below is preserved unchanged.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Refine Ringed Planets into small, theme-colored Banded Worlds while leaving the shipped Dual Phase Scope and selected-agent callout behavior intact.
@@ -217,7 +227,7 @@ cargo build --release
 
 Expected: every command exits 0; automated commands do not check manual boxes.
 
-- [ ] **Step 4: Commit final documentation.**
+- [x] **Step 4: Commit final documentation.**
 
 ```bash
 but commit agent-pulse-ringed-planets -m "docs: document Agent Pulse pocket planets"

@@ -1,5 +1,11 @@
 # Agent Planets Drifting Particles Implementation Plan
 
+> **Superseded (2026-07-19):** this plan was never executed. Its
+> drifting-particles presentation is superseded by
+> [`2026-07-19-agent-planets-orbiting-particles-focus.md`](2026-07-19-agent-planets-orbiting-particles-focus.md),
+> whose approved revision shipped thin per-status atmospheres with no
+> particles at all. The tasks below are historical record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace Agent Planets' attached status rings, Working arc, and Done

@@ -3,6 +3,12 @@
 **Status:** proposed, approved for specification; implementation requires a
 separate reviewed plan.
 
+> **Superseded (2026-07-19):** this drifting-particles status language was
+> never implemented. It is superseded by
+> [`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](2026-07-19-agent-planets-orbiting-particles-focus-design.md),
+> whose approved revision shipped thin per-status atmospheres with no
+> particles at all. The body below is historical design record.
+
 ## Goal
 
 Replace the planet-attached status orbit, Working arc, and Done satellite with

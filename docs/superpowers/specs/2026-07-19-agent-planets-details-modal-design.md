@@ -13,6 +13,12 @@ presentation only. The same-socket, read-only Herdr boundary; Lissajous scope;
 disc masks; status rings; footer discovery; title/volume layout; and selection
 cycling remain unchanged.
 
+> **Note (2026-07-19):** the status rings left unchanged above were later
+> replaced by the thin status atmospheres and selection focus brackets of
+> [`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](2026-07-19-agent-planets-orbiting-particles-focus-design.md)
+> as revised (no orbiting particles). This modal design itself remains
+> current.
+
 ## User flow
 
 1. Open Agent Planets with `a`.

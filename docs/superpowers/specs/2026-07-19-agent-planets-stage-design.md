@@ -6,15 +6,21 @@ gates green; live manual checks in `docs/SPEC.md` remain pending).
 This document supersedes Pocket Planets' canvas layout, planet mask, label, and
 shadow presentation in
 [`2026-07-19-agent-pulse-pocket-planets-design.md`](2026-07-19-agent-pulse-pocket-planets-design.md).
-The Dual Phase Scope, same-socket/read-only/privacy boundaries, stable
-identity-based surface palette, and status-ring vocabulary remain current.
+The Dual Phase Scope, same-socket/read-only/privacy boundaries, and stable
+identity-based surface palette remain current. This document's original
+status-ring/satellite vocabulary is superseded by the thin status
+atmospheres and selection focus brackets of
+[`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](2026-07-19-agent-planets-orbiting-particles-focus-design.md)
+(as revised — the approved revision removed that design's orbiting
+particles), and its permanent Side Tags by the Agent details modal of
+[`2026-07-19-agent-planets-details-modal-design.md`](2026-07-19-agent-planets-details-modal-design.md).
 
 ## Goal
 
 Make `a` open a centered **Agent Planets** stage that feels as deliberate as
 Single View while remaining distinct from it: current station context and
-volume are always visible, the Lissajous scope stays center-stage, and every
-named agent has a nearby readable name/state tag.
+volume are always visible, the Lissajous scope stays center-stage, and a
+selected agent opens a readable details modal on demand.
 
 Planets must look unmistakably round in a terminal. Remove the rectangle-like
 planet shadow and calculated ellipse/ring shapes that create a cross-like
@@ -35,11 +41,11 @@ silhouette.
   player shortcuts, or the Dual Phase Scope's data/timing/persistence.
 - Do not draw planet shadow rectangles or any other full-tile shadow. Scope
   phosphor persistence remains allowed behind planets.
-- Keep every agent visible and displayable agents tagged at dense counts. Use
-  the explicit Herdr `name` when present; otherwise use only the current
-  `agent.list` `agent` runtime label (for example `pi` or `claude`). Never
-  reveal pane IDs, workspace IDs, cwd, terminal title, raw status, or any
-  other fallback identity.
+- Keep every agent visible at dense counts without persistent text tags. The
+  selected details modal may render only non-empty explicit `name`, `agent`
+  runtime label, normalized status, and `terminal_title` Activity fields.
+  Never reveal pane IDs, workspace IDs, cwd, terminal/session IDs, raw status,
+  or any other identity/location field.
 
 ## Experience
 
@@ -78,56 +84,51 @@ Every planet body uses one of three explicit terminal-safe disc masks—7×5,
 
 The renderer chooses the largest mask fitting the allocated slot; dense fields
 fall through 7×5 → 5×3 → 3×3 → one body cell. Surface bands, ice caps, and
-craters paint only mask cells. The status orbit is a short discrete arc around
-the disc silhouette; it never creates a vertical/horizontal cross or a large
+craters paint only mask cells. Status decoration stays outside the disc
+silhouette and never creates a vertical/horizontal cross or a large
 box. All planet shadow drawing is removed.
 
 Banded gas, Ice-cap, and Cratered-rock surfaces retain their stable
-identity-derived, active-theme-only palettes. State remains encoded by the
-ring/satellite: Working arc, Idle ring, Blocked broken error arc without a
-cross, Done satellite, and Unknown muted.
+identity-derived, active-theme-only palettes. State was originally encoded
+by a ring/satellite (Working arc, Idle ring, Blocked broken error arc
+without a cross, Done satellite, Unknown muted); that vocabulary is now
+historical, superseded by the thin per-status atmospheres of the
+orbiting-particles-focus design as revised.
 
-### Per-planet Side Tags
+### Selected Agent Details
 
-Each named planet has a two-line side tag adjacent to its disc:
+Planets keep no permanent name/status tag. Click or cycle to a live planet, then
+press `Enter` to open a centered compact record. It shows non-empty values in
+stable `label: value` rows: explicit `name`, `agent` runtime label, normalized
+`status`, then `terminal_title` as Activity. Activity is presentation text, not
+a structured task model; it truncates inside the modal. The modal clears only
+its bounded field rectangle and uses theme-derived colors.
 
-```text
-aria
-working
-```
-
-The first line is the explicit Herdr name when available, otherwise the
-current `agent.list` `agent` runtime label; the second is the normalized state.
-Tags are always part of the planet layout unit. The default position is right of
-the disc; collision resolution tries left, below, then above. A selected
-planet's tag becomes bright and draws last; it replaces the old separate
-selected-only callout, avoiding duplicate information.
-
-Tags never overlap another planet, another tag, the center heading/title, the
-volume region, or the footer when a non-overlapping candidate exists. Long
-names truncate safely to the tag width, while the state line remains visible.
-At extreme density, shrink the disc before shrinking tag width; names may
-truncate but displayable-agent tags are never silently removed. A planet with
-neither an explicit name nor a non-empty `agent` runtime label has no tag.
+`Enter` or `Esc` closes only details; `a` closes details and Agent Planets. While
+details are open, click selection, keyboard selection, player, theme, favorite,
+visualizer, search, and Signal View controls are consumed. Global `q`/Ctrl-C
+still quit. `Enter` without a selected live planet is a no-op.
 
 ### Recovery and input
 
-Stale freezes scope, disc mask positions, status-arc positions, and side-tag
-placements, then dims them under the reconnecting indication. Unavailable
-hides the stage field and tags behind calm unavailable copy. Low power preserves
-its current first-audible geometry capture; fresh agent snapshots may update
-status treatment but not disc/tag positions.
+Stale freezes scope, disc mask positions, and status-atmosphere positions;
+an open
+modal keeps the selected last snapshot dimmed with `reconnecting` in its title.
+Unavailable closes details and hides the stage field behind calm unavailable
+copy. Low power preserves its current first-audible geometry capture; fresh
+agent snapshots may update status treatment but not disc/atmosphere
+positions.
 
 `Tab`/Down and `Shift+Tab`/Up cycle live-planet selection, wrapping at both ends;
-`j`/`k` follow those same next/previous cyclic actions. Clicks select their
-hit planet directly. `Space`, volume, theme, favorite, and visualizer controls
-keep their documented player behavior. `z` is ignored only while Agent Planets
-is open.
+`j`/`k` follow those same next/previous cyclic actions. Clicks select their hit
+planet directly only while details are closed. `z` is ignored only while Agent
+Planets is open.
 
 ## Architecture
 
-- `ui::agent_pulse` owns stage partitioning, fixed disc/ring masks, tag layout,
-  no-shadow planet rendering, and planet/tag collision checks.
+- `ui::agent_pulse` owns stage partitioning, fixed disc masks and
+  atmosphere cycles, no-shadow
+  planet rendering, and bounded details-modal rendering.
 - `ui` owns normal-screen footer hints and renders `a Agent Planets` only when
   the existing Agent Pulse eligibility state is visible.
 - `cli` consumes `z` in the active Agent Planets key path before normal Signal
@@ -140,18 +141,17 @@ is open.
 Add focused tests for:
 
 - fixed 7×5/5×3/3×3 disc masks, no full-rectangle shadow cells, no cross-like
-  body/ring silhouette, theme-only stable surface paint, and dense reduction;
+  silhouette, theme-only stable surface paint, and dense reduction;
 - stage header/title fallback, volume bar/value, and normal footer hint only in
   eligible modes;
-- named two-line side tags, selected tag emphasis/draw order, safe truncation,
-  collision candidate order against both discs and tags, unnamed no-tag, and
-  privacy exclusions;
+- no permanent labels; modal field ordering/truncation/privacy, modal keyboard
+  and mouse consumption, and selection-only planet hit testing;
 - `z` ignored in Agent Planets while unchanged Signal View routing works
   elsewhere; existing player/selection controls remain correct;
-- scope unchanged, planet-only hit testing, stale/low-power tag freezes, and
-  unavailable hiding.
+- scope unchanged, stale modal reconnect indication, low-power
+  disc/atmosphere freezes, and unavailable closing/hiding.
 
-Manual checks remain required for live mono/stereo scope, six themes, resize
-and dense tag readability, keyboard/mouse selection, `z` behavior in/out of
-Agent Planets, reconnect, low power, standalone, disabled launch, and plugin
+Manual checks remain required for live mono/stereo scope, six themes, modal
+resize readability, keyboard/mouse selection, `z` behavior in/out of Agent
+Planets, reconnect, low power, standalone, disabled launch, and plugin
 detach/reattach.

@@ -1,6 +1,23 @@
 # Agent Planets orbiting particles and focus design
 
-**Status:** approved design; implementation requires a revised plan.
+**Status:** approved design; revised 2026-07-19 and implemented as revised
+(automated gates green; live manual checks in `docs/SPEC.md` remain
+pending).
+
+> **Approved revision (2026-07-19):** the orbiting-particle decoration
+> described below was removed before implementation — no orbit particles
+> render at all. The thin status atmosphere is the only planet decoration,
+> with revised per-status treatments: Working keeps the traveling bright
+> accent segment; Idle slowly breathes its muted atmosphere; Blocked
+> carries a short, deterministic, weakly pulsing error segment (an
+> irregular scrambled-phase hop — still no blink timer, cross, or broken
+> orbit); Done slowly pulses a dim afterglow; Unknown stays near-static.
+> All motion still derives only from newly played audio plus the private
+> identity seed, and silence/stale/low-power rest or freeze every
+> treatment. The four selection corner brackets (foreground-only, no
+> selection background), body-only hit testing, dense suppression, and
+> every privacy/recovery boundary below remain as designed. The particle
+> sections below are preserved as historical design record.
 
 ## Supersession
 

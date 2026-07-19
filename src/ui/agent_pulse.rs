@@ -1162,12 +1162,41 @@ fn render_agent_details_modal(
         width,
         height,
     );
-    let mut lines = Vec::with_capacity(rows.len());
+    let mut lines = Vec::with_capacity(rows.len() + 1);
     for (label, value) in rows {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{label}: "), Style::default().fg(theme.muted)),
-            Span::styled(value.to_string(), Style::default().fg(theme.foreground)),
-        ]));
+        let prefix = format!("{label}: ");
+        if label == "activity" {
+            let inner_width = area.width.saturating_sub(2) as usize;
+            let first_width = inner_width.saturating_sub(prefix.chars().count()).max(1);
+            let second_width = inner_width.saturating_sub(prefix.chars().count()).max(1);
+            let chars: Vec<char> = value.chars().collect();
+            let first: String = chars.iter().take(first_width).collect();
+            lines.push(Line::from(vec![
+                Span::styled(prefix.clone(), Style::default().fg(theme.muted)),
+                Span::styled(first, Style::default().fg(theme.foreground)),
+            ]));
+            if chars.len() > first_width {
+                let remaining = &chars[first_width..];
+                let truncated = remaining.len() > second_width;
+                let keep = second_width.saturating_sub(usize::from(truncated));
+                let mut second: String = remaining.iter().take(keep).collect();
+                if truncated {
+                    second.push('…');
+                }
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        " ".repeat(prefix.chars().count()),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(second, Style::default().fg(theme.foreground)),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(theme.muted)),
+                Span::styled(value.to_string(), Style::default().fg(theme.foreground)),
+            ]));
+        }
     }
     let mut title = Style::default().fg(theme.accent);
     if stale {
@@ -2844,6 +2873,38 @@ mod tests {
         assert!(modal.contains("activity: Review the modal"));
         assert!(!modal.contains("workspace-private"));
         assert!(!modal.contains("pane-private"));
+    }
+
+    #[test]
+    fn long_activity_wraps_to_two_lines_without_growing_the_modal() {
+        let activity =
+            "012345678901234567890123456789012345678901234567890123456789012345678901234567890";
+        let mut app = collage_app(vec![AgentSnapshot {
+            id: AgentId::new("workspace-private", "pane-private"),
+            details: AgentDetails {
+                name: None,
+                agent: Some("pi".to_string()),
+                activity: Some(activity.to_string()),
+            },
+            status: AgentStatus::Working,
+        }]);
+        push_frame(&mut app, phase_frame());
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        let modal = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        let activity_line = modal
+            .lines()
+            .find(|line| line.contains("activity: "))
+            .expect("first activity line");
+        assert!(activity_line.contains("012345678901234567890123456789012345"));
+        assert!(
+            modal.contains('…'),
+            "second line truncates with an ellipsis"
+        );
+        assert!(
+            !modal.contains(activity),
+            "a third activity line never renders"
+        );
     }
 
     #[test]

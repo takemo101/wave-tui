@@ -20,16 +20,18 @@
 //! (banded gas, ice cap, or cratered rock) painted with two theme spectrum
 //! colors inside the mask; the surface is identity language only and never
 //! encodes status.
-//! Status is orbit language on an explicit octagonal ring mask: Working's
-//! complete playing-colored ring carries a bright arc whose position
-//! advances only with new played-audio phase data; Idle keeps a muted still
-//! ring; Blocked draws an error-colored broken orbit with a stable
-//! seed-derived gap and never any cross-like glyph; Done dims and keeps a
-//! small satellite on its orbit; Unknown stays muted and dim. Every
-//! explicitly named planet keeps a permanent two-line side tag — its name
-//! over its normalized status — placed collision-aware right, left, below,
-//! then above its disc against every other disc and tag; the selected tag
-//! brightens and draws last. Unnamed planets keep no tag. Nothing moves
+//! Status is atmosphere language: a thin glow on an explicit offset cycle
+//! outside the disc, gapped one cell off the body, in the status color —
+//! Working alone carries one bright accent cell whose position advances
+//! only with new played-audio phase data; Idle, Blocked, Done, and Unknown
+//! atmospheres stay completely still, with Blocked on the error color and
+//! never any cross-like glyph. Around every non-dense planet an
+//! equal-count, equally spaced group of decorative orbit particles rotates
+//! on its own offset cycle from the played phase frame plus the identity
+//! seed; particle count and spacing never encode status, and cells that
+//! would leave the tile or crowd the body gap are dropped rather than
+//! bent. The selected planet alone gains four corner focus brackets
+//! bounded to its tile — decoration, never a hit target. Nothing moves
 //! from a timer: identical frames render identical cells. A frame at or
 //! below the silence threshold draws no trace or persistence at all —
 //! analyzer silence carries non-empty all-zero traces that would otherwise

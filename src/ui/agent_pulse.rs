@@ -3988,6 +3988,48 @@ mod tests {
     }
 
     #[test]
+    fn modal_content_follows_keyboard_navigation_across_planets() {
+        let mut app = collage_app(vec![
+            AgentSnapshot {
+                id: AgentId::new("ws", "p1"),
+                details: AgentDetails {
+                    name: Some("alpha".to_string()),
+                    agent: Some("pi".to_string()),
+                    activity: Some("First pass".to_string()),
+                },
+                status: AgentStatus::Working,
+            },
+            AgentSnapshot {
+                id: AgentId::new("ws", "p2"),
+                details: AgentDetails {
+                    name: Some("beta".to_string()),
+                    agent: Some("claude".to_string()),
+                    activity: Some("Second pass".to_string()),
+                },
+                status: AgentStatus::Idle,
+            },
+        ]);
+        push_frame(&mut app, phase_frame());
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        let first = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(first.contains("name: alpha"));
+        assert!(first.contains("activity: First pass"));
+
+        app.apply(Action::SelectNextAgent);
+        let second = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(second.contains("Agent details"));
+        assert!(second.contains("name: beta"));
+        assert!(second.contains("agent: claude"));
+        assert!(second.contains("status: idle"));
+        assert!(second.contains("activity: Second pass"));
+        assert!(
+            !second.contains("alpha"),
+            "the modal drops the previous agent's record"
+        );
+    }
+
+    #[test]
     fn long_activity_wraps_to_two_lines_without_growing_the_modal() {
         let activity =
             "012345678901234567890123456789012345678901234567890123456789012345678901234567890";

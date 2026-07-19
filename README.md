@@ -385,8 +385,10 @@ agent reported by the session's socket is shown.
 
 Search (`/`) and station navigation/selection (`g`/`G`/`Home`/`End`) are
 suppressed while the stage is open. `Enter` opens details rather than playing a
-station. When details are closed, normal player shortcuts retain their existing
-canvas semantics; `z` is consumed as a no-op while Agent Planets is open and
+station. While details are open, `Tab`/`↓`/`j` and
+`Shift+Tab`/`↑`/`k` keep the modal open while cycling its selected agent record;
+all other documented modal-local controls remain consumed. When details are
+closed, normal player shortcuts retain their existing canvas semantics; `z` is consumed as a no-op while Agent Planets is open and
 keeps its normal Single View toggle everywhere outside it. Mouse capture is
 enabled only for eligible plugin
 launches (native terminal text selection may then need `Shift`+drag);

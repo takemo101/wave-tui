@@ -243,6 +243,18 @@ impl AgentPulse {
             self.details = AgentDetailsOverlay::Closed;
         }
     }
+
+    /// Re-point an open details modal at the current selection so keyboard
+    /// navigation cycles agents without a separate hidden selection; closes
+    /// the modal if the selection is gone. A closed modal stays closed.
+    fn follow_selection_with_details(&mut self) {
+        if matches!(self.details, AgentDetailsOverlay::Open(_)) {
+            self.details = match &self.selected {
+                Some(id) => AgentDetailsOverlay::Open(id.clone()),
+                None => AgentDetailsOverlay::Closed,
+            };
+        }
+    }
 }
 
 /// Sort active agents by state (working, blocked, idle, done, then unknown), then
@@ -1152,7 +1164,7 @@ impl App {
 
     /// Move the overlay selection to the next sorted agent, wrapping from
     /// the last back to the first; with no selection it starts at the first
-    /// sorted agent.
+    /// sorted agent. An open details modal follows the new selection.
     fn select_next_agent(&mut self) {
         if !self.agent_selection_interactive() {
             return;
@@ -1167,11 +1179,12 @@ impl App {
             None => 0,
         };
         pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
+        pulse.follow_selection_with_details();
     }
 
     /// Move the overlay selection to the previous sorted agent, wrapping from
     /// the first back to the last; with no selection it starts at the last
-    /// sorted agent.
+    /// sorted agent. An open details modal follows the new selection.
     fn select_previous_agent(&mut self) {
         if !self.agent_selection_interactive() {
             return;
@@ -1187,6 +1200,7 @@ impl App {
             Some(index) => index - 1,
         };
         pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
+        pulse.follow_selection_with_details();
     }
 
     /// Select an active agent by its identity; unknown agents change nothing.
@@ -3357,6 +3371,65 @@ mod tests {
             app.selected_agent_details()
                 .and_then(|detail| detail.name.as_deref()),
             Some("alpha")
+        );
+    }
+
+    #[test]
+    fn details_modal_follows_cyclic_keyboard_navigation() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            agent("ws", "p3", Some("gamma"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        fn shown(app: &App) -> Option<&str> {
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref())
+        }
+        assert_eq!(shown(&app), Some("alpha"));
+
+        app.apply(Action::SelectNextAgent);
+        assert!(app.is_agent_details_open(), "navigation keeps details open");
+        assert_eq!(shown(&app), Some("beta"));
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(shown(&app), Some("gamma"));
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(shown(&app), Some("alpha"), "next wraps to the first agent");
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(
+            shown(&app),
+            Some("gamma"),
+            "previous wraps to the last agent"
+        );
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(shown(&app), Some("beta"));
+        assert!(app.is_agent_details_open());
+    }
+
+    #[test]
+    fn details_navigation_is_inert_while_stale() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectPreviousAgent);
+        assert!(app.is_agent_details_open());
+        assert_eq!(
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref()),
+            Some("alpha"),
+            "stale selection stays frozen"
         );
     }
 

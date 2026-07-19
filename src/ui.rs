@@ -2478,9 +2478,11 @@ mod tests {
         }
     }
 
-    /// Cells drawn with tile-art glyphs anywhere in the buffer.
+    /// Cells drawn with planet glyphs (body, crater accent, orbit ring, or
+    /// satellite) anywhere in the buffer. The Working arc `●` stays excluded:
+    /// the quiet summary line shares that glyph.
     fn tile_cell_count(text: &str) -> usize {
-        ["░", "▒", "╱", "╲", "◌"]
+        ["▓", "░", "∘", "▪"]
             .iter()
             .map(|glyph| text.matches(glyph).count())
             .sum()

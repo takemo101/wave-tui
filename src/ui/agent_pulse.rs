@@ -11,8 +11,11 @@
 //! prior frames in `App::viz_history()`. Every agent keeps one stable,
 //! deterministically placed bounding rectangle whose bounded audio-driven
 //! displacement and soft shadow trails carry over from the Kinetic Collage;
-//! inside it the renderer draws a Ringed Planet — a clipped round body with
-//! stable seed-derived craters and a thin orbit ring — never a square frame.
+//! inside it the renderer draws a Pocket Planet — a round body capped at
+//! 9×5 cells with a thin orbit ring that may overhang one cell — never a
+//! square frame. Each identity owns a stable Banded Worlds surface (banded
+//! gas, ice cap, or cratered rock) painted with two theme spectrum colors;
+//! the surface is identity language only and never encodes status.
 //! Status is orbit language: Working's complete playing-colored ring carries
 //! a bright arc whose position advances only with new played-audio phase
 //! data; Idle keeps a muted still ring; Blocked draws an error-colored
@@ -94,6 +97,11 @@ const RING_GLYPH: &str = "∘";
 const WORKING_ARC_GLYPH: &str = "●";
 /// Glyph for the small satellite a Done planet keeps on its orbit.
 const SATELLITE_GLYPH: &str = "▪";
+/// Maximum pocket planet body width: an upper bound, never a target, so
+/// dense grid cells still choose a smaller proportional body first.
+const POCKET_MAX_W: u16 = 9;
+/// Maximum pocket planet body height.
+const POCKET_MAX_H: u16 = 5;
 /// Minimum drawn-bound width before optional orbit-ring cells appear.
 const RING_MIN_W: u16 = 5;
 /// Minimum drawn-bound height before optional orbit-ring cells appear.
@@ -492,6 +500,95 @@ struct PlanetGeometry {
     hit_cells: Vec<(u16, u16)>,
 }
 
+/// Cap a tile bound to the pocket planet body size, centered inside the
+/// original bound so the identity placement stays put. Bounds at or under
+/// the cap pass through unchanged, keeping the dense reduction order:
+/// body+ring+surface, body+ring, body, one body cell.
+fn pocket_rect(rect: Rect, area: Rect) -> Rect {
+    let width = rect.width.clamp(1, POCKET_MAX_W);
+    let height = rect.height.clamp(1, POCKET_MAX_H);
+    let x = rect.x + rect.width.saturating_sub(width) / 2;
+    let y = rect.y + rect.height.saturating_sub(height) / 2;
+    clamp_rect(x as i32, y as i32, width, height, area)
+}
+
+/// The three Banded Worlds surface families. A family is stable private
+/// identity language — never a status, audio, time, or selection signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanetSurface {
+    BandedGas,
+    IceCap,
+    CrateredRock,
+}
+
+/// The two stable spectrum-gradient positions a planet identity owns: the
+/// body paints `base_position`, the surface pattern paints
+/// `accent_position`. Both resolve through the active theme's
+/// `spectrum_color`, so no fixed palette value ever appears.
+#[derive(Clone, Copy)]
+struct PlanetPalette {
+    base_position: f32,
+    accent_position: f32,
+}
+
+/// The stable identity-seeded surface family.
+fn planet_surface(seed: u64) -> PlanetSurface {
+    match seed % 3 {
+        0 => PlanetSurface::BandedGas,
+        1 => PlanetSurface::IceCap,
+        _ => PlanetSurface::CrateredRock,
+    }
+}
+
+/// The stable identity-seeded palette pair: distinct base and accent
+/// positions on the theme spectrum gradient.
+fn planet_palette(seed: u64) -> PlanetPalette {
+    const POSITIONS: [f32; 4] = [0.16, 0.38, 0.62, 0.84];
+    let base = seed as usize % POSITIONS.len();
+    PlanetPalette {
+        base_position: POSITIONS[base],
+        accent_position: POSITIONS[(base + 1 + ((seed >> 4) as usize % 2)) % POSITIONS.len()],
+    }
+}
+
+/// The body cells a surface family paints in the accent color: gas bands,
+/// the ice cap's polar rows, or the rock world's crater marks. A pure
+/// function of the already-derived body geometry and identity seed, so the
+/// pattern rides the bounded audio transform without ever morphing; bodies
+/// too small for crater detail drop the surface pattern before the body.
+fn surface_cells(surface: PlanetSurface, geometry: &PlanetGeometry, seed: u64) -> Vec<(u16, u16)> {
+    if geometry.body.len() < CRATER_MIN_BODY {
+        return Vec::new();
+    }
+    let rows = || {
+        let top = geometry.body.iter().map(|&(_, y)| y).min().unwrap_or(0);
+        let bottom = geometry.body.iter().map(|&(_, y)| y).max().unwrap_or(0);
+        (top, bottom - top + 1)
+    };
+    match surface {
+        PlanetSurface::CrateredRock => geometry.craters.clone(),
+        PlanetSurface::BandedGas => {
+            let (top, _) = rows();
+            geometry
+                .body
+                .iter()
+                .copied()
+                .filter(|&(_, y)| ((y - top) as u64 + seed).is_multiple_of(3))
+                .collect()
+        }
+        PlanetSurface::IceCap => {
+            let (top, height) = rows();
+            let cap_rows = height.div_ceil(3);
+            geometry
+                .body
+                .iter()
+                .copied()
+                .filter(|&(_, y)| y < top + cap_rows)
+                .collect()
+        }
+    }
+}
+
 /// Whether the cell offset (`dx`, `dy`) from a planet center falls inside
 /// the terminal-aspect-aware ellipse with the given semi-axes.
 fn is_body_cell(dx: i32, dy: i32, radius_x: i32, radius_y: i32) -> bool {
@@ -608,9 +705,10 @@ fn planet_geometry(
     status: AgentStatus,
     frame: &VizFrame,
 ) -> PlanetGeometry {
-    let base_body = body_cells(tile.base_rect, area);
-    let body = body_cells(tile.rect, area);
-    let ring = ring_cells(tile.rect, area, tile.seed);
+    let base_body = body_cells(pocket_rect(tile.base_rect, area), area);
+    let bound = pocket_rect(tile.rect, area);
+    let body = body_cells(bound, area);
+    let ring = ring_cells(bound, area, tile.seed);
     let craters = if body.len() >= CRATER_MIN_BODY {
         let first = (tile.seed % body.len() as u64) as usize;
         let second = ((tile.seed >> 11) % body.len() as u64) as usize;
@@ -941,17 +1039,33 @@ fn render_planet(
         }
     };
 
-    let mut body = Style::default().fg(theme.muted);
-    if matches!(view.status, AgentStatus::Done | AgentStatus::Unknown) {
-        body = body.add_modifier(Modifier::DIM);
-    }
-    let body = with_stale(quiet_dim(body), stale);
+    // Banded Worlds surface: identity chooses the family and the theme
+    // spectrum pair; status never colors the body — state stays on the ring.
+    let surface = planet_surface(tile.seed);
+    let palette = planet_palette(tile.seed);
+    let paint = |color: Color| {
+        let mut style = Style::default().fg(color);
+        if matches!(view.status, AgentStatus::Done | AgentStatus::Unknown) {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        own_emphasis(with_stale(quiet_dim(style), stale))
+    };
+    let base = paint(theme.spectrum_color(palette.base_position));
+    let accent = paint(theme.spectrum_color(palette.accent_position));
+    let accent_cells: HashSet<(u16, u16)> = surface_cells(surface, &geometry, tile.seed)
+        .into_iter()
+        .collect();
     for &(x, y) in &geometry.body {
-        buf.set_string(x, y, PLANET_BODY_GLYPH, body);
-    }
-    let crater = body.add_modifier(Modifier::DIM);
-    for &(x, y) in &geometry.craters {
-        buf.set_string(x, y, CRATER_GLYPH, crater);
+        if accent_cells.contains(&(x, y)) {
+            let glyph = if surface == PlanetSurface::CrateredRock {
+                CRATER_GLYPH
+            } else {
+                PLANET_BODY_GLYPH
+            };
+            buf.set_string(x, y, glyph, accent);
+        } else {
+            buf.set_string(x, y, PLANET_BODY_GLYPH, base);
+        }
     }
 
     let (ring, ring_style) = match view.status {
@@ -977,7 +1091,7 @@ fn render_planet(
     } else {
         ring_style
     };
-    let ring_style = with_stale(ring_style, stale);
+    let ring_style = own_emphasis(with_stale(ring_style, stale));
     for &(x, y) in &ring {
         buf.set_string(x, y, RING_GLYPH, ring_style);
     }
@@ -992,18 +1106,26 @@ fn render_planet(
     if !silent && !low_power {
         arc = arc.add_modifier(Modifier::BOLD);
     }
-    let arc = with_stale(arc, stale);
+    let arc = own_emphasis(with_stale(arc, stale));
     for &(x, y) in &geometry.working_arc {
         buf.set_string(x, y, WORKING_ARC_GLYPH, arc);
     }
 
     if let Some((x, y)) = geometry.satellite {
-        let satellite = with_stale(
+        let satellite = own_emphasis(with_stale(
             quiet_dim(Style::default().fg(theme.muted).add_modifier(Modifier::DIM)),
             stale,
-        );
+        ));
         buf.set_string(x, y, SATELLITE_GLYPH, satellite);
     }
+}
+
+/// Planet cells fully own their emphasis: painting over a dim scope cell
+/// (vignette, phosphor persistence) must not inherit its modifiers, because
+/// Ratatui merges styles per cell. Subtract exactly the emphasis modifiers
+/// the composed style did not add itself.
+fn own_emphasis(style: Style) -> Style {
+    style.remove_modifier((Modifier::DIM | Modifier::BOLD).difference(style.add_modifier))
 }
 
 /// Where the selected `name · status` callout sits: its one-row rectangle
@@ -1444,10 +1566,11 @@ mod tests {
     }
 
     /// The selectable body/ring cells of one laid-out tile — the same union
-    /// `planet_geometry` exposes as `hit_cells`.
+    /// `planet_geometry` exposes as `hit_cells`, from the pocket-capped bound.
     fn tile_hit_cells(tile: &CollageTile, canvas: Rect) -> Vec<(u16, u16)> {
-        let mut cells = body_cells(tile.rect, canvas);
-        cells.extend(ring_cells(tile.rect, canvas, tile.seed));
+        let bound = pocket_rect(tile.rect, canvas);
+        let mut cells = body_cells(bound, canvas);
+        cells.extend(ring_cells(bound, canvas, tile.seed));
         cells
     }
 
@@ -1502,7 +1625,7 @@ mod tests {
     fn callout_intersects_any_planet_body(callout: Rect, layout: &CollageLayout) -> bool {
         let canvas = collage_area(CANVAS);
         layout.tiles.iter().any(|tile| {
-            body_cells(tile.rect, canvas)
+            body_cells(pocket_rect(tile.rect, canvas), canvas)
                 .iter()
                 .any(|&(x, y)| rect_contains(callout, x, y))
         })
@@ -1657,11 +1780,14 @@ mod tests {
     fn phosphor_persistence_adds_dim_dots_only_from_real_history_frames() {
         let with = render_collage(2, phase_frame(), vec![older_phase_frame()], false);
         let without = render_collage(2, phase_frame(), vec![], false);
-        let dots = |buf: &Buffer| buffer_text(buf).matches('·').count();
-        assert!(
-            dots(&with) > dots(&without),
-            "a real history frame grows dim persistence dots"
-        );
+        // The persistence layer plots the prior frame's primary phase pairs;
+        // some of those cells must show the dot only when history exists.
+        let persistence = phase_cells(&older_phase_frame().primary_phase, collage_area(CANVAS));
+        let grown = persistence.iter().any(|cell| {
+            cell_text(&with, cell.x, cell.y) == PERSISTENCE_GLYPH
+                && cell_text(&without, cell.x, cell.y) != PERSISTENCE_GLYPH
+        });
+        assert!(grown, "a real history frame grows dim persistence dots");
     }
 
     // --- ringed planets ----------------------------------------------------
@@ -1937,6 +2063,259 @@ mod tests {
             unoccluded,
             scope_cells(&statuses),
             "planet status never changes the scope"
+        );
+    }
+
+    // --- pocket planets ----------------------------------------------------
+
+    /// A hand-built tile whose bound is far larger than the pocket cap, as
+    /// only a huge sparse canvas could offer one.
+    fn oversized_tile(area: Rect) -> CollageTile {
+        let rect = Rect::new(area.x + 4, area.y + 6, 20, 11);
+        CollageTile {
+            index: 0,
+            seed: 9,
+            base_rect: rect,
+            rect,
+            energy: 0.4,
+            shadows: Vec::new(),
+        }
+    }
+
+    /// How many of `count` dense laid-out agents keep a non-empty planet body.
+    fn dense_planet_body_count(count: usize, area: Rect) -> usize {
+        let layout = collage_layout(&agents(count), &frame(0.5, vec![0.5; 16]), &[], area);
+        layout
+            .tiles
+            .iter()
+            .filter(|tile| {
+                !planet_geometry(tile, area, AgentStatus::Working, &phase_frame())
+                    .body
+                    .is_empty()
+            })
+            .count()
+    }
+
+    /// Render one agent named `name` under `status` after `frame`.
+    fn rendered_surface(name: &str, status: AgentStatus, frame: VizFrame) -> Buffer {
+        let mut app = collage_app(vec![snap("ws", name, Some(name), status)]);
+        push_frame(&mut app, frame);
+        render_collage_for(&app, false, Instant::now())
+    }
+
+    /// Every drawn planet-surface cell (body or crater glyph) with its
+    /// foreground color, so stability tests compare surface pattern and
+    /// palette at once.
+    fn surface_geometry(buf: &Buffer) -> Vec<(u16, u16, String, Option<Color>)> {
+        let canvas = collage_area(*buf.area());
+        let mut cells = Vec::new();
+        for y in canvas.y..canvas.y + canvas.height {
+            for x in canvas.x..canvas.x + canvas.width {
+                let cell = buf.cell((x, y)).unwrap();
+                let symbol = cell.symbol();
+                if symbol == PLANET_BODY_GLYPH || symbol == CRATER_GLYPH {
+                    cells.push((x, y, symbol.to_string(), cell.style().fg));
+                }
+            }
+        }
+        cells
+    }
+
+    #[test]
+    fn pocket_planet_caps_normal_body_and_keeps_dense_body_cells() {
+        let area = Rect::new(0, 0, 120, 36);
+        let tile = oversized_tile(area);
+        let rect = pocket_rect(tile.rect, area);
+        assert!(rect.width <= 9);
+        assert!(rect.height <= 5);
+        assert!(
+            !planet_geometry(&tile, area, AgentStatus::Idle, &phase_frame())
+                .body
+                .is_empty()
+        );
+        assert_eq!(dense_planet_body_count(80, Rect::new(0, 0, 50, 15)), 80);
+    }
+
+    #[test]
+    fn seed_stably_selects_each_banded_world_surface_and_palette() {
+        assert_eq!(planet_surface(0), PlanetSurface::BandedGas);
+        assert_eq!(planet_surface(1), PlanetSurface::IceCap);
+        assert_eq!(planet_surface(2), PlanetSurface::CrateredRock);
+        assert_eq!(
+            planet_palette(17).base_position,
+            planet_palette(17).base_position
+        );
+        assert_ne!(
+            planet_palette(0).base_position,
+            planet_palette(1).base_position
+        );
+    }
+
+    #[test]
+    fn surface_cells_are_stable_across_audio_status_and_time() {
+        let first = rendered_surface("gas", AgentStatus::Working, phase_frame_with_offset(0.1));
+        let later = rendered_surface("gas", AgentStatus::Blocked, phase_frame_with_offset(0.8));
+        assert_eq!(surface_geometry(&first), surface_geometry(&later));
+    }
+
+    #[test]
+    fn pocket_body_paints_base_and_accent_theme_spectrum_colors() {
+        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        push_frame(&mut app, phase_frame());
+        let buf = render_collage_for(&app, false, Instant::now());
+        let canvas = collage_area(CANVAS);
+        let layout = collage_layout(app.active_agents(), app.viz(), &[], canvas);
+        let tile = &layout.tiles[0];
+        let geometry = planet_geometry(tile, canvas, AgentStatus::Working, app.viz());
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let palette = planet_palette(tile.seed);
+        let base = theme.spectrum_color(palette.base_position);
+        let accent = theme.spectrum_color(palette.accent_position);
+        assert_ne!(base, accent, "an identity owns two distinct theme colors");
+        let colors: HashSet<Option<Color>> = geometry
+            .body
+            .iter()
+            .map(|&(x, y)| buf.cell((x, y)).unwrap().style().fg)
+            .collect();
+        assert!(
+            colors.contains(&Some(base)),
+            "the body paints its base color"
+        );
+        assert!(
+            colors.contains(&Some(accent)),
+            "the surface pattern paints its accent color"
+        );
+        assert_eq!(colors.len(), 2, "only the identity pair colors the body");
+    }
+
+    #[test]
+    fn pocket_geometry_drives_selection_not_the_oversized_rect() {
+        let app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
+        let canvas = collage_area(CANVAS);
+        let layout = collage_layout(app.active_agents(), app.viz(), &[], canvas);
+        let tile = &layout.tiles[0];
+        assert!(
+            tile.rect.width > POCKET_MAX_W,
+            "sanity: the sparse layout offers an oversized bound"
+        );
+        let capped = pocket_rect(tile.rect, canvas);
+        let &(x, y) = body_cells(capped, canvas).first().expect("a pocket body");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_some(),
+            "a pocket body cell selects"
+        );
+        let &(x, y) = ring_cells(capped, canvas, tile.seed)
+            .first()
+            .expect("a pocket ring");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_some(),
+            "a pocket ring cell selects"
+        );
+
+        let geometry = planet_geometry(tile, canvas, AgentStatus::Working, app.viz());
+        let pocket_cells: HashSet<(u16, u16)> = geometry.hit_cells.iter().copied().collect();
+        let &(x, y) = body_cells(tile.rect, canvas)
+            .iter()
+            .find(|cell| !pocket_cells.contains(cell))
+            .expect("the oversized rect keeps cells off the pocket planet");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_none(),
+            "a former oversized-rect-only cell resolves nothing"
+        );
+    }
+
+    // --- callout candidate branches ----------------------------------------
+
+    /// Which `selection_callout` candidate a synthetic fixture forces.
+    #[derive(Clone, Copy)]
+    enum PlacementCase {
+        Left,
+        Below,
+        Above,
+        AllCollide,
+    }
+
+    const CALLOUT_AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 10,
+    };
+    const CALLOUT_WIDTH: u16 = 10;
+
+    /// A synthetic planet whose selectable cells are exactly `cells`.
+    fn synthetic_planet(cells: &[(u16, u16)]) -> PlanetGeometry {
+        PlanetGeometry {
+            base_body: Vec::new(),
+            body: cells.to_vec(),
+            craters: Vec::new(),
+            ring: Vec::new(),
+            working_arc: Vec::new(),
+            satellite: None,
+            hit_cells: cells.to_vec(),
+        }
+    }
+
+    /// The selected fixture: a 3×3 block bounded by x 15..=17, y 4..=6, so
+    /// inside `CALLOUT_AREA` every candidate — right (18..28, 5), left
+    /// (5..15, 5), below (15..25, 7), above (15..25, 3) — stays in bounds
+    /// and only deliberate blockers knock one out.
+    fn synthetic_selected() -> PlanetGeometry {
+        let cells: Vec<(u16, u16)> = (15..18).flat_map(|x| (4..7).map(move |y| (x, y))).collect();
+        synthetic_planet(&cells)
+    }
+
+    /// Run `selection_callout` against blockers occupying every candidate
+    /// row preceding the one `case` forces.
+    fn forced_callout(case: PlacementCase) -> CalloutPlacement {
+        let blockers: Vec<(u16, u16)> = match case {
+            PlacementCase::Left => vec![(20, 5)],
+            PlacementCase::Below => vec![(20, 5), (7, 5)],
+            PlacementCase::Above => vec![(20, 5), (7, 5), (16, 7)],
+            PlacementCase::AllCollide => vec![(20, 5), (7, 5), (16, 7), (16, 3)],
+        };
+        let others = [synthetic_planet(&blockers)];
+        selection_callout(
+            &synthetic_selected(),
+            others.iter(),
+            CALLOUT_AREA,
+            CALLOUT_WIDTH,
+        )
+    }
+
+    fn expected_left_rect() -> Rect {
+        Rect::new(5, 5, CALLOUT_WIDTH, 1)
+    }
+
+    fn expected_below_rect() -> Rect {
+        Rect::new(15, 7, CALLOUT_WIDTH, 1)
+    }
+
+    fn expected_above_rect() -> Rect {
+        Rect::new(15, 3, CALLOUT_WIDTH, 1)
+    }
+
+    fn expected_right_fallback_rect() -> Rect {
+        Rect::new(18, 5, CALLOUT_WIDTH, 1)
+    }
+
+    #[test]
+    fn selection_callout_exercises_left_below_above_and_all_collide_fallback() {
+        assert_eq!(
+            forced_callout(PlacementCase::Left).rect,
+            expected_left_rect()
+        );
+        assert_eq!(
+            forced_callout(PlacementCase::Below).rect,
+            expected_below_rect()
+        );
+        assert_eq!(
+            forced_callout(PlacementCase::Above).rect,
+            expected_above_rect()
+        );
+        assert_eq!(
+            forced_callout(PlacementCase::AllCollide).rect,
+            expected_right_fallback_rect()
         );
     }
 
@@ -2422,14 +2801,15 @@ mod tests {
             .collect();
 
         let tile = &layout.tiles[0];
-        let &(x, y) = body_cells(tile.rect, canvas)
+        let bound = pocket_rect(tile.rect, canvas);
+        let &(x, y) = body_cells(bound, canvas)
             .first()
             .expect("a planet keeps body cells");
         assert!(
             hit_test(CANVAS, x, y, false, &app).is_some(),
             "a body cell selects"
         );
-        let &(x, y) = ring_cells(tile.rect, canvas, tile.seed)
+        let &(x, y) = ring_cells(bound, canvas, tile.seed)
             .first()
             .expect("a roomy planet keeps ring cells");
         assert!(

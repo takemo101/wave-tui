@@ -1114,11 +1114,13 @@ fn handle_signal_view_key(
 /// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
 /// Station selection (`Enter`), list jumps, and search entry are consumed so
 /// canvas input can never play a station, move station selection, or enter
-/// the search strip. Every other outcome — playback, volume, theme,
-/// favorite, visualizer, Signal View — is deliberately not handled here: the
-/// caller runs the existing non-canvas branch exactly once, so the
-/// documented global player controls keep their normal semantics and side
-/// effects without recursive dispatch.
+/// the search strip. `z` is also consumed as a no-op: Single View never opens
+/// over Agent Planets, while `z` outside the canvas keeps its documented
+/// Signal View toggle. Every other outcome — playback, volume, theme,
+/// favorite, visualizer — is deliberately not handled here: the caller runs
+/// the existing non-canvas branch exactly once, so the documented global
+/// player controls keep their normal semantics and side effects without
+/// recursive dispatch.
 fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
     match outcome {
         KeyOutcome::Quit => Some(Flow::Quit),
@@ -1142,7 +1144,8 @@ fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
         | KeyOutcome::ClearSearch
         | KeyOutcome::SelectFirst
         | KeyOutcome::SelectLast
-        | KeyOutcome::Play => Some(Flow::Continue),
+        | KeyOutcome::Play
+        | KeyOutcome::ToggleSignalView => Some(Flow::Continue),
         _ => None,
     }
 }
@@ -2369,36 +2372,42 @@ mod tests {
     }
 
     #[test]
-    fn collage_delegates_signal_view_toggle_to_the_normal_path() {
+    fn z_is_consumed_in_agent_planets_but_toggles_signal_view_elsewhere() {
         let (audio, _cmd_rx) = fake_audio();
-        let (mut app, mut debounce, mut persistence) = controller();
-        connect_agent_pulse(&mut app, &["alpha"]);
-        app.apply(Action::ToggleAgentOverlay);
+        let (mut canvas, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut canvas, &["alpha"]);
+        canvas.apply(Action::ToggleAgentOverlay);
 
-        // `z` keeps its normal meaning; Signal View then owns the surface.
+        // `z` is consumed while the canvas is open: Single View never opens
+        // over Agent Planets, and the canvas stays exactly as it was.
         handle_key(
             key(KeyCode::Char('z')),
-            &mut app,
+            &mut canvas,
             &audio,
             &mut debounce,
             &mut persistence,
         );
-        assert!(app.is_signal_view(), "z enters Signal View from the canvas");
         assert!(
-            app.is_agent_overlay_open(),
-            "the canvas stays open (suppressed) underneath"
+            !canvas.is_signal_view(),
+            "z must not enter Signal View from the canvas"
         );
+        assert!(canvas.is_agent_overlay_open(), "the canvas stays open");
 
-        // Esc is routed by the Signal View gate first and only leaves it.
+        // Outside the canvas the same eligible app keeps the documented
+        // Single View toggle.
+        let (mut normal, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut normal, &["alpha"]);
         handle_key(
-            key(KeyCode::Esc),
-            &mut app,
+            key(KeyCode::Char('z')),
+            &mut normal,
             &audio,
             &mut debounce,
             &mut persistence,
         );
-        assert!(!app.is_signal_view());
-        assert!(app.is_agent_overlay_open(), "back to the open canvas");
+        assert!(
+            normal.is_signal_view(),
+            "z still toggles Signal View outside the canvas"
+        );
     }
 
     /// The canvas-sized terminal area the collage mouse tests click within.

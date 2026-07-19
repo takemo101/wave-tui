@@ -32,7 +32,7 @@ use ratatui::{
 
 use std::time::Instant;
 
-use crate::app::{Action, App, FocusPane, ListSource, SearchStatus};
+use crate::app::{Action, AgentPulseConnection, App, FocusPane, ListSource, SearchStatus};
 use crate::layout::LayoutTier;
 use crate::model::{CodecKind, PlaybackState, Station};
 use crate::theme::Theme;
@@ -1000,8 +1000,8 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
     let accent = theme.accent_style();
     let muted = Style::default().fg(theme.muted);
 
-    let hints: &[(&str, &str)] = if compact {
-        &[
+    let mut hints: Vec<(&str, &str)> = if compact {
+        vec![
             ("Tab", "focus"),
             ("/", "search"),
             ("\u{21B5}", "play"),
@@ -1012,7 +1012,7 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
             ("q", "quit"),
         ]
     } else {
-        &[
+        vec![
             ("Tab", "focus"),
             ("/", "search"),
             ("Enter", "play"),
@@ -1023,10 +1023,23 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
             ("q", "quit"),
         ]
     };
+    // Discovery for the eligible plugin launch only: the same connection
+    // states that show the quiet Now Playing summary advertise the Agent
+    // Planets canvas. Hidden (standalone/disabled/ineligible) and unavailable
+    // states append nothing, so their footers stay byte-identical; the compact
+    // tier keeps its trimmed hint row.
+    if !compact
+        && matches!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected | AgentPulseConnection::Stale
+        )
+    {
+        hints.push(("a", "Agent Planets"));
+    }
 
     let mut spans = Vec::new();
     for (key, label) in hints {
-        spans.push(Span::styled(*key, accent));
+        spans.push(Span::styled(key, accent));
         spans.push(Span::styled(format!(" {label}  "), muted));
     }
     spans.push(network_span(app, theme));
@@ -2456,6 +2469,53 @@ mod tests {
         assert!(
             !text.contains("active"),
             "compact keeps no Agent Pulse line: {text}"
+        );
+    }
+
+    /// An eligible plugin launch whose integration is live, the way a
+    /// successful snapshot would produce it.
+    fn connected_agent_app() -> App {
+        app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )])
+    }
+
+    /// A disabled or ineligible launch: the integration never leaves
+    /// `Hidden`, even after the user pressed the (no-op) canvas toggle.
+    fn hidden_agent_app() -> App {
+        let mut app = base_app();
+        app.apply(Action::ToggleAgentOverlay);
+        app
+    }
+
+    #[test]
+    fn eligible_normal_footer_advertises_a_agent_planets() {
+        let app = connected_agent_app();
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            text.contains("a Agent Planets"),
+            "eligible normal footer must advertise the canvas: {text}"
+        );
+        let compact = buffer_text(&render_buffer(&app, 60, 16));
+        assert!(
+            !compact.contains("Agent Planets"),
+            "compact keeps its trimmed footer: {compact}"
+        );
+    }
+
+    #[test]
+    fn standalone_and_disabled_footer_do_not_advertise_agent_planets() {
+        assert!(
+            !buffer_text(&render_buffer(&base_app(), 120, 36)).contains("Agent Planets"),
+            "standalone footer must not advertise the canvas"
+        );
+        let disabled = hidden_agent_app();
+        assert!(
+            !buffer_text(&render_buffer(&disabled, 120, 36)).contains("Agent Planets"),
+            "disabled footer must not advertise the canvas"
         );
     }
 

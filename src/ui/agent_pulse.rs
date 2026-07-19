@@ -28,10 +28,10 @@
 //! stay frozen while state colors keep refreshing.
 //!
 //! Mouse input flows through [`hit_test`], which shares [`collage_layout`]
-//! with rendering so a click resolves against exactly the frame rectangles
-//! that were drawn (background, vignette, and shadow cells resolve nothing),
-//! and returns only the read-only selection [`Action`]; the CLI event loop
-//! owns applying it.
+//! and [`planet_geometry`] with rendering so a click resolves against
+//! exactly the planet body/ring cells that were drawn (scope, vignette,
+//! shadow, callout, and empty cells resolve nothing), and returns only the
+//! read-only selection [`Action`]; the CLI event loop owns applying it.
 //!
 //! Privacy: a selected frame may show the explicit Herdr agent `name` only.
 //! No pane id, workspace id, cwd, or agent type is ever rendered. All colors
@@ -45,6 +45,7 @@ use ratatui::{
     widgets::{Clear, Widget},
 };
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -486,8 +487,8 @@ struct PlanetGeometry {
     ring: Vec<(u16, u16)>,
     working_arc: Vec<(u16, u16)>,
     satellite: Option<(u16, u16)>,
-    /// Body and ring cells only: the future planet-only selection targets.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Body and ring cells only: the planet-only selection targets shared
+    /// by [`hit_test`] and the callout collision check.
     hit_cells: Vec<(u16, u16)>,
 }
 
@@ -674,12 +675,14 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 
 /// Pure mouse hit test for the Dual Phase Scope canvas.
 ///
-/// Maps a click inside a frame's drawn rectangle to the read-only
+/// Maps a click on a planet's drawn body or ring cells — the exact
+/// [`planet_geometry`] hit cells the renderer draws — to the read-only
 /// [`Action::SelectAgent`]; returns `None` whenever the canvas is closed, the
 /// integration is hidden, the connection is stale or unavailable, Signal View
-/// is active, or the click misses every frame. Background phase, vignette,
-/// and shadow cells resolve nothing. Overlapping frames resolve
-/// topmost-first, with the selected frame in front, matching draw order.
+/// is active, or the click misses every planet. Scope phase, vignette,
+/// shadow, callout, and empty cells resolve nothing. Overlapping planets
+/// resolve topmost-first, with the selected planet in front, matching draw
+/// order.
 /// `low_power` must mirror the render flag: it resolves against the
 /// App-captured frozen frame exactly as [`render_canvas`] draws it (hit
 /// testing is Connected-only, so the stale capture never applies here).
@@ -707,7 +710,8 @@ pub(super) fn hit_test(
     } else {
         app.viz()
     };
-    let layout = collage_layout(agents, frame, &[], collage_area(area));
+    let canvas = collage_area(area);
+    let layout = collage_layout(agents, frame, &[], canvas);
     let selected_index = app
         .selected_agent()
         .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
@@ -723,8 +727,11 @@ pub(super) fn hit_test(
                 .filter(|tile| Some(tile.index) != selected_index),
         );
     for tile in topmost {
-        if rect_contains(tile.rect, column, row) {
-            let view = agents.get(tile.index)?;
+        let Some(view) = agents.get(tile.index) else {
+            continue;
+        };
+        let geometry = planet_geometry(tile, canvas, view.status, frame);
+        if geometry.hit_cells.contains(&(column, row)) {
             return Some(Action::SelectAgent(view.id.clone()));
         }
     }
@@ -739,8 +746,8 @@ pub(super) fn hit_test(
 /// untouched. Clears the full area, then draws the title/count, the breathing
 /// vignette, the phosphor-persistence and dual phase-trace layers, each
 /// planet's shadow trails, round body, craters, and status orbit ring, the
-/// selected explicit-name label beside its planet, and a restrained footer
-/// hint. Stale renders the reducer-captured final composition dimmed under a
+/// selected explicit-name callout collision-aware beside its planet and
+/// above every planet, and a restrained footer hint. Stale renders the reducer-captured final composition dimmed under a
 /// `reconnecting` banner; Unavailable hides every planet and trace behind
 /// calm copy; `--low-power` renders the App-captured first frame so geometry
 /// stays frozen while state colors refresh. `now` is injected by the render
@@ -860,8 +867,10 @@ pub(super) fn render_canvas(
         }
     }
 
-    // Selected label: the explicit Herdr name only, placed beside its frame.
-    // An unnamed selection shows no label at all — never a pane id, cwd, or
+    // Selected callout: the explicit Herdr name and status only, placed
+    // collision-aware beside its planet and drawn after every planet so it
+    // stays visible on top even when the bounded fallback overlaps one. An
+    // unnamed selection shows no callout at all — never a pane id, cwd, or
     // agent-type fallback.
     if let Some(view) = app.selected_agent() {
         if let Some(name) = &view.name {
@@ -869,13 +878,28 @@ pub(super) fn render_canvas(
                 .and_then(|selected| layout.tiles.iter().find(|tile| tile.index == selected))
             {
                 let label = format!("{name} · {}", status_label(view.status));
-                let rect = selection_label_rect(tile.rect, area, label.chars().count() as u16);
+                let geometry = planet_geometry(tile, canvas, view.status, frame);
+                let others: Vec<PlanetGeometry> = layout
+                    .tiles
+                    .iter()
+                    .filter(|other| other.index != tile.index)
+                    .filter_map(|other| {
+                        let status = agents.get(other.index)?.status;
+                        Some(planet_geometry(other, canvas, status, frame))
+                    })
+                    .collect();
+                let placement = selection_callout(
+                    &geometry,
+                    others.iter(),
+                    canvas,
+                    label.chars().count() as u16,
+                );
                 let style = Style::default().fg(theme.foreground);
                 buf.set_stringn(
-                    rect.x,
-                    rect.y,
+                    placement.rect.x,
+                    placement.rect.y,
                     &label,
-                    rect.width as usize,
+                    placement.rect.width as usize,
                     with_stale(style, stale),
                 );
             }
@@ -982,20 +1006,94 @@ fn render_planet(
     }
 }
 
-/// Where the selected `name · status` label sits: the nearest in-bounds row
-/// below the selected frame, or the row above it when the footer row would
-/// collide, nudged left so the label stays inside the canvas.
-fn selection_label_rect(frame_rect: Rect, area: Rect, width: u16) -> Rect {
-    let footer_row = (area.y + area.height).saturating_sub(1);
-    let below = frame_rect.y + frame_rect.height;
-    let y = if below < footer_row {
-        below
-    } else {
-        frame_rect.y.saturating_sub(1).max(area.y)
+/// Where the selected `name · status` callout sits: its one-row rectangle
+/// and the selected planet's bound edge cell it hangs off.
+#[derive(Clone, Copy)]
+struct CalloutPlacement {
+    rect: Rect,
+    /// The selected planet's bound edge cell nearest the callout.
+    #[cfg_attr(not(test), allow(dead_code))]
+    anchor: (u16, u16),
+}
+
+/// Axis-aligned bounding rectangle of a planet's selectable body/ring
+/// cells. Every laid-out planet keeps at least its center body cell, so the
+/// empty fallback never fires for real tiles.
+fn hit_bounds(geometry: &PlanetGeometry) -> Rect {
+    let Some(&(first_x, first_y)) = geometry.hit_cells.first() else {
+        return Rect::default();
     };
-    let max_x = (area.x + area.width).saturating_sub(width).max(area.x);
-    let x = frame_rect.x.min(max_x);
-    Rect::new(x, y, width.min(area.width), 1)
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first_x, first_x, first_y, first_y);
+    for &(x, y) in &geometry.hit_cells {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    Rect::new(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+}
+
+/// Collision-aware placement for the selected `name · status` callout.
+///
+/// Candidates are one-row rectangles tried in fixed priority — right of the
+/// selected planet's body/ring bound, left, below, above — each kept inside
+/// `area` (the canvas, which already excludes the title and footer rows) and
+/// off every other planet's body/ring cells. When every in-bounds candidate
+/// collides, the clamped right candidate wins anyway; the caller draws the
+/// callout after every planet, so even that fallback stays visible on top.
+fn selection_callout<'a>(
+    selected: &PlanetGeometry,
+    others: impl Iterator<Item = &'a PlanetGeometry>,
+    area: Rect,
+    width: u16,
+) -> CalloutPlacement {
+    let bound = hit_bounds(selected);
+    let width = width.clamp(1, area.width);
+    let occupied: HashSet<(u16, u16)> = others
+        .flat_map(|other| other.hit_cells.iter().copied())
+        .collect();
+
+    let mid_x = bound.x + bound.width / 2;
+    let mid_y = bound.y + bound.height / 2;
+    let clamp_x = |x: i32| x.clamp(area.x as i32, (area.x + area.width - width) as i32) as u16;
+    let right = CalloutPlacement {
+        rect: Rect::new(clamp_x((bound.x + bound.width) as i32), mid_y, width, 1),
+        anchor: (bound.x + bound.width - 1, mid_y),
+    };
+
+    let mut candidates = Vec::new();
+    if bound.x as u32 + bound.width as u32 + width as u32 <= (area.x + area.width) as u32 {
+        candidates.push(right);
+    }
+    if bound.x >= area.x + width {
+        candidates.push(CalloutPlacement {
+            rect: Rect::new(bound.x - width, mid_y, width, 1),
+            anchor: (bound.x, mid_y),
+        });
+    }
+    let below = bound.y + bound.height;
+    if below < area.y + area.height {
+        candidates.push(CalloutPlacement {
+            rect: Rect::new(clamp_x(bound.x as i32), below, width, 1),
+            anchor: (mid_x, below - 1),
+        });
+    }
+    if bound.y > area.y {
+        candidates.push(CalloutPlacement {
+            rect: Rect::new(clamp_x(bound.x as i32), bound.y - 1, width, 1),
+            anchor: (mid_x, bound.y),
+        });
+    }
+
+    let collides = |placement: &&CalloutPlacement| {
+        (placement.rect.x..placement.rect.x + placement.rect.width)
+            .any(|x| occupied.contains(&(x, placement.rect.y)))
+    };
+    candidates
+        .iter()
+        .find(|candidate| !collides(candidate))
+        .copied()
+        .unwrap_or(right)
 }
 
 /// Draw the breathing theme-phosphor vignette ring for a normalized radius.
@@ -1201,6 +1299,17 @@ mod tests {
         app
     }
 
+    /// One unnamed agent whose raw ids and status label would be
+    /// recognizable if a fallback callout ever leaked them.
+    fn app_with_only_unnamed_agent() -> App {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::AgentSnapshot {
+            agents: vec![snap("workspace-1", "pane-1", None, AgentStatus::Working)],
+            now: Instant::now(),
+        });
+        app
+    }
+
     fn push_frame(app: &mut App, frame: VizFrame) {
         app.apply(Action::Audio(AudioEvent::Viz(frame)));
     }
@@ -1332,6 +1441,75 @@ mod tests {
 
     fn render_phase_and_cores(app: &App, low_power: bool) -> Buffer {
         render_collage_for(app, low_power, Instant::now())
+    }
+
+    /// The selectable body/ring cells of one laid-out tile — the same union
+    /// `planet_geometry` exposes as `hit_cells`.
+    fn tile_hit_cells(tile: &CollageTile, canvas: Rect) -> Vec<(u16, u16)> {
+        let mut cells = body_cells(tile.rect, canvas);
+        cells.extend(ring_cells(tile.rect, canvas, tile.seed));
+        cells
+    }
+
+    /// Render the canvas and hand back the hit-test-shaped layout beneath it.
+    fn render_collage_with_layout(app: &App, low_power: bool) -> (Buffer, CollageLayout) {
+        let buf = render_collage_for(app, low_power, Instant::now());
+        let frame = if low_power {
+            app.low_power_viz()
+                .map(|(frame, _)| frame)
+                .unwrap_or_else(|| app.viz())
+        } else {
+            app.viz()
+        };
+        let layout = collage_layout(app.active_agents(), frame, &[], collage_area(CANVAS));
+        (buf, layout)
+    }
+
+    /// The callout `render_canvas` places for the current named selection,
+    /// or `None` when nothing selectable/named is selected — computed with
+    /// exactly the renderer's `selection_callout` arguments.
+    fn selected_callout_placement(app: &App, layout: &CollageLayout) -> Option<CalloutPlacement> {
+        let view = app.selected_agent()?;
+        let name = view.name.as_ref()?;
+        let agents = app.active_agents();
+        let selected_index = agents.iter().position(|other| other.id == view.id)?;
+        let canvas = collage_area(CANVAS);
+        let tile = layout
+            .tiles
+            .iter()
+            .find(|tile| tile.index == selected_index)?;
+        let geometry = planet_geometry(tile, canvas, view.status, app.viz());
+        let others: Vec<PlanetGeometry> = layout
+            .tiles
+            .iter()
+            .filter(|other| other.index != selected_index)
+            .map(|other| planet_geometry(other, canvas, agents[other.index].status, app.viz()))
+            .collect();
+        let label = format!("{name} · {}", status_label(view.status));
+        Some(selection_callout(
+            &geometry,
+            others.iter(),
+            canvas,
+            label.chars().count() as u16,
+        ))
+    }
+
+    fn selected_callout_rect(app: &App, layout: &CollageLayout) -> Option<Rect> {
+        selected_callout_placement(app, layout).map(|placement| placement.rect)
+    }
+
+    /// Whether `callout` covers any planet's round body cells.
+    fn callout_intersects_any_planet_body(callout: Rect, layout: &CollageLayout) -> bool {
+        let canvas = collage_area(CANVAS);
+        layout.tiles.iter().any(|tile| {
+            body_cells(tile.rect, canvas)
+                .iter()
+                .any(|&(x, y)| rect_contains(callout, x, y))
+        })
+    }
+
+    fn cell_text(buf: &Buffer, x: u16, y: u16) -> String {
+        buf.cell((x, y)).unwrap().symbol().to_string()
     }
 
     // --- pure layout -------------------------------------------------------
@@ -1960,26 +2138,80 @@ mod tests {
         assert!(!text.contains("pane-1"), "pane ids never render");
         assert!(!text.contains("claude"), "raw pane details never render");
 
-        // The label hugs the selected frame instead of a fixed footer row.
+        // The label sits exactly at its collision-aware callout placement
+        // beside the selected planet instead of a fixed footer row.
         let layout = collage_layout(app.active_agents(), app.viz(), &[], collage_area(CANVAS));
+        let callout = selected_callout_rect(&app, &layout).unwrap();
+        let label_row = text
+            .lines()
+            .position(|line| line.contains("research · working"))
+            .unwrap() as u16;
+        assert_eq!(
+            label_row, callout.y,
+            "label row {label_row} must sit on its callout row {callout:?}"
+        );
+    }
+
+    #[test]
+    fn selected_named_planet_has_a_visible_callout_drawn_above_other_planets() {
+        let mut app = app_with_named_and_unnamed_agents();
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        let (buf, layout) = render_collage_with_layout(&app, false);
+        let placement =
+            selected_callout_placement(&app, &layout).expect("a named selection places a callout");
+        let callout = placement.rect;
+        assert!(
+            buffer_text(&buf).contains("research · working"),
+            "the callout text renders"
+        );
+        assert!(
+            !callout_intersects_any_planet_body(callout, &layout),
+            "the callout {callout:?} avoids every planet body"
+        );
+        assert_eq!(
+            cell_text(&buf, callout.x, callout.y),
+            "r",
+            "the callout draws at its placement, above every planet"
+        );
+
+        // The callout hangs off its own planet: the anchor sits on the
+        // selected planet's body/ring bound.
         let selected_index = app
             .active_agents()
             .iter()
             .position(|view| view.name.as_deref() == Some("research"))
             .unwrap();
-        let rect = layout
+        let tile = layout
             .tiles
             .iter()
             .find(|tile| tile.index == selected_index)
-            .unwrap()
-            .rect;
-        let label_row = text
-            .lines()
-            .position(|line| line.contains("research · working"))
-            .unwrap() as u16;
+            .unwrap();
+        let bound = hit_bounds(&planet_geometry(
+            tile,
+            collage_area(CANVAS),
+            AgentStatus::Working,
+            app.viz(),
+        ));
         assert!(
-            label_row == rect.y + rect.height || label_row + 1 == rect.y,
-            "label row {label_row} must sit adjacent to its frame {rect:?}"
+            rect_contains(bound, placement.anchor.0, placement.anchor.1),
+            "anchor {:?} must sit on the selected planet bound {bound:?}",
+            placement.anchor
+        );
+    }
+
+    #[test]
+    fn unnamed_planet_has_no_callout_and_no_private_fallback() {
+        let mut app = app_with_only_unnamed_agent();
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        assert!(app.selected_agent().is_some(), "sanity: something selected");
+        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(!text.contains("workspace-1"), "workspace ids never render");
+        assert!(!text.contains("pane-1"), "pane ids never render");
+        assert!(
+            !text.contains("working"),
+            "an unnamed selection leaks no status callout"
         );
     }
 
@@ -2125,17 +2357,17 @@ mod tests {
         let canvas = collage_area(CANVAS);
         let history: Vec<VizFrame> = app.viz_history().skip(1).cloned().collect();
         let layout = collage_layout(app.active_agents(), app.viz(), &history, canvas);
-        let inside_a_tile = |x: u16, y: u16| {
-            layout
-                .tiles
-                .iter()
-                .any(|tile| rect_contains(tile.rect, x, y))
-        };
+        let planet_cells: HashSet<(u16, u16)> = layout
+            .tiles
+            .iter()
+            .flat_map(|tile| tile_hit_cells(tile, canvas))
+            .collect();
+        let on_a_planet = |x: u16, y: u16| planet_cells.contains(&(x, y));
 
         let mut checked_background = false;
         for layer in &layout.background.layers {
             for cell in &layer.cells {
-                if !inside_a_tile(cell.x, cell.y) {
+                if !on_a_planet(cell.x, cell.y) {
                     checked_background = true;
                     assert!(
                         hit_test(CANVAS, cell.x, cell.y, false, &app).is_none(),
@@ -2148,7 +2380,7 @@ mod tests {
         }
         assert!(
             checked_background,
-            "sanity: some phase cell sat outside tiles"
+            "sanity: some phase cell sat outside planets"
         );
 
         let mut checked_shadow = false;
@@ -2156,7 +2388,7 @@ mod tests {
             for shadow in &tile.shadows {
                 for y in shadow.y..shadow.y + shadow.height {
                     for x in shadow.x..shadow.x + shadow.width {
-                        if !inside_a_tile(x, y) {
+                        if !on_a_planet(x, y) {
                             checked_shadow = true;
                             assert!(
                                 hit_test(CANVAS, x, y, false, &app).is_none(),
@@ -2167,7 +2399,76 @@ mod tests {
                 }
             }
         }
-        assert!(checked_shadow, "sanity: some shadow cell sat outside tiles");
+        assert!(
+            checked_shadow,
+            "sanity: some shadow cell sat outside planets"
+        );
+    }
+
+    #[test]
+    fn ring_or_body_click_selects_but_scope_callout_and_empty_cells_do_not() {
+        let mut app = collage_app(vec![
+            snap("ws", "p1", Some("one"), AgentStatus::Working),
+            snap("ws", "p2", Some("two"), AgentStatus::Idle),
+        ]);
+        push_frame(&mut app, phase_frame());
+        app.apply(Action::SelectNextAgent);
+        let canvas = collage_area(CANVAS);
+        let layout = collage_layout(app.active_agents(), app.viz(), &[], canvas);
+        let planet_cells: HashSet<(u16, u16)> = layout
+            .tiles
+            .iter()
+            .flat_map(|tile| tile_hit_cells(tile, canvas))
+            .collect();
+
+        let tile = &layout.tiles[0];
+        let &(x, y) = body_cells(tile.rect, canvas)
+            .first()
+            .expect("a planet keeps body cells");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_some(),
+            "a body cell selects"
+        );
+        let &(x, y) = ring_cells(tile.rect, canvas, tile.seed)
+            .first()
+            .expect("a roomy planet keeps ring cells");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_some(),
+            "a ring cell selects"
+        );
+
+        let (x, y) = layout
+            .background
+            .layers
+            .iter()
+            .flat_map(|layer| layer.cells.iter())
+            .map(|cell| (cell.x, cell.y))
+            .find(|cell| !planet_cells.contains(cell))
+            .expect("some scope cell sits outside every planet");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_none(),
+            "a scope-only cell never selects"
+        );
+
+        let callout =
+            selected_callout_rect(&app, &layout).expect("a named selection places a callout");
+        let (x, y) = (callout.x..callout.x + callout.width)
+            .map(|x| (x, callout.y))
+            .find(|cell| !planet_cells.contains(cell))
+            .expect("the callout keeps cells off every planet");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_none(),
+            "a callout-only cell never selects"
+        );
+
+        let (x, y) = (canvas.y..canvas.y + canvas.height)
+            .flat_map(|y| (canvas.x..canvas.x + canvas.width).map(move |x| (x, y)))
+            .find(|cell| !planet_cells.contains(cell) && !rect_contains(callout, cell.0, cell.1))
+            .expect("the canvas keeps empty cells");
+        assert!(
+            hit_test(CANVAS, x, y, false, &app).is_none(),
+            "an empty cell never selects"
+        );
     }
 
     #[test]
@@ -2216,35 +2517,73 @@ mod tests {
         );
         push_frame(&mut app, frame(0.9, vec![0.9; 16]));
         let canvas = collage_area(CANVAS);
-        let moved = collage_layout(app.active_agents(), app.viz(), &[], canvas).tiles[0].rect;
+        let live_layout = collage_layout(app.active_agents(), app.viz(), &[], canvas);
+        let moved = &live_layout.tiles[0];
         let (captured, _) = app.low_power_viz().expect("low power captured a frame");
-        let frozen = &collage_layout(app.active_agents(), captured, &[], canvas).tiles[0];
-        let base = frozen.rect;
-        assert_eq!(base, frozen.base_rect, "the quiet capture sits on base");
-        assert_ne!(moved, base, "sanity: a loud frame moves the tile off base");
-
-        // The frozen tile's own cells still select in low power.
-        let (x, y) = (base.x + base.width / 2, base.y + base.height / 2);
-        assert!(
-            hit_test(CANVAS, x, y, true, &app).is_some(),
-            "a drawn low-power tile cell selects"
+        let frozen_layout = collage_layout(app.active_agents(), captured, &[], canvas);
+        let frozen = &frozen_layout.tiles[0];
+        assert_eq!(
+            frozen.rect, frozen.base_rect,
+            "the quiet capture sits on base"
+        );
+        assert_ne!(
+            moved.rect, frozen.rect,
+            "sanity: a loud frame moves the tile off base"
         );
 
-        // A cell only the audio-moved rectangle covers holds no drawn tile in
+        // The frozen planet's own body/ring cells still select in low power.
+        let frozen_cells = tile_hit_cells(frozen, canvas);
+        let &(x, y) = frozen_cells.first().expect("the frozen planet has cells");
+        assert!(
+            hit_test(CANVAS, x, y, true, &app).is_some(),
+            "a drawn low-power planet cell selects"
+        );
+
+        // A cell only the audio-moved planet covers holds no drawn planet in
         // low power, so it must resolve nothing there.
+        let frozen_set: HashSet<(u16, u16)> = frozen_cells.into_iter().collect();
         let mut checked = false;
-        for y in moved.y..moved.y + moved.height {
-            for x in moved.x..moved.x + moved.width {
-                if !rect_contains(base, x, y) {
-                    checked = true;
-                    assert!(
-                        hit_test(CANVAS, x, y, true, &app).is_none(),
-                        "an undrawn cell ({x}, {y}) must resolve nothing in low power"
-                    );
-                }
+        for &(x, y) in &tile_hit_cells(moved, canvas) {
+            if !frozen_set.contains(&(x, y)) {
+                checked = true;
+                assert!(
+                    hit_test(CANVAS, x, y, true, &app).is_none(),
+                    "an undrawn cell ({x}, {y}) must resolve nothing in low power"
+                );
             }
         }
-        assert!(checked, "sanity: the moved rect exposes cells off base");
+        assert!(
+            checked,
+            "sanity: the moved planet exposes cells off the frozen planet"
+        );
+    }
+
+    #[test]
+    fn low_power_selects_frozen_planet_cells_but_scope_cells_do_nothing() {
+        let app = low_power_app_captured_from(0.3, 0.9);
+        let canvas = collage_area(CANVAS);
+        let (captured, _) = app.low_power_viz().expect("policy captured a frame");
+        let layout = collage_layout(app.active_agents(), captured, &[], canvas);
+        let cells = tile_hit_cells(&layout.tiles[0], canvas);
+        let &(x, y) = cells.first().expect("the frozen planet keeps cells");
+        assert!(
+            hit_test(CANVAS, x, y, true, &app).is_some(),
+            "a frozen body/ring cell selects in low power"
+        );
+
+        let planet_cells: HashSet<(u16, u16)> = cells.into_iter().collect();
+        let (x, y) = layout
+            .background
+            .layers
+            .iter()
+            .flat_map(|layer| layer.cells.iter())
+            .map(|cell| (cell.x, cell.y))
+            .find(|cell| !planet_cells.contains(cell))
+            .expect("the captured scope keeps cells off the planet");
+        assert!(
+            hit_test(CANVAS, x, y, true, &app).is_none(),
+            "a scope-only cell selects nothing in low power"
+        );
     }
 
     // --- quiet summary ------------------------------------------------------

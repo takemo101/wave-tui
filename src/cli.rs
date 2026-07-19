@@ -2415,8 +2415,8 @@ mod tests {
     }
 
     /// Scan the open Kinetic Collage canvas for the first cell the pure hit
-    /// test resolves to a tile, so mouse tests target the actual drawn tile
-    /// rectangles instead of assuming any particular collage shape.
+    /// test resolves to a planet, so mouse tests target the actual drawn
+    /// planet body/ring cells instead of assuming any particular shape.
     fn first_collage_tile_hit(app: &App) -> (u16, u16) {
         let area = canvas_area();
         for row in 0..area.height {
@@ -2476,8 +2476,8 @@ mod tests {
         ))));
         let area = canvas_area();
 
-        // A discriminating cell: covered by an audio-moved tile, but empty in
-        // the frozen low-power collage.
+        // A discriminating cell: covered by an audio-moved planet's body or
+        // ring, but empty in the frozen low-power collage.
         let moved_only = (0..area.height)
             .flat_map(|row| (0..area.width).map(move |column| (column, row)))
             .find(|&(column, row)| {

@@ -121,9 +121,17 @@ Implications:
 
 The optional Herdr Agent Pulse uses a one-line **quiet count** in normal
 layouts and a full-screen **Dual Phase Scope** canvas as its only rich
-surface. The current presentation decision is
+surface. The current agent presentation decision is
+`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`
+(approved 2026-07-19), which supersedes the planet scale/surface
+presentation of
+`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`
+(whose ring state language, selected callout, and privacy/selection
+contracts remain current), which in turn superseded the square agent-frame
+presentation of the still-current Dual Phase Scope decision
 `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
-(approved 2026-07-19), which supersedes the presentation decisions of the
+(approved 2026-07-19). The Lissajous Scope design superseded the
+presentation decisions of the
 interim `docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`
 (Kinetic Collage album-art tiles over a scrolling waveform/FFT trace), which
 in turn superseded the original
@@ -136,8 +144,8 @@ Orbit ring canvas), and the interim
 modal/list/card/completed-history surfaces remain removed; the 2026-07-16
 design's local-only and read-only privacy boundaries remain in force. Agent
 Pulse opens a full-screen Dual Phase Scope with two real-audio Lissajous
-traces behind calm agent frames — an oscilloscope, never a work-management
-dashboard.
+traces behind small theme-colored Pocket Planets — an oscilloscope, never a
+work-management dashboard.
 
 Implications:
 
@@ -163,40 +171,48 @@ Implications:
   documented 29-sample lag, and the secondary trace always uses a distinct
   97-sample mono lag, so every supported stream draws a real Lissajous
   figure.
-- **Agent frames with status cores.** Every agent is one small, stable
-  frame whose position derives deterministically from the agent's private
-  identity. Agent frames keep state-colored edges; Working has an
-  audio-driven spinner core (`◜◝◞◟`, advanced only by newly received
-  played-audio phase data), while Idle (`◌`), Blocked (`×`), and Done (`·`)
-  remain stationary. Dense terminals shrink frame size and spacing rather
-  than grouping or omitting frames.
+- **Pocket Planets with Banded Worlds surfaces.** Every agent is one small,
+  stable planet whose position derives deterministically from the agent's
+  private identity. Planets are capped at a 9×5 body with an optional
+  one-cell ring overhang, so the scope stays readable around and between
+  them. Each private identity owns a stable Banded gas, Ice-cap, or
+  Cratered-rock surface painted with two stable active-theme spectrum
+  colors; the surface is identity language only and never signals status,
+  audio, time, or selection. Dense terminals reduce body+ring+surface to
+  body+ring, then body, then one selectable body cell rather than grouping
+  or omitting planets.
 - **Music-driven, not timer-driven.** RMS drives the breathing
-  theme-phosphor vignette, gentle trace brightness, and frame motion: RMS
-  plus each frame's assigned FFT band moves its rectangle with a small
-  bounded scale/offset and adds a one- or two-layer soft shadow trail drawn
-  from real recent visualizer frames. Identical visualizer data at
+  theme-phosphor vignette, gentle trace brightness, and planet motion: RMS
+  plus each planet's assigned FFT band moves its whole body and ring with a
+  small bounded transform and adds a one- or two-layer soft shadow trail
+  drawn from real recent visualizer frames. Identical visualizer data at
   different times renders identical cells; silence leaves the scope dim and
   still by construction — nothing animates on a clock. Low-power mode
-  freezes trace, persistence, frame, shadow, and spinner geometry — using
-  the first audible visualizer frame captured after startup (until audio
-  becomes audible, the live frame renders) — while state edge/core colors
-  still update.
-- **Restrained signal color.** State reads from the frame edge and its core:
-  working (playing color) glows strongest, blocked uses the error color for
-  edge and core; idle, done, and unknown stay muted, and done frames stay
-  muted/dim until their snapshot removes them. Stale freezes the last live
-  scope composition dimmed under a single `stale · reconnecting` banner;
-  unavailable hides every frame and trace behind one calm
-  `agents · unavailable · retrying` line.
-- **Selected-name-only privacy.** Selecting a frame (`Tab`/`Shift+Tab`/
-  arrows/`j`/`k`, or a click on its cells) brings it forward and shows only
-  `name · status` near that frame when the agent has an explicit Herdr
-  `name`; an unnamed selection shows no label at all. Pane ids, workspace
-  ids, working directories, and agent types never render.
+  freezes trace, persistence, planet body/ring, shadow, and Working-arc
+  geometry — using the first audible visualizer frame captured after
+  startup (until audio becomes audible, the live frame renders) — while
+  fresh agent snapshots may still update the per-status ring treatment and
+  colors.
+- **State on the ring, never a cross.** Working carries a bright arc on its
+  complete playing-colored orbit, advanced only by newly played audio data;
+  Idle keeps a still muted ring; Blocked draws an error-colored broken
+  orbit with a stable gap — never a cross glyph; Done dims its body and
+  ring and keeps a small satellite until its snapshot removes it; Unknown
+  stays muted without a satellite. The body palette never encodes status.
+  Stale freezes the last live scope composition dimmed under a single
+  `stale · reconnecting` banner; unavailable hides every planet and trace
+  behind one calm `agents · unavailable · retrying` line.
+- **Selected-name-only privacy.** Selecting a planet (`Tab`/`Shift+Tab`/
+  arrows/`j`/`k`, or a click on its body/ring cells) brings it forward and
+  shows only `name · status` in a top-layer collision-aware callout beside
+  that planet when the agent has an explicit Herdr `name`; an unnamed
+  selection shows no label at all. Pane ids, workspace ids, working
+  directories, and agent types never render.
 - **Player-first input.** The canvas consumes search and station
   navigation/selection keys, but the documented global player shortcuts —
   `Space`, `+`/`-`, `f`, `t`, `v`, and `z` (Signal View) — fall through with
-  their exact normal semantics. Mouse clicks only select frames, and
+  their exact normal semantics. Mouse clicks only select planets (their
+  body/ring cells), and
   selection — mouse and keyboard alike — resolves only while the connection
   is live; during stale/unavailable states the frozen composition's
   selection cannot change (`a`/`Esc` still close the canvas) — selection

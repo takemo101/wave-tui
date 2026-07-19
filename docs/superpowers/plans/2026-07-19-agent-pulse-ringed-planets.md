@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical note (2026-07-19):** Tasks 1 and 2 shipped as commits
+> `8862066` ("feat: render Agent Pulse planets") and `3761834`
+> ("fix: show selected Agent Pulse details"). Task 3's documentation pass
+> was never executed under this plan: before it ran, the planet scale and
+> surface presentation was superseded by
+> [`2026-07-19-agent-pulse-pocket-planets-design.md`](../specs/2026-07-19-agent-pulse-pocket-planets-design.md)
+> and its plan
+> [`2026-07-19-agent-pulse-pocket-planets.md`](2026-07-19-agent-pulse-pocket-planets.md),
+> whose Task 2 owns the current-docs synchronization instead. This plan is
+> retained unmodified below as the historical implementation record; its
+> checkboxes were never ticked during execution.
+
 **Goal:** Keep the current Dual Phase Scope intact while replacing square agent frames with selectable, stateful Ringed Planets and guaranteed selected-agent callouts.
 
 **Architecture:** Change only Agent Pulse's pure UI presentation and its current-design documentation. `CollageTile` continues to supply deterministic private-identity placement and real audio transforms; `ui::agent_pulse` derives circular body, crater, orbit, satellite, and callout cells from each tile. The already-shipped audio/model/App/CLI Lissajous pipeline remains untouched.

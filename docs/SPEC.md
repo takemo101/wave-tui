@@ -480,11 +480,12 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
 - The Agent Pulse Dual Phase Scope renders statically in low-power mode:
-  phase-trace/persistence positions, frame geometry, shadow trails, and the
-  Working spinner orientation are frozen while state edge/core colors still
-  refresh. The frozen geometry is captured from the first *audible*
-  visualizer frame after startup (RMS above the silence threshold with real
-  phase data); until such a frame arrives, low power renders the live frame.
+  phase-trace/persistence positions, planet body/ring geometry, shadow
+  trails, and the Working arc position are frozen while fresh agent
+  snapshots may still update the per-status ring treatment and colors. The
+  frozen geometry is captured from the first *audible* visualizer frame
+  after startup (RMS above the silence threshold with real phase data);
+  until such a frame arrives, low power renders the live frame.
 
 ### Herdr Agent Pulse (Optional Integration)
 
@@ -493,11 +494,16 @@ plugin, shows a **read-only Agent Pulse**: the live status of the AI coding
 agents visible on that Herdr session's local control socket, presented as
 ambient context beside radio playback. The integration design (packaging,
 eligibility, monitoring) is
-`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; its
-presentation is superseded by the approved
+`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`. The canvas
+background remains the Dual Phase Scope of
 `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
-(which in turn supersedes the interim Kinetic Collage presentation in
-`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`).
+(which superseded the interim Kinetic Collage presentation in
+`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`);
+the agent presentation is the Pocket Planets refinement in
+`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`,
+which supersedes the planet scale/surface presentation of
+`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`
+(itself superseding the Lissajous design's square agent frames).
 This section records the product behavior as implemented.
 
 This is an optional Herdr integration, not a plugin system inside `wave-tui`,
@@ -564,8 +570,8 @@ enabled.
 | Condition | Wide/Medium summary | Canvas (`a`) |
 | --- | --- | --- |
 | Connected | `● n active` count | Live Dual Phase Scope (`agents · none active` when empty) |
-| First failed poll | Count dims | Last live scope (traces/persistence/frames/cores/trails) frozen, dimmed, `stale · reconnecting` banner |
-| ≥ 15 seconds without success | Summary disappears | Frames and traces hidden behind `agents · unavailable · retrying` |
+| First failed poll | Count dims | Last live scope (traces/persistence/planets/rings/trails) frozen, dimmed, `stale · reconnecting` banner |
+| ≥ 15 seconds without success | Summary disappears | Planets and traces hidden behind `agents · unavailable · retrying` |
 | Fresh snapshot | Live count | Live scope |
 
 Socket errors, malformed replies, and timeouts are recoverable: they never
@@ -592,27 +598,34 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   breathing theme-phosphor vignette spreads with RMS. Nothing advances from
   wall-clock time: identical visualizer data renders identical cells, and
   silence leaves the scope dim and still.
-- The canvas renders one small, stable frame rectangle per agent, laid out
+- The canvas renders one small, stable Pocket Planet per agent, laid out
   deterministically from the agent's private workspace-qualified identity so
-  frames stay recognizable and never swap positions. Agent frames keep
-  state-colored edges; Working has an audio-driven spinner core (`◜◝◞◟`,
-  whose orientation advances only from newly received played-audio phase
-  data), while Idle (`◌`), Blocked (`×`), and Done (`·`) remain stationary.
-  RMS combined with each frame's assigned FFT band moves its rectangle with
-  a small bounded scale/offset and adds a one- or two-layer soft shadow
-  trail drawn from real recent visualizer frames. Dense terminals shrink
-  frame size and spacing rather than omitting frames; every agent keeps one
-  visible frame.
-- State colors come from the active theme only: working edges glow strongest
-  (the playing color), blocked uses the error color for edge and core;
-  idle/done/unknown stay muted and a done frame stays muted/dim until its
-  snapshot omits it. In `--low-power`, phase-trace/persistence positions,
-  frame geometry, shadow trails, and spinner orientation are frozen (from
-  the first audible frame captured after startup) while state edge/core
-  colors still update.
-- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a frame, bringing it forward.
-  A selected named agent shows only `name · status`, placed near its frame;
-  an unnamed selection shows no label. Search (`/`) and station
+  planets stay recognizable and never swap positions. Planets are capped at
+  a 9×5 body with an optional one-cell ring overhang. Each private identity
+  owns a stable Banded gas, Ice-cap, or Cratered-rock surface using
+  active-theme colors (two stable theme spectrum positions per identity);
+  the surface is identity language only, never a status, audio, time, or
+  selection signal. RMS combined with each planet's assigned FFT band moves
+  the whole body and ring with a small bounded transform and adds a one- or
+  two-layer soft shadow trail drawn from real recent visualizer frames.
+  Dense terminals reduce body+ring+surface to body+ring, then body, then
+  one selectable body cell — never omitting an agent.
+- State remains on the ring and uses active-theme colors only: Working has
+  a complete playing-colored orbit with a bright arc advanced only by newly
+  received played-audio phase data (never a clock); Idle keeps a still
+  muted ring; Blocked draws a `theme.error` broken orbit with a stable gap
+  and never a cross glyph; Done dims its body and ring and keeps a small
+  satellite until its snapshot omits it; Unknown stays muted without a
+  satellite. In `--low-power`, phase-trace/persistence positions, planet
+  body/ring geometry, shadow trails, and the Working arc position are
+  frozen (from the first audible frame captured after startup) while fresh
+  agent snapshots may still update the per-status ring treatment and
+  colors.
+- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a planet, bringing it forward.
+  A selected named agent shows only `name · status` in a top-layer callout
+  beside its planet — the callout picks an in-bounds candidate side that
+  collides with no other planet where available and is drawn above every
+  planet; an unnamed selection shows no label. Search (`/`) and station
   navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed, so
   canvas input can never play a station or move station selection.
 - The documented global player shortcuts fall through with their exact normal
@@ -621,8 +634,9 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   (favorite for the station-list selection), `t` (theme), `v` (visualizer
   mode), and `z` (Signal View, which replaces the canvas surface).
 - Mouse capture is enabled only for eligible plugin launches, solely to feed
-  frame-selection clicks; background trace, vignette, and shadow cells
-  resolve nothing. Clicks resolve against the frame geometry actually drawn
+  planet-selection clicks; only a planet's body/ring cells select —
+  background trace, vignette, shadow, callout, and empty cells resolve
+  nothing. Clicks resolve against the planet geometry actually drawn
   (including low-power frozen geometry) and only while the connection is
   `Connected`. During stale/unavailable states selection is frozen entirely —
   mouse clicks and keyboard selection both change nothing, while `a`/`Esc`
@@ -637,7 +651,7 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 - Every agent reported by the plugin invocation's local Herdr socket is
   shown, across that session's workspaces; other Herdr sessions are never
   discovered.
-- Only a selected frame's explicit Herdr `name` is ever rendered. There is
+- Only a selected planet's explicit Herdr `name` is ever rendered. There is
   no fallback label; pane ids, workspace ids, working directories, and agent
   types never appear on screen.
 - Agent activity changes colors/low-rate rendering only — never audio,
@@ -779,7 +793,7 @@ tier, and built-in retry candidates stay visible
 
 ### Herdr Agent Pulse — Verification Status
 
-Status as of the Lissajous Scope documentation pass (2026-07-19).
+Status as of the Pocket Planets documentation pass (2026-07-19).
 
 **Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
 `cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
@@ -802,7 +816,7 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   (29-sample primary fallback, 97-sample secondary) — with no scrolling
   waveform substitution (`model`, `audio::output`, `audio::analyzer`);
 - `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
-  the canvas key gate (frame selection, suppressed search/station
+  the canvas key gate (planet selection, suppressed search/station
   navigation, preserved global player shortcuts, Signal View delegation),
   and monitor/mouse-capture/click routing including the low-power geometry
   path (`cli`);
@@ -812,14 +826,18 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   still update colors, and disabling the policy clears the capture (`app`);
 - summary visibility per tier and connection state, full-screen canvas
   coverage, two centered clock-free Dual Phase Scope traces with dim
-  phosphor persistence, deterministic per-identity frame layout,
-  one-frame-per-agent density, RMS/FFT-driven frame motion and shadow
-  trails, silence stillness, audio-driven Working spinner cores versus
-  stationary Idle/Blocked/Done/Unknown cores, stale/low-power frozen
-  geometry, state edge glow and `theme.error` Blocked cores,
-  selected-name-only privacy with near-frame label placement, stale
-  freeze/unavailable rendering, and frame-only hit testing (`ui`,
-  `ui::agent_pulse`).
+  phosphor persistence, deterministic per-identity planet layout with the
+  9×5 body cap and one-cell ring overhang, stable identity-seeded Banded
+  gas/Ice-cap/Cratered-rock surfaces and theme-spectrum palette pairs,
+  one-selectable-planet-per-agent density, RMS/FFT-driven bounded planet
+  motion and shadow trails, silence stillness, the audio-driven Working
+  ring arc versus still Idle/Blocked/Done/Unknown rings, the `theme.error`
+  broken Blocked orbit with no cross glyph, the dim Done satellite,
+  stale/low-power frozen geometry with status ring treatment still
+  refreshing, selected-name-only privacy with direct candidate-branch
+  coverage of the top-layer collision-aware `name · status` callout, stale
+  freeze/unavailable rendering, and planet-only (body/ring) hit testing
+  (`ui`, `ui::agent_pulse`).
 
 **Manual checklist (NOT run in this pass).** This documentation pass was
 performed without a Herdr 0.7.0+ installation, a real terminal session, or
@@ -835,37 +853,41 @@ the release as fully validated:
 - [ ] Play a real **stereo** stream with the canvas open and judge the live
       Dual Phase Scope: the primary trace draws a left/right phase portrait,
       the secondary trace differs from it, dim phosphor persistence echoes
-      recent motion, frames breathe with RMS/band energy and grow soft
-      shadow trails, Working spinner cores advance with the music, and
+      recent motion, planets breathe with RMS/band energy and grow soft
+      shadow trails, Working ring arcs advance with the music, and
       silence leaves a dim, still scope with no timer motion — never a
       scrolling waveform.
 - [ ] Play a real **mono** stream and confirm both lagged-mono traces stay
       non-diagonal, distinct oscilloscope figures rather than a flat line or
       a scrolling waveform.
-- [ ] Cycle all six themes on the canvas and confirm traces, vignette, frame
-      edges, and status cores stay legible on each.
+- [ ] Cycle all six themes on the canvas and confirm traces, vignette,
+      Banded Worlds planet surfaces, and status rings stay legible on each.
 - [ ] With agents across multiple workspaces of the same Herdr session,
       confirm `● n active` counts them all and the canvas keeps one
-      recognizable frame per agent at stable positions, including dense
-      agent counts and after resizes.
-- [ ] Select frames with keyboard and mouse clicks; confirm clicks land only
-      on frame cells, the selected frame comes forward, only explicit
-      `name · status` labels render near the frame, and unnamed agents show
-      no label.
+      recognizable pocket planet per agent at stable positions — bodies
+      capped at 9×5 with at most a one-cell ring overhang — including dense
+      agent counts (where planets reduce to body+ring, body, then one body
+      cell without omitting an agent) and after resizes.
+- [ ] Select planets with keyboard and mouse clicks; confirm clicks land
+      only on planet body/ring cells, the selected planet comes forward,
+      only an explicit `name · status` callout renders beside the planet on
+      top of the field (including its all-candidates-collide fallback
+      staying readable), and unnamed agents show no label.
 - [ ] Resize the tab through Wide/Medium/Compact; confirm the summary hides
       in Compact while `a` still opens the full-screen canvas, and the
       canvas redraws cleanly across sizes.
 - [ ] Temporarily remove socket access; confirm the dimmed count and frozen
-      `stale · reconnecting` canvas (traces, frames, cores, and trails
+      `stale · reconnecting` canvas (traces, planets, rings, and trails
       frozen and dimmed), the 15-second `agents · unavailable · retrying`
-      state hiding every frame and trace, and full recovery when the socket
+      state hiding every planet and trace, and full recovery when the socket
       returns — with playback unaffected throughout, and mouse clicks and
       keyboard selection changing nothing while stale/unavailable.
 - [ ] Detach and reattach the Herdr session; confirm the tab process and
       playback follow Herdr's normal pane lifecycle.
 - [ ] Run `wave-tui --low-power` inside Herdr and confirm frozen trace,
-      persistence, frame, shadow, and spinner geometry while state
-      edge/core colors still refresh — including that a launch into silence
+      persistence, planet body/ring, shadow, and Working-arc geometry while
+      fresh snapshots still update status ring treatment and
+      colors — including that a launch into silence
       renders the live frame until audio becomes audible, after which the
       first audible frame stays the frozen geometry — and that clicks still
       select against the frozen geometry.

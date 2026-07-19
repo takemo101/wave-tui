@@ -41,8 +41,8 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   plugin (Herdr 0.7.0+), a quiet, read-only `● n active` count of the AI
   coding agents on the local Herdr socket appears in Wide/Medium layouts, and
   `a` opens a full-screen **Dual Phase Scope** canvas: two real-audio
-  Lissajous traces behind calm agent frames with state-colored edges and
-  status cores. It never reads agent output, never controls panes, and
+  Lissajous traces behind small theme-colored Pocket Planets whose orbit
+  rings carry agent status. It never reads agent output, never controls panes, and
   standalone launches are completely unchanged (see
   [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
@@ -296,34 +296,42 @@ agent reported by the session's socket is shown.
   with RMS. Nothing animates on a timer: silence (or no audio) leaves the
   scope dim and still. With no agents the canvas shows a calm
   `agents · none active`.
-- Every agent is one small, stable frame whose position derives from the
-  agent's private identity. Agent frames keep state-colored edges; Working
-  has an audio-driven spinner core (`◜◝◞◟`, advanced only by newly played
-  audio data, never a clock), while Idle (`◌`), Blocked (`×`), and Done
-  (`·`) remain stationary. Working edges glow strongest (the playing
-  color), Blocked uses the error color, and idle/done/unknown stay muted; a
-  done frame stays muted/dim until the next snapshot omits it. RMS and each
-  frame's assigned FFT band still move its rectangle with a small bounded
-  scale/offset and soft shadow trails drawn from real recent visualizer
-  frames. Dense terminals shrink frame size and spacing rather than hiding
-  frames — every agent keeps one visible frame.
-- Selecting a frame brings it forward and shows only `name · status` for
-  agents with an explicit Herdr `name`, placed near that frame; an unnamed
-  selection shows no label at all. Pane ids, workspace ids, working
-  directories, and agent types never render.
-- In `--low-power`, trace, persistence, frame, shadow, and spinner geometry
-  are frozen while state edge/core colors may still refresh. The frozen
-  geometry is captured from the first *audible* visualizer frame after
-  startup (RMS above the silence threshold with real phase data); until
-  audio becomes audible, low power simply renders the current live frame.
+- Every agent is one small, stable **Pocket Planet** whose position derives
+  from the agent's private identity. Planets are capped at a 9×5 body with
+  an optional one-cell ring overhang, so the scope stays readable around
+  and between them. Each private identity owns a stable Banded gas,
+  Ice-cap, or Cratered-rock surface using active-theme colors; the surface
+  is identity language only and never signals status, audio, time, or
+  selection. State remains on the ring: Working carries a bright arc on its
+  complete playing-colored orbit (advanced only by newly played audio data,
+  never a clock), Idle keeps a still muted ring, Blocked shows an
+  error-colored broken orbit with a stable gap (no cross glyph), Done dims
+  and keeps a small satellite until the next snapshot omits it, and Unknown
+  stays muted without a satellite. RMS and each planet's assigned FFT band
+  still move the whole body and ring with a small bounded transform and
+  soft shadow trails drawn from real recent visualizer frames. Dense
+  terminals reduce body+ring+surface to body+ring, then body, then one
+  selectable body cell — never omitting an agent.
+- Selecting a planet brings it forward and shows only `name · status` in a
+  small top-layer callout beside that planet for agents with an explicit
+  Herdr `name`; the callout picks an in-bounds non-colliding side where
+  available and is never a click target. An unnamed selection shows no
+  label at all. Pane ids, workspace ids, working directories, and agent
+  types never render.
+- In `--low-power`, trace, persistence, planet body/ring, shadow, and
+  Working-arc geometry are frozen while fresh agent snapshots may still
+  update the per-status ring treatment and colors. The frozen geometry is
+  captured from the first *audible* visualizer frame after startup (RMS
+  above the silence threshold with real phase data); until audio becomes
+  audible, low power simply renders the current live frame.
 
 ### Canvas controls
 
 | Key / input        | Action                                   |
 | ------------------ | ---------------------------------------- |
 | `a` / `Esc`        | close the canvas                         |
-| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select an agent frame  |
-| mouse click        | select an agent frame (its cells only)   |
+| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select an agent planet |
+| mouse click        | select a planet (its body/ring cells only) |
 | `Space`, `+`/`-`, `f`, `t`, `v`, `z` | normal player behavior |
 | `q` / `Ctrl+C`     | quit the app                             |
 
@@ -347,10 +355,10 @@ socket. Failures are recoverable and never interrupt playback:
 
 - After the first failed poll, the `● n active` count dims and the canvas
   freezes the last live scope composition — phase traces, persistence,
-  frames, cores, and shadow trails — dimmed, under a `stale · reconnecting`
+  planets, rings, and shadow trails — dimmed, under a `stale · reconnecting`
   banner.
 - After 15 seconds without a successful response, the summary disappears and
-  the canvas hides every frame and trace behind
+  the canvas hides every planet and trace behind
   `agents · unavailable · retrying`.
 - Polling continues; a fresh successful snapshot restores the live view.
 
@@ -365,7 +373,7 @@ Agent Pulse is strictly observational:
 - It shows every agent reported by the plugin invocation's local Herdr
   socket, across that session's workspaces; it never discovers other Herdr
   sessions or opens another socket.
-- Only a selected frame's explicit Herdr `name` is ever rendered; there is no
+- Only a selected planet's explicit Herdr `name` is ever rendered; there is no
   fallback label and no pane/workspace/cwd/agent-type detail on screen.
 - It never changes volume, theme, station, playback, search, or the
   visualizer, and never emits OS notifications.
@@ -488,8 +496,14 @@ for findings and caveats.
 - [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
   — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
   presentation superseded by the Lissajous Scope design)
+- [`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md)
+  — Agent Pulse Pocket Planets design (current agent presentation decision)
+- [`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md)
+  — Agent Pulse Ringed Planets design (state/callout contracts current;
+  planet scale/surface presentation superseded by Pocket Planets)
 - [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
-  — Agent Pulse Lissajous Scope design (current presentation decision)
+  — Agent Pulse Lissajous Scope design (current Dual Phase Scope decision;
+  its agent-frame presentation is superseded by the planet designs)
 - [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
   — Agent Pulse Kinetic Collage design (historical; presentation superseded
   by the Lissajous Scope design)
@@ -503,6 +517,11 @@ for findings and caveats.
   — Kinetic Collage implementation plan
 - [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md)
   — Lissajous Scope implementation plan
+- [`docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md)
+  — Ringed Planets implementation plan (historical; docs pass superseded by
+  Pocket Planets)
+- [`docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md)
+  — Pocket Planets implementation plan (current)
 
 ## Verification
 

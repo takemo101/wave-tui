@@ -34,7 +34,7 @@
 - Produces: private `PlanetSurface::{BandedGas, IceCap, CrateredRock}`, `PlanetPalette { base, accent }`, `pocket_rect`, `planet_surface`, `planet_palette`, and `surface_cells`.
 - Preserves: `phase_layers`, `planet_geometry` ring/hit-cell semantics, `render_canvas` draw order, status ring behavior, and existing input actions.
 
-- [ ] **Step 1: Add failing scale/surface/callout-branch tests.**
+- [x] **Step 1: Add failing scale/surface/callout-branch tests.**
 
 In `src/ui/agent_pulse.rs` tests, add fixtures for three identities and these tests:
 
@@ -77,7 +77,7 @@ fn selection_callout_exercises_left_below_above_and_all_collide_fallback() {
 
 The callout test must build synthetic `PlanetGeometry` values whose `hit_cells` deliberately occupy each preceding candidate row. It must not derive the expected answer by calling `selection_callout` through the render helper.
 
-- [ ] **Step 2: Run focused tests and verify failure.**
+- [x] **Step 2: Run focused tests and verify failure.**
 
 Run:
 
@@ -90,7 +90,7 @@ cargo test ui::agent_pulse::tests::selection_callout_exercises
 
 Expected: FAIL because pocket geometry, surface types/palettes, and synthetic candidate fixtures do not exist.
 
-- [ ] **Step 3: Cap body geometry before ellipse/ring calculation.**
+- [x] **Step 3: Cap body geometry before ellipse/ring calculation.**
 
 Add constants and a helper:
 
@@ -109,7 +109,7 @@ fn pocket_rect(rect: Rect, area: Rect) -> Rect {
 
 In `planet_geometry`, call `pocket_rect(tile.rect, area)` before `body_cells` and `ring_cells`. Keep the current one/two-cell dense body fallback and current one-cell ring overhang limit. Do not change `collage_layout`, tile audio transforms, phase layers, or status ring functions.
 
-- [ ] **Step 4: Derive stable Banded Worlds surface and active-theme palette.**
+- [x] **Step 4: Derive stable Banded Worlds surface and active-theme palette.**
 
 Add:
 
@@ -146,7 +146,7 @@ Inside `render_planet`, obtain `base = theme.spectrum_color(palette.base_positio
 
 The body must use `base`; never use `status_color` for surface color. Keep ring/satellite/Working arc style code as current. Apply existing silent, stale, Done, and Unknown dimming to both surface styles. No fixed `Color::Rgb`/hex/color literals may appear.
 
-- [ ] **Step 5: Verify scope/status/hit parity and direct callout branches.**
+- [x] **Step 5: Verify scope/status/hit parity and direct callout branches.**
 
 Keep existing phase-scope, state ring, stale/low-power, selected callout, and planet-only hit tests. Add assertions that a ring/body cell selected from the smaller `PlanetGeometry` still resolves, while a former oversized-rectangle-only cell resolves nothing. Run:
 
@@ -160,7 +160,7 @@ cargo clippy --all-targets -- -D warnings
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Commit the Pocket Planets rendering slice.**
+- [x] **Step 6: Commit the Pocket Planets rendering slice.**
 
 ```bash
 but commit agent-pulse-ringed-planets -m "feat: refine Agent Pulse pocket planets"
@@ -183,7 +183,7 @@ but commit agent-pulse-ringed-planets -m "feat: refine Agent Pulse pocket planet
 - Consumes: completed Pocket Planets behavior and `2026-07-19-agent-pulse-pocket-planets-design.md` as the current presentation decision.
 - Produces: truthful current docs, historical Ringed Planets presentation record, and an explicitly unchecked manual verification list.
 
-- [ ] **Step 1: Update current documentation with final Pocket Planets behavior.**
+- [x] **Step 1: Update current documentation with final Pocket Planets behavior.**
 
 Describe the shipped canvas as the unchanged real-audio Dual Phase Scope behind Pocket Planets. Include these exact behavioral facts:
 
@@ -196,13 +196,13 @@ A selected named planet shows only `name · status` in a top-layer callout.
 
 Preserve accurate mono/stereo lags, no-scrolling-waveform, stale/unavailable, and audible-first low-power capture wording. Clarify that low-power freezes positions while fresh snapshots may update status ring treatment. Point `AGENTS.md` to the Pocket Planets spec/plan as the current Agent Pulse presentation references.
 
-- [ ] **Step 2: Mark prior planet presentation documents historical.**
+- [x] **Step 2: Mark prior planet presentation documents historical.**
 
 Add a dated note to `2026-07-19-agent-pulse-ringed-planets-design.md`: its local-only/read-only/privacy/selection/recovery contracts remain current, while its larger grey planet scale/surface presentation is superseded by Pocket Planets. Preserve its body.
 
 At the top of the earlier Ringed Planets plan, add a brief historical completion/supersession note; retain its checked implementation record and do not rewrite completed task details.
 
-- [ ] **Step 3: Record manual checks and run the final gate.**
+- [x] **Step 3: Record manual checks and run the final gate.**
 
 In `docs/SPEC.md`, leave every live item unchecked: mono/stereo streams, all six themes, resize and dense planet field, mouse/keyboard callout readability and collision fallback, reconnect, low-power, standalone, and disabled launch. Inspect the docs diff and run:
 

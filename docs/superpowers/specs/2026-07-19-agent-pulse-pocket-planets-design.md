@@ -1,6 +1,8 @@
 # Agent Pulse Pocket Planets refinement
 
-**Status:** Approved for implementation on 2026-07-19; **not yet implemented**.
+**Status:** Approved for implementation on 2026-07-19; implemented on
+2026-07-19 (rendering slice shipped, automated gates green; live manual
+checks in `docs/SPEC.md` remain pending).
 This document supersedes the Ringed Planets document's planet scale and surface
 presentation in
 [`2026-07-19-agent-pulse-ringed-planets-design.md`](2026-07-19-agent-pulse-ringed-planets-design.md).

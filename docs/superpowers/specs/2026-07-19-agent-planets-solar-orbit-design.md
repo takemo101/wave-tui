@@ -1,6 +1,9 @@
 # Agent Planets solar orbit design
 
-**Status:** approved design; implementation requires a reviewed plan.
+**Status:** approved design; implemented 2026-07-19 per
+[`2026-07-19-agent-planets-solar-orbit.md`](../plans/2026-07-19-agent-planets-solar-orbit.md)
+(automated gates green; live manual checks in `docs/SPEC.md` remain
+pending).
 
 ## Goal
 

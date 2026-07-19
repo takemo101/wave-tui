@@ -14,6 +14,13 @@ atmospheres and selection focus brackets of
 (as revised — the approved revision removed that design's orbiting
 particles), and its permanent Side Tags by the Agent details modal of
 [`2026-07-19-agent-planets-details-modal-design.md`](2026-07-19-agent-planets-details-modal-design.md).
+Those status atmospheres are in turn superseded by the interior-only
+surface status of
+[`2026-07-19-agent-planets-surface-status-design.md`](2026-07-19-agent-planets-surface-status-design.md),
+and this document's audio-driven planet motion by the static central sun
+and Working-only invisible orbits of
+[`2026-07-19-agent-planets-solar-orbit-design.md`](2026-07-19-agent-planets-solar-orbit-design.md);
+atmosphere/motion language below is historical record.
 
 ## Goal
 
@@ -93,7 +100,8 @@ identity-derived, active-theme-only palettes. State was originally encoded
 by a ring/satellite (Working arc, Idle ring, Blocked broken error arc
 without a cross, Done satellite, Unknown muted); that vocabulary is now
 historical, superseded by the thin per-status atmospheres of the
-orbiting-particles-focus design as revised.
+orbiting-particles-focus design as revised, which are themselves
+superseded by the surface-status design's interior treatments.
 
 ### Selected Agent Details
 

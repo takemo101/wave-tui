@@ -1,6 +1,12 @@
 # Agent Planets surface status design
 
-**Status:** approved design; implementation requires a reviewed plan.
+**Status:** approved design; implemented 2026-07-19 per
+[`2026-07-19-agent-planets-surface-status.md`](../plans/2026-07-19-agent-planets-surface-status.md)
+(automated gates green; live manual checks in `docs/SPEC.md` remain
+pending). Planet body positions are governed by the later
+[`2026-07-19-agent-planets-solar-orbit-design.md`](2026-07-19-agent-planets-solar-orbit-design.md),
+which supersedes this design's planet-motion rule only — the interior
+status treatments below remain current.
 
 ## Goal
 

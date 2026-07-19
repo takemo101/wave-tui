@@ -42,8 +42,9 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   coding agents on the local Herdr socket appears in Wide/Medium layouts, and
   `a` opens a full-screen **Agent Planets** stage: the current station/ICY
   title and the Single View volume line centered around the unchanged
-  real-audio Dual Phase Scope, with small round disc-mask planets wearing
-  thin audio-driven status atmospheres; selecting one and pressing `Enter`
+  real-audio Dual Phase Scope, with small round disc-mask planets slowly
+  orbiting a static central sun on invisible paths while quiet status
+  changes stay inside each disc; selecting one and pressing `Enter`
   opens a read-only Agent details record. It never reads
   agent output, never controls panes, and standalone launches are completely
   unchanged (see [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
@@ -307,31 +308,46 @@ agent reported by the session's socket is shown.
   29-sample lag, and the secondary trace always uses a distinct 97-sample
   mono lag, so every supported stream draws a real oscilloscope figure. Up
   to two dim phosphor-persistence layers echo recent real visualizer
-  frames, and a breathing theme-phosphor vignette spreads with RMS. Nothing
-  animates on a timer: silence (or no audio) leaves the scope dim and
-  still. With no agents the field shows a calm `agents · none active`.
-- Every agent is one small, stable planet whose position derives from the
-  agent's private identity. Planet bodies are drawn from one of four
-  explicit round disc masks — 7×5, 5×3, 3×3, or a single cell — never a
-  calculated rectangle/ellipse silhouette, and never a full-tile shadow or
-  soft shadow trail; disc masks replaced the earlier rectangle shadows and
-  calculated planet silhouettes, so the scope stays readable around and
-  between discs. Each private identity owns a stable Banded gas, Ice-cap,
-  or Cratered-rock surface painted with active-theme colors inside the
-  mask; the surface is identity language only and never signals status,
-  audio, time, or selection. A thin status atmosphere is the only planet
-  decoration: Working advances a bright accent segment, Idle breathes muted,
-  Blocked weakly pulses in the error color, Done leaves a dim afterglow, and
-  Unknown remains nearly still (the atmosphere replaced the earlier status
-  orbit rings, Working arcs, Done satellites, and orbiting particles). These
-  changes advance only with newly played
-  audio data, never a clock; silence, stale state, and low-power mode freeze
-  them. Dense terminals fall through the disc masks 7×5 → 5×3 → 3×3 → one
-  selectable body cell — never omitting an agent; a tile too tight for the
-  gap simply drops its atmosphere rather than crowding the field.
+  frames, and a breathing theme-phosphor vignette spreads with RMS.
+  Nothing in the scope animates on a timer: silence (or no audio) leaves
+  it dim and still (only Working planets keep their slow clock-driven
+  orbits). With no agents the field shows a calm `agents · none active`.
+- The planet field is a quiet solar system. One small static, theme-derived
+  sun sits at the field center — decoration only, never a hit target. Every
+  agent is one small, stable planet on its own invisible concentric circular
+  orbit around that sun: the orbit radius, initial angle, and deliberately
+  slow bounded speed all derive from the agent's private identity, and no
+  orbit guide line ever renders. Only Working planets move, advancing from
+  elapsed monotonic Working time; when an agent stops Working its planet
+  freezes at its current angle, and a later Working stretch resumes from
+  that captured angle. Audio never scales, offsets, or otherwise moves a
+  planet body — the music drives only the scope behind the planets.
+- Planet bodies are drawn from one of four explicit round disc masks — 7×5,
+  5×3, 3×3, or a single cell — never a calculated rectangle/ellipse
+  silhouette, and never a full-tile shadow or soft shadow trail; disc masks
+  replaced the earlier rectangle shadows and calculated planet silhouettes,
+  so the scope stays readable around and between discs. Each private
+  identity owns a stable Banded gas, Ice-cap, or Cratered-rock surface
+  painted with active-theme colors inside the mask; the surface is identity
+  language only and never signals status, audio, time, or selection.
+- Status stays inside the disc mask, reusing existing body/surface cells in
+  active-theme colors — no exterior atmosphere, glow, ring, particle, or
+  shadow (interior status replaced the earlier status atmospheres, orbit
+  rings, Working arcs, Done satellites, and orbiting particles). Working
+  advances a narrow bright identity-surface band through the body cells on
+  each newly played audio frame; Idle stays still and muted; Blocked weakly
+  pulses one existing crater/surface cell in the theme error color; Done
+  keeps the whole body dim; Unknown stays muted and nearly still. These
+  interior changes advance only with newly played audio data, never a
+  clock; silence, stale state, and low-power mode freeze them. Dense
+  terminals fall through the disc masks 7×5 → 5×3 → 3×3 → one selectable
+  body cell, scaling orbit radii to the field without omitting agents; only
+  when even a one-cell disc cannot keep a clear gap off the sun is that
+  body dropped — never the sun. One-cell discs keep their body but omit
+  status detail.
 - The selected planet is marked only by four theme-colored corner brackets
   around its tile — a foreground-only treatment with no painted selection
-  background. Brackets and atmosphere are decorative: only disc body cells
+  background. Brackets and the sun are decorative: only disc body cells
   are click targets.
 - Planets keep no permanent label. Select a live planet, then press `Enter`
   for a centered **Agent details** compact record. It shows non-empty
@@ -339,7 +355,7 @@ agent reported by the session's socket is shown.
   rows in that order. It never shows pane/workspace/cwd/session identifiers,
   terminal IDs, or raw status. The record clears only its bounded field area;
   Activity truncates rather than overflowing.
-- In `--low-power`, trace, persistence, disc, atmosphere, and selection
+- In `--low-power`, trace, persistence, disc, orbit-phase, and selection
   bracket geometry are frozen while fresh agent snapshots may still update
   status colors. The frozen geometry is captured
   from the first *audible* visualizer frame after startup (RMS above the
@@ -378,8 +394,9 @@ The integration polls Herdr's `agent.list` every 5 seconds over the local Unix
 socket. Failures are recoverable and never interrupt playback:
 
 - After the first failed poll, the `● n active` count dims and the stage
-  freezes the last live composition — phase traces, persistence, discs,
-  atmospheres, and focus brackets — dimmed, with a quiet `· reconnecting` note appended to the stage
+  freezes the last live composition — phase traces, persistence, the sun,
+  discs at their frozen orbit positions, interior status treatments, and
+  focus brackets — dimmed, with a quiet `· reconnecting` note appended to the stage
   heading. An open details record stays dimmed and marks its title
   `reconnecting`.
 - After 15 seconds without a successful response, the summary disappears and
@@ -530,10 +547,17 @@ for findings and caveats.
 - [`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md)
   — Agent Planets details modal design (current selected-agent details
   decision)
+- [`docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md)
+  — Agent Planets surface status design (current interior-only status
+  decision; replaced the status atmospheres)
+- [`docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md)
+  — Agent Planets solar orbit design (current planet-motion decision:
+  static central sun and Working-only invisible orbits; replaced
+  audio-driven planet body motion)
 - [`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md)
-  — Agent Planets orbiting particles and focus design (current status
-  atmosphere and focus-bracket decision as revised — the approved revision
-  removed the orbiting particles)
+  — Agent Planets orbiting particles and focus design (its selection focus
+  brackets remain current; historical for status — its thin status
+  atmospheres are superseded by the surface-status design)
 - [`docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md)
   — Agent Planets drifting particles design (historical; never implemented,
   superseded by the orbiting-particles-focus design)
@@ -546,7 +570,8 @@ for findings and caveats.
   — Agent Pulse Ringed Planets design (historical; planet scale/surface
   presentation superseded by Pocket Planets, its selected callout by the
   Agent Planets details modal, and its ring/satellite state language by
-  the Agent Planets status atmospheres)
+  the Agent Planets interior surface status, via the interim status
+  atmospheres)
 - [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
   — Agent Pulse Lissajous Scope design (current Dual Phase Scope decision;
   its agent-frame presentation is superseded by the planet designs)
@@ -579,9 +604,13 @@ for findings and caveats.
   — Agent Planets drifting particles implementation plan (historical; never
   implemented)
 - [`docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md`](docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md)
-  — Agent Planets orbiting particles and focus implementation plan (current
-  as revised — atmosphere and focus brackets only, orbiting particles
-  removed)
+  — Agent Planets orbiting particles and focus implementation plan (its
+  focus brackets remain current; historical for status — its atmospheres
+  are superseded by the surface-status plan)
+- [`docs/superpowers/plans/2026-07-19-agent-planets-surface-status.md`](docs/superpowers/plans/2026-07-19-agent-planets-surface-status.md)
+  — Agent Planets surface status implementation plan (current)
+- [`docs/superpowers/plans/2026-07-19-agent-planets-solar-orbit.md`](docs/superpowers/plans/2026-07-19-agent-planets-solar-orbit.md)
+  — Agent Planets solar orbit implementation plan (current)
 
 ## Verification
 

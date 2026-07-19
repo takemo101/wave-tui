@@ -126,11 +126,18 @@ surface. The current agent presentation decisions are
 (approved 2026-07-19) for the centered stage and disc-mask planets,
 `docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`
 for the on-demand Agent details record that replaced the stage's
-permanent Side Tags, and
+permanent Side Tags,
+`docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`
+for the interior-only surface status,
+`docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`
+for the static central sun and Working-only invisible orbits that
+replaced audio-driven planet body motion, and
 `docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
 as revised (the approved revision removed that design's orbiting
-particles) for the thin status atmospheres and selection focus brackets
-that replaced the status rings, Working arcs, and Done satellites. The
+particles) for the selection focus brackets. That revision's thin status
+atmospheres — which had replaced the status rings, Working arcs, and Done
+satellites — are now historical, superseded by the surface-status
+design's interior treatments. The
 stage design supersedes the stage layout, shadowed planet
 geometry, and selected-only callout of
 `docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`
@@ -158,8 +165,9 @@ modal/list/card/completed-history surfaces remain removed; the 2026-07-16
 design's local-only and read-only privacy boundaries remain in force. Agent
 Pulse opens a centered Agent Planets stage: station title and volume
 context around the unchanged Dual Phase Scope's two real-audio Lissajous
-traces, behind small round disc-mask planets wearing thin audio-driven
-status atmospheres — an oscilloscope, never a work-management dashboard.
+traces, behind a quiet solar system of small round disc-mask planets
+slowly orbiting a static central sun with status held inside each disc —
+an oscilloscope, never a work-management dashboard.
 
 Implications:
 
@@ -198,8 +206,9 @@ Implications:
   a distinct 97-sample mono lag, so every supported stream draws a real
   Lissajous figure.
 - **Round disc-mask planets with Banded Worlds surfaces.** Every agent is
-  one small, stable planet whose position derives deterministically from
-  the agent's private identity. Planet bodies use one of four explicit
+  one small, stable planet whose orbit — and therefore position at any
+  orbit phase — derives deterministically from the agent's private
+  identity. Planet bodies use one of four explicit
   round disc masks — 7×5, 5×3, 3×3, or a single cell — never a calculated
   rectangle/ellipse silhouette that could read as a cross, and never a
   full-tile shadow: disc masks replaced the earlier rectangle shadows and
@@ -208,35 +217,45 @@ Implications:
   or Cratered-rock surface painted only on mask cells with two stable
   active-theme spectrum colors; the surface is identity language only and
   never signals status, audio, time, or selection. Dense terminals fall
-  through the masks 7×5 → 5×3 → 3×3 → one selectable body cell rather than
-  grouping or omitting planets.
-- **Music-driven, not timer-driven.** RMS drives the breathing
-  theme-phosphor vignette, gentle trace brightness, and planet motion: RMS
-  plus each planet's assigned FFT band moves its whole disc and atmosphere
-  with a
-  small bounded transform — with no shadow trail. Identical visualizer data
-  at different times renders identical cells; silence leaves the scope dim
-  and still by construction — nothing animates on a clock. Low-power mode
-  freezes trace, persistence, and planet disc/atmosphere/bracket
+  through the masks 7×5 → 5×3 → 3×3 → one selectable body cell, scaling
+  orbit radii to the field, rather than grouping or omitting planets; only
+  a one-cell body that cannot keep the required gap off the sun is dropped
+  — never the sun.
+- **A quiet solar system: Working-only clock orbits, audio-still bodies.**
+  One small static, theme-derived sun sits at the field center —
+  decoration, never a hit target, hidden only while unavailable. Every
+  planet owns a seed-derived invisible concentric circular orbit around
+  it: radius, initial angle, and a deliberately slow bounded angular speed
+  all derive from the private identity, with no orbit guide line ever
+  rendered. Only Working planets move, advancing from elapsed monotonic
+  Working time; a Working→non-Working transition freezes the planet at
+  its captured angle and a later Working stretch resumes from it. Audio
+  never scales, offsets, or moves a planet body: RMS drives only the
+  breathing theme-phosphor vignette and gentle trace brightness. Identical
+  visualizer data at identical orbit phases renders identical cells;
+  silence leaves the scope dim and still. Low-power mode
+  freezes trace, persistence, and planet disc/orbit-phase/bracket
   geometry — using the first audible visualizer frame captured after
   startup (until audio becomes audible, the live frame renders) — while
-  fresh agent snapshots may still update the per-status atmosphere
+  fresh agent snapshots may still update the per-status interior
   treatment and colors.
-- **State on a thin atmosphere, never a cross.** A thin status atmosphere
-  outside a one-cell body gap is the only planet decoration; its ring of
-  cells never moves, and it replaced the earlier status orbits, Working
-  arcs, Done satellites, and orbiting particles. Working paints the
-  playing color and advances one bright accent segment, only on newly
-  played audio data; Idle breathes its muted atmosphere slowly; Blocked
-  carries a short error-colored segment with a weak, deterministic,
-  irregular pulse — never a cross glyph, blink timer, or broken orbit;
-  Done dims its body and slowly pulses a dim afterglow until its snapshot
-  removes it; Unknown stays dim and near-static. Tiles too tight for the
-  body gap drop their atmosphere rather than crowding the field. The body
-  palette never encodes status.
-  Stale freezes the last live composition — traces, discs, atmospheres,
-  and brackets — dimmed under a quiet `· reconnecting` note on the stage
-  heading; unavailable closes details and hides the field behind one calm
+- **State inside the surface, never a cross.** Status never draws outside
+  a planet's disc mask: it reuses existing body/surface cells in
+  active-theme colors, with no exterior atmosphere, glow, ring, particle,
+  shadow, or orbit line — interior status replaced the earlier status
+  atmospheres, orbits, Working arcs, Done satellites, and orbiting
+  particles. Working advances a narrow bright identity-surface band
+  through the body cells, only on newly played audio data; Idle stays
+  still and muted; Blocked weakly pulses one existing crater/surface cell
+  in the error color with a deterministic, irregular pulse — never a cross
+  glyph, blink timer, or broken orbit; Done keeps its whole body dim until
+  its snapshot removes it; Unknown stays muted and nearly still. Silence
+  rests every interior treatment; one-cell discs keep their body but omit
+  status detail. The body palette never encodes status.
+  Stale freezes the last live composition — traces, the sun, discs at
+  frozen orbit positions, interior status, and brackets — dimmed under a
+  quiet `· reconnecting` note on the stage heading; unavailable closes
+  details and hides the sun and planets behind one calm
   `agents · unavailable · retrying` line while the stage chrome stays.
 - **On-demand details, no permanent labels.** The stage field renders no
   agent text. Selecting a planet (`Tab`/`↓`/`j` for the next planet,
@@ -245,7 +264,7 @@ Implications:
   interactive — or a click on its disc body cells) marks it with four
   theme-colored corner brackets around its tile: a foreground-only focus
   treatment with no painted selection background, decorative and never a
-  hit target, and the atmosphere is never restyled by selection. `Enter`
+  hit target, and the identity surface is never restyled by selection. `Enter`
   opens a centered read-only Agent details record for the selected live
   planet showing only non-empty `name`, `agent`, normalized `status`, and
   `activity` (`terminal_title`) rows; `Enter`/`Esc` close only the record

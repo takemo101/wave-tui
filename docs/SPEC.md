@@ -480,12 +480,14 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
 - The Agent Planets stage renders statically in low-power mode:
-  phase-trace/persistence positions and planet disc, status-atmosphere, and
-  focus-bracket geometry are frozen while fresh agent
-  snapshots may still update the per-status atmosphere treatment and colors. The
-  frozen geometry is captured from the first *audible* visualizer frame
-  after startup (RMS above the silence threshold with real phase data);
-  until such a frame arrives, low power renders the live frame.
+  phase-trace/persistence positions, planet disc and orbit-phase geometry,
+  interior status cells, and focus-bracket geometry are frozen while fresh
+  agent snapshots may still update the per-status interior treatment and
+  colors. The frozen visualizer geometry is captured from the first
+  *audible* visualizer frame after startup (RMS above the silence threshold
+  with real phase data); until such a frame arrives, low power renders the
+  live frame. Working orbit phases stay frozen rather than advancing from
+  the clock.
 
 ### Herdr Agent Pulse (Optional Integration)
 
@@ -507,12 +509,16 @@ callout of the Pocket Planets refinement in
 (whose surface palette and privacy contracts remain current). The stage's
 permanent Side Tags are superseded by the on-demand Agent details modal of
 `docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`,
-and its ring/arc/satellite status language by the status-atmosphere and
-focus-bracket language of
+and its ring/arc/satellite status language — via the interim status
+atmospheres of
 `docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
-as revised — the approved revision removed that design's orbiting
-particles, so the thin per-status atmosphere is the only planet
-decoration. Pocket Planets in turn superseded the planet scale/surface presentation of
+as revised (whose selection focus brackets remain current) — by the
+interior-only surface status of
+`docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`.
+The stage's audio-driven planet body motion is superseded by the static
+sun and Working-only invisible orbits of
+`docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`.
+Pocket Planets in turn superseded the planet scale/surface presentation of
 `docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`
 (itself superseding the Lissajous design's square agent frames).
 This section records the product behavior as implemented.
@@ -581,7 +587,7 @@ enabled.
 | Condition | Wide/Medium summary | Agent Planets stage (`a`) |
 | --- | --- | --- |
 | Connected | `● n active` count | Live stage (`agents · none active` in an empty field) |
-| First failed poll | Count dims | Last live composition (traces/persistence/discs/atmospheres/brackets) frozen, dimmed, a quiet `· reconnecting` note on the stage heading; an open details record stays dimmed with `reconnecting` in its title |
+| First failed poll | Count dims | Last live composition (traces/persistence/sun/discs at frozen orbit positions/interior status/brackets) frozen, dimmed, a quiet `· reconnecting` note on the stage heading; an open details record stays dimmed with `reconnecting` in its title |
 | ≥ 15 seconds without success | Summary disappears | Details closed and the field hidden behind `agents · unavailable · retrying`; the stage chrome stays |
 | Fresh snapshot | Live count | Live stage |
 
@@ -619,38 +625,53 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   played mono mix with the same mix at a documented 29-sample lag, and the
   secondary trace always uses a distinct 97-sample mono lag. Up to two dim
   phosphor-persistence layers echo recent real visualizer frames, and a
-  breathing theme-phosphor vignette spreads with RMS. Nothing advances from
-  wall-clock time: identical visualizer data renders identical cells, and
-  silence leaves the scope dim and still.
-- The stage renders one small, stable planet per agent, laid out
-  deterministically from the agent's private workspace-qualified identity so
-  planets stay recognizable and never swap positions. Planet bodies use one
-  of four explicit round disc masks — 7×5, 5×3, 3×3, or a single cell —
-  never a calculated rectangle/ellipse silhouette, and never a full-tile
-  shadow or soft shadow trail: disc masks replaced the earlier rectangle
-  shadows and calculated planet silhouettes. Each private identity owns a
-  stable Banded gas, Ice-cap, or Cratered-rock surface painted only on mask
-  cells using active-theme colors (two stable theme spectrum positions per
-  identity); the surface is identity language only, never a status, audio,
-  time, or selection signal. RMS combined with each planet's assigned FFT
-  band moves the whole disc and atmosphere with a small bounded transform.
-  Dense terminals fall through the disc masks 7×5 → 5×3 → 3×3 → one
-  selectable body cell — never omitting an agent.
-- A thin status atmosphere outside a one-cell body gap is the only planet
-  decoration, using active-theme colors only; its ring of cells never
-  moves, and it replaced the earlier status orbits, Working arcs, Done
-  satellites, and orbiting particles. Working paints the playing color and
-  advances one bright accent segment, only on newly received played-audio
-  phase data (never a clock); Idle breathes its muted atmosphere slowly;
-  Blocked carries a short `theme.error` segment with a weak, deterministic,
-  irregular pulse — no blinking timer, cross glyph, or broken orbit; Done
-  dims its body and slowly pulses a dim afterglow until its snapshot omits
-  it; Unknown stays dim and near-static. Silence rests every treatment. In
-  `--low-power`, phase-trace/persistence positions and planet
-  disc/atmosphere/bracket geometry are frozen (from the first audible frame
-  captured after startup) while fresh agent snapshots may still update the
-  per-status atmosphere treatment and colors. A tile too tight to keep the
-  body gap drops its atmosphere rather than crowding the field.
+  breathing theme-phosphor vignette spreads with RMS. Nothing in the scope
+  advances from wall-clock time: identical visualizer data renders
+  identical cells, and silence leaves the scope dim and still (Working
+  planet orbits above it are the only clock-driven motion).
+- The planet field is a quiet solar system over the scope. One static,
+  theme-derived sun sits at the field center; it is decoration only and
+  never a hit target, and it is hidden only in the unavailable state. The
+  stage renders one small, stable planet per agent on its own invisible
+  concentric circular orbit around that sun: the orbit radius, initial
+  angle, and deliberately slow bounded angular speed all derive from the
+  agent's private workspace-qualified identity, and no orbit guide line
+  ever renders. Only Working planets move, advancing from the elapsed
+  monotonic Working time the reducer tracks; a Working→non-Working
+  transition captures the planet's current angle (Idle, Blocked, Done, and
+  Unknown freeze there) and a later Working stretch resumes from the
+  captured angle. Audio never scales, offsets, or otherwise transforms a
+  planet body — RMS/FFT drive only the scope, vignette, and quiet identity
+  dimming, never planet position.
+- Planet bodies use one of four explicit round disc masks — 7×5, 5×3, 3×3,
+  or a single cell — never a calculated rectangle/ellipse silhouette, and
+  never a full-tile shadow or soft shadow trail: disc masks replaced the
+  earlier rectangle shadows and calculated planet silhouettes. Each private
+  identity owns a stable Banded gas, Ice-cap, or Cratered-rock surface
+  painted only on mask cells using active-theme colors (two stable theme
+  spectrum positions per identity); the surface is identity language only,
+  never a status, audio, time, or selection signal. Dense terminals fall
+  through the disc masks 7×5 → 5×3 → 3×3 → one selectable body cell,
+  scaling orbit radii to the field without omitting agents; only when even
+  a one-cell disc cannot keep the required clear gap off the sun is that
+  smallest body dropped — never the sun.
+- Status is quiet interior surface language and never draws outside the
+  disc mask: it reuses existing body/surface cells in active-theme colors —
+  no exterior atmosphere, glow, ring, particle, shadow, or orbit line.
+  Interior status replaced the earlier status atmospheres, orbits, Working
+  arcs, Done satellites, and orbiting particles. Working advances a narrow
+  bright identity-surface band through the body cells, only on newly
+  received played-audio phase data (never a clock); Idle stays still and
+  muted; Blocked weakly pulses one existing crater/surface cell in
+  `theme.error` with a deterministic, irregular pulse — no blinking timer,
+  cross glyph, or broken orbit; Done keeps the whole body dim until its
+  snapshot omits it; Unknown stays muted and nearly still. Silence rests
+  every interior treatment. One-cell discs keep their body but omit status
+  detail. In `--low-power`, phase-trace/persistence positions and planet
+  disc/orbit-phase/bracket geometry are frozen (from the first audible
+  frame captured after startup, with Working orbit phases held rather than
+  advancing) while fresh agent snapshots may still update the per-status
+  interior treatment and colors.
 - Planets keep no permanent label. While the stage selection is
   interactive (overlay open on a live connection), `Tab`/`↓`/`j` select the
   next planet and wrap from the last agent back to the first, and
@@ -658,8 +679,9 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   agent to the last (with no selection, next starts at the first agent and
   previous at the last). The selected planet gains four theme-colored
   corner brackets around its allocated tile — a foreground-only treatment
-  that never paints a selection background, never restyles the atmosphere,
-  and is decorative rather than a hit target. `Enter` opens the centered
+  that never paints a selection background, never restyles the identity
+  surface, and is decorative rather than a hit target. `Enter` opens the
+  centered
   **Agent details** record for the selected live planet (no-op without
   one), showing non-empty `name`, `agent`, normalized `status`, and
   `activity` (`terminal_title`) rows in that order; `Enter`/`Esc` close
@@ -679,7 +701,7 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   its exact documented Signal View toggle.
 - Mouse capture is enabled only for eligible plugin launches, solely to feed
   planet-selection clicks; only a planet's disc body cells select —
-  background trace, vignette, atmosphere, focus-bracket, and empty cells
+  background trace, vignette, the sun, focus-bracket, and empty cells
   resolve nothing, and clicks are consumed while the details record is
   open. Clicks resolve against the planet geometry actually drawn
   (including low-power frozen geometry) and only while the connection is
@@ -841,11 +863,12 @@ tier, and built-in retry candidates stay visible
 
 ### Herdr Agent Pulse — Verification Status
 
-Status as of the Agent Planets atmosphere-and-focus documentation pass
-(2026-07-19).
+Status as of the Agent Planets surface-status and solar-orbit
+documentation pass (2026-07-19).
 
-**Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
-`cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
+**Automated (all green as of the surface-status and solar-orbit
+implementation passes):** `cargo fmt --check`, `cargo test`, `cargo check`,
+and `cargo clippy --all-targets -- -D warnings` all exit 0.
 The suite covers, without any live Herdr process, socket, audio, or terminal:
 
 - exact plugin-environment eligibility and every ineligible/disabled case
@@ -892,20 +915,25 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   disc masks with dense fall-through and no full-tile shadow or
   shadow-trail cells, stable identity-seeded Banded gas/Ice-cap/
   Cratered-rock surfaces painted only on mask cells with theme-spectrum
-  palette pairs, one-selectable-planet-per-agent density, RMS/FFT-driven
-  bounded planet motion, silence stillness, the thin status atmosphere as
-  the only planet decoration with a ring of cells that never moves, the
-  Working accent segment traveling only with the played phase frame,
-  Idle/Done breathing and afterglow lifts with a near-static Unknown, the
-  short irregular `theme.error` Blocked segment, silence resting every
-  atmosphere treatment, no old ring/arc/satellite glyphs and no
-  orbiting-particle cells, the selected planet's four bounded corner
-  brackets that never select and stay off atmosphere cells, decorative
-  cells kept gapped from the disc body and out of hit cells, the Agent
-  details record's field ordering/truncation/privacy exclusions,
-  stale/low-power frozen disc/atmosphere/bracket geometry with per-status
-  colors still refreshing, stale freeze/unavailable rendering, and
-  body-only hit testing (`ui`, `ui::agent_pulse`).
+  palette pairs, one-selectable-planet-per-agent density, the static
+  centered theme-derived sun with no orbit-guide cells, deterministic
+  seed-derived orbit radii/initial angles/slow bounded speeds, Working-only
+  orbit motion across elapsed monotonic time with Working→non-Working
+  angle capture and resume, no audio-driven planet body scale or position
+  transform, silence stillness, interior-only surface status with no
+  exterior atmosphere/ring/particle/orbit-line cells and no old
+  ring/arc/satellite glyphs, the narrow bright Working band advancing only
+  with the played phase frame, the weakly pulsing `theme.error` Blocked
+  interior cell, still-muted Idle, dim Done, near-still Unknown, silence
+  resting every interior treatment, one-cell discs keeping their body with
+  no status detail, dense orbit-radius scaling with the smallest bodies
+  dropped only when the sun/body gap cannot hold (never the sun), the
+  selected planet's four bounded corner brackets that never select, the
+  Agent details record's field ordering/truncation/privacy exclusions,
+  stale/low-power frozen disc/orbit-phase/bracket geometry with per-status
+  colors still refreshing, stale freeze/unavailable rendering (unavailable
+  hiding sun and planets), and body-only hit testing that never resolves
+  the sun (`ui`, `ui::agent_pulse`).
 
 **Manual checklist (NOT run in this pass).** This documentation pass was
 performed without a Herdr 0.7.0+ installation, a real terminal session, or
@@ -921,32 +949,38 @@ the release as fully validated:
 - [ ] Play a real **stereo** stream with the stage open and judge the live
       Dual Phase Scope: the primary trace draws a left/right phase portrait,
       the secondary trace differs from it, dim phosphor persistence echoes
-      recent motion, planets breathe with RMS/band energy with no shadow
-      trail or full-tile shadow anywhere, Working atmosphere accent
-      segments advance with the music while Idle/Done atmospheres breathe
-      and pulse gently, and silence leaves a dim, still scope with no timer
-      motion — never a scrolling waveform. Confirm the stage chrome reads
-      well live: the centered Title Case `Agent Planets · n active`
+      recent motion, planet bodies never move or scale with the music (no
+      shadow trail or full-tile shadow anywhere), Working interior bands
+      advance with the music while Idle stays still, and silence leaves a
+      dim, still scope — never a scrolling waveform — while Working planets
+      keep their slow clock-driven orbital drift. Confirm the stage chrome
+      reads well live: the centered Title Case `Agent Planets · n active`
       heading, the current ICY/station title, and the Single View volume
       line directly beneath that title with no extra status/context line
       or dedicated volume row.
 - [ ] Play a real **mono** stream and confirm both lagged-mono traces stay
       non-diagonal, distinct oscilloscope figures rather than a flat line or
       a scrolling waveform.
-- [ ] Cycle all six themes on the stage and confirm traces, vignette,
-      Banded Worlds planet surfaces, status atmospheres, and selection
-      brackets stay legible on each.
+- [ ] Cycle all six themes on the stage and confirm traces, vignette, the
+      central sun, Banded Worlds planet surfaces, interior status
+      treatments, and selection brackets stay legible on each.
+- [ ] Watch a Working planet over a few minutes and confirm it drifts
+      slowly around the static central sun on an invisible path (no orbit
+      guide line, sun never moving), freezes at its current angle when the
+      agent stops Working, and resumes from that angle when Working
+      returns.
 - [ ] With agents across multiple workspaces of the same Herdr session,
       confirm `● n active` counts them all and the stage keeps one
-      recognizable round disc-mask planet per agent at stable positions —
+      recognizable round disc-mask planet per agent on its stable
+      seed-derived orbit —
       including dense agent counts, where discs fall through
-      7×5 → 5×3 → 3×3 → one body cell without omitting an agent and tight
-      tiles drop their atmospheres rather than crowding — and after
-      resizes.
+      7×5 → 5×3 → 3×3 → one body cell with orbit radii scaling to the
+      field, and only a one-cell body that cannot keep the sun gap is
+      dropped (never the sun) — and after resizes.
 - [ ] Select planets with keyboard and mouse clicks; confirm `Tab`/`↓`/`j`
       step forward and wrap from the last planet back to the first,
       `Shift+Tab`/`↑`/`k` step backward and wrap from the first planet to
-      the last, clicks land only on planet disc body cells (atmosphere and
+      the last, clicks land only on planet disc body cells (the sun and
       bracket cells select nothing), the selected planet shows only four
       corner brackets with no painted selection background, and `Enter`
       opens the Agent details record with only non-empty name/agent/
@@ -954,25 +988,27 @@ the release as fully validated:
 - [ ] Resize the tab through Wide/Medium/Compact; confirm the eligible
       Wide/Medium footer shows the `a Agent Planets` hint, the summary and
       hint hide in Compact while `a` still opens the full-screen stage, and
-      the stage chrome, discs, atmospheres, and brackets redraw cleanly
-      across sizes.
+      the stage chrome, sun, discs, interior status, and brackets redraw
+      cleanly across sizes.
 - [ ] Press `z` while the stage is open and confirm it is ignored — no
       Single View, stage unchanged; close the stage and confirm `z` still
       toggles Signal View as documented.
 - [ ] Temporarily remove socket access; confirm the dimmed count, the
-      frozen stale stage (traces, discs, atmospheres, and brackets frozen
-      and dimmed under the heading's `· reconnecting` note, an open
+      frozen stale stage (traces, the sun, discs at frozen orbit
+      positions, interior status, and brackets frozen and dimmed under the
+      heading's `· reconnecting` note, an open
       details record dimmed with `reconnecting` in its title), the
       15-second `agents · unavailable · retrying` state closing details
-      and hiding the field
+      and hiding the sun and planets behind the notice
       while the stage chrome stays, and full recovery when the socket
       returns — with playback unaffected throughout, and mouse clicks and
       keyboard selection changing nothing while stale/unavailable.
 - [ ] Detach and reattach the Herdr session; confirm the tab process and
       playback follow Herdr's normal pane lifecycle.
 - [ ] Run `wave-tui --low-power` inside Herdr and confirm frozen trace,
-      persistence, and planet disc/atmosphere/bracket geometry
-      while fresh snapshots still update per-status atmosphere treatment
+      persistence, and planet disc/orbit-phase/bracket geometry (Working
+      planets stop drifting)
+      while fresh snapshots still update per-status interior treatment
       and colors — including that a launch into silence
       renders the live frame until audio becomes audible, after which the
       first audible frame stays the frozen geometry — and that clicks still

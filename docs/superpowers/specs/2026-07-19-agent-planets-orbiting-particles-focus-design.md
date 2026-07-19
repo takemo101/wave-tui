@@ -2,7 +2,11 @@
 
 **Status:** approved design; revised 2026-07-19 and implemented as revised
 (automated gates green; live manual checks in `docs/SPEC.md` remain
-pending).
+pending). The revision's thin status atmospheres are now historical,
+superseded by the interior-only surface status of
+[`2026-07-19-agent-planets-surface-status-design.md`](2026-07-19-agent-planets-surface-status-design.md);
+this design remains current only for the four selection focus brackets
+and body-only hit testing.
 
 > **Approved revision (2026-07-19):** the orbiting-particle decoration
 > described below was removed before implementation — no orbit particles

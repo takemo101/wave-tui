@@ -5,11 +5,11 @@ manifest [`herdr-plugin.toml`](../herdr-plugin.toml)). Installed through
 Herdr's plugin manager, it opens the radio player in a **dedicated Herdr
 tab** — keeping the Wide/Medium layouts usable — and, only for those plugin
 launches, enables the optional read-only
-[Herdr Agent Pulse](../README.md#herdr-agent-pulse-optional) companion.
+[Herdr Agent Planets](../README.md#herdr-agent-planets-optional) companion.
 
 This page is the operational manual: install, verify, open, develop, update,
 uninstall, and troubleshoot. Feature behavior, controls, and privacy limits
-live in the [README](../README.md#herdr-agent-pulse-optional) and
+live in the [README](../README.md#herdr-agent-planets-optional) and
 [`docs/SPEC.md`](SPEC.md).
 
 ## Requirements
@@ -67,6 +67,28 @@ The tab owns the audio process: closing the tab exits `wave-tui` and stops
 playback, and detaching/reattaching the Herdr session leaves the process
 under Herdr's normal pane lifecycle.
 
+## Optional `config.toml` keybinding
+
+No configuration is required for the plugin to install or run. To open the
+Agent Planets radio tab with a Herdr command key, add this to
+`~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+r"
+type = "plugin_action"
+command = "wave-tui.radio.open"
+description = "Open wave-tui Agent Planets"
+```
+
+Restart or reload Herdr after editing its configuration. The binding invokes
+the same `open` plugin action as the command above and opens a dedicated tab
+in the focused workspace. Change `prefix+r` to any unused command key.
+
+Plugin-specific settings are not currently read by `wave-tui`; if they are
+introduced later, they belong in
+`~/.config/herdr/plugins/config/wave-tui.radio/`, not Herdr's main config.
+
 ## Local development
 
 From a checkout of this repository:
@@ -109,9 +131,9 @@ If your Herdr version names the lifecycle commands differently, check
 installed standalone `wave-tui` binary or your saved settings; for the
 standalone binary, use the [README uninstall steps](../README.md#uninstall).
 
-## What Agent Pulse requires
+## What Agent Planets requires
 
-Agent Pulse enables itself only when **all** of the following hold at launch:
+The Agent Planets companion enables itself only when **all** of the following hold at launch:
 
 1. `--no-agent-pulse` was not passed.
 2. `HERDR_ENV` is exactly `1`.

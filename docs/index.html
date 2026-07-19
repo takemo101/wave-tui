@@ -905,9 +905,28 @@ cargo install --git https://github.com/takemo101/wave-tui</code></pre>
 herdr plugin action invoke open --plugin wave-tui.radio</code></pre>
             </div>
             <p>
-              No <code>config.toml</code> change is required. Herdr reads the
-              plugin manifest automatically; optional future plugin settings
-              belong in <code>~/.config/herdr/plugins/config/wave-tui.radio/</code>.
+              No <code>config.toml</code> change is required. To add a Herdr
+              command key that opens Agent Planets, add this optional binding:
+            </p>
+            <div class="command-block" data-copy-command>
+              <button
+                class="copy-command"
+                type="button"
+                data-copy-button
+                aria-label="Copy Agent Planets keybinding"
+              >
+                Copy
+              </button>
+              <pre><code>[[keys.command]]
+key = "prefix+r"
+type = "plugin_action"
+command = "wave-tui.radio.open"
+description = "Open wave-tui Agent Planets"</code></pre>
+            </div>
+            <p>
+              Put it in <code>~/.config/herdr/config.toml</code>, then reload
+              Herdr. Plugin-specific settings are not currently used; any
+              future settings belong in <code>~/.config/herdr/plugins/config/wave-tui.radio/</code>.
             </p>
           </article>
           <article class="panel">

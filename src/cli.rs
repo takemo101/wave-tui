@@ -1115,15 +1115,22 @@ fn handle_signal_view_key(
 /// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
 /// `Enter` opens details for a selected planet without playing a station;
 /// `z` stays a canvas-local no-op. While details are open, every non-quit
-/// key is modal-local: Enter/Esc close details and `a` closes the whole stage.
-/// Outside the modal, the documented player shortcuts retain their existing
-/// canvas behavior.
+/// key is modal-local: Enter/Esc close details, `a` closes the whole stage,
+/// and `Tab`/arrows (with their `j`/`k` synonyms) cycle the planet selection
+/// with the modal following. Outside the modal, the documented player
+/// shortcuts retain their existing canvas behavior.
 fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
     if app.is_agent_details_open() {
         match outcome {
             KeyOutcome::Quit => return Some(Flow::Quit),
             KeyOutcome::ToggleAgentPulse => app.apply(Action::CloseAgentOverlay),
             KeyOutcome::ExitOrBack | KeyOutcome::Play => app.apply(Action::CloseAgentDetails),
+            KeyOutcome::FocusNext | KeyOutcome::SelectNext => {
+                app.apply(Action::SelectNextAgent);
+            }
+            KeyOutcome::FocusPrevious | KeyOutcome::SelectPrevious => {
+                app.apply(Action::SelectPreviousAgent);
+            }
             _ => {}
         }
         return Some(Flow::Continue);
@@ -2410,10 +2417,11 @@ mod tests {
         assert!(command_rx.try_recv().is_err());
 
         for code in [
-            KeyCode::Tab,
             KeyCode::Char(' '),
             KeyCode::Char('+'),
             KeyCode::Char('z'),
+            KeyCode::Char('t'),
+            KeyCode::Char('/'),
         ] {
             handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
             assert!(app.is_agent_details_open(), "{code:?} is modal-local");
@@ -2445,6 +2453,38 @@ mod tests {
         );
         assert!(!app.is_agent_details_open());
         assert!(!app.is_agent_overlay_open(), "a closes the whole stage");
+    }
+
+    #[test]
+    fn modal_navigation_keys_cycle_planets_while_details_stay_open() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+
+        // Two agents: next and previous both hop to the other planet, and
+        // wrapping keeps every key productive from either end.
+        for (code, expected) in [
+            (KeyCode::Tab, "beta"),
+            (KeyCode::Down, "alpha"),
+            (KeyCode::Char('j'), "beta"),
+            (KeyCode::BackTab, "alpha"),
+            (KeyCode::Up, "beta"),
+            (KeyCode::Char('k'), "alpha"),
+        ] {
+            let flow = handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+            assert_eq!(flow, Flow::Continue);
+            assert!(app.is_agent_details_open(), "{code:?} keeps details open");
+            assert_eq!(
+                app.selected_agent_details()
+                    .and_then(|detail| detail.name.as_deref()),
+                Some(expected),
+                "{code:?} moves the modal to the adjacent planet"
+            );
+        }
+        assert!(app.is_agent_overlay_open());
     }
 
     #[test]

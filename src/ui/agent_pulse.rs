@@ -3336,6 +3336,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn low_power_rests_agents_first_observed_after_the_capture_at_phase_zero() {
+        let t0 = Instant::now();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.configure_low_power_visuals(true);
+        app.apply(Action::AgentSnapshot {
+            agents: vec![snap("ws", "p1", Some("one"), AgentStatus::Working)],
+            now: t0,
+        });
+        app.apply(Action::ToggleAgentOverlay);
+        push_frame(&mut app, phase_frame());
+
+        // A Working agent first observed after the audible capture is
+        // missing from the frozen orbit map: it rests at zero seconds — its
+        // seed-derived initial angle — never the live effective Working time.
+        app.apply(Action::AgentSnapshot {
+            agents: vec![
+                snap("ws", "p1", Some("one"), AgentStatus::Working),
+                snap("ws", "p2", Some("two"), AgentStatus::Working),
+            ],
+            now: t0 + Duration::from_secs(5),
+        });
+        assert_eq!(
+            app.low_power_orbit_secs(&AgentId::new("ws", "p2")),
+            Some(0.0),
+            "an agent unknown to the capture reads zero orbit seconds"
+        );
+
+        let at_first_sight = render_collage_for(&app, true, t0 + Duration::from_secs(5));
+        assert_ne!(
+            planet_cells_of(&render_collage_for(
+                &app,
+                false,
+                t0 + Duration::from_secs(45)
+            )),
+            planet_cells_of(&at_first_sight),
+            "sanity: the same span moves live Working planets"
+        );
+        for later in [45u64, 405] {
+            assert_eq!(
+                planet_cells_of(&render_collage_for(
+                    &app,
+                    true,
+                    t0 + Duration::from_secs(later)
+                )),
+                planet_cells_of(&at_first_sight),
+                "the late-observed planet holds its initial angle at +{later}s"
+            );
+        }
+
+        // Hit testing reads the same frozen layout the renderer draws.
+        let hits_at = |now: Instant| -> Vec<(u16, u16)> {
+            let field = stage_field();
+            let mut cells = Vec::new();
+            for y in field.y..field.y + field.height {
+                for x in field.x..field.x + field.width {
+                    if hit_test(CANVAS, x, y, true, now, &app).is_some() {
+                        cells.push((x, y));
+                    }
+                }
+            }
+            cells
+        };
+        let hits = hits_at(t0 + Duration::from_secs(5));
+        assert!(!hits.is_empty(), "sanity: planet bodies are clickable");
+        assert_eq!(
+            hits_at(t0 + Duration::from_secs(405)),
+            hits,
+            "a later clock never moves the late-observed hit targets"
+        );
+    }
+
     // --- state, selection, and privacy -------------------------------------
 
     #[test]

@@ -1,9 +1,19 @@
 # Agent Pulse Ringed Planets redesign
 
-**Status:** Approved for implementation on 2026-07-19; **not yet
-implemented**. The currently shipped presentation remains the Dual Phase Scope
-with square agent frames. This document supersedes only the future Agent Pulse
-**agent-frame presentation** in
+**Status:** Approved for implementation on 2026-07-19; its rendering slices
+shipped on 2026-07-19. **Historical note (2026-07-19):** this document's
+local-only, read-only, privacy, selection, and recovery contracts remain
+current. Its ring/satellite state language is superseded by the thin status
+atmospheres of
+[`2026-07-19-agent-planets-orbiting-particles-focus-design.md`](2026-07-19-agent-planets-orbiting-particles-focus-design.md)
+(as revised, without orbiting particles), its selected `name · status`
+callout by the Agent details modal of
+[`2026-07-19-agent-planets-details-modal-design.md`](2026-07-19-agent-planets-details-modal-design.md),
+and its larger grey planet scale and surface presentation is
+superseded by
+[`2026-07-19-agent-pulse-pocket-planets-design.md`](2026-07-19-agent-pulse-pocket-planets-design.md)
+(9×5-capped bodies with theme-colored Banded Worlds surfaces). This document
+supersedes only the Agent Pulse **agent-frame presentation** in
 [`2026-07-19-agent-pulse-lissajous-scope-design.md`](2026-07-19-agent-pulse-lissajous-scope-design.md).
 The Dual Phase Scope, its real-audio data path, and all existing local-only,
 read-only, privacy, recovery, and input contracts remain current.

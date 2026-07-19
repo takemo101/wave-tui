@@ -40,11 +40,13 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
 - **Herdr Agent Pulse (optional)** — when launched as the official Herdr
   plugin (Herdr 0.7.0+), a quiet, read-only `● n active` count of the AI
   coding agents on the local Herdr socket appears in Wide/Medium layouts, and
-  `a` opens a full-screen **Dual Phase Scope** canvas: two real-audio
-  Lissajous traces behind calm agent frames with state-colored edges and
-  status cores. It never reads agent output, never controls panes, and
-  standalone launches are completely unchanged (see
-  [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
+  `a` opens a full-screen **Agent Planets** stage: the current station/ICY
+  title and the Single View volume line centered around the unchanged
+  real-audio Dual Phase Scope, with small round disc-mask planets wearing
+  thin audio-driven status atmospheres; selecting one and pressing `Enter`
+  opens a read-only Agent details record. It never reads
+  agent output, never controls panes, and standalone launches are completely
+  unchanged (see [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
@@ -150,7 +152,7 @@ search controls act on the focused pane.
 | `t`         | cycle theme                  |
 | `v`         | cycle visualizer mode        |
 | `z`         | toggle Signal View           |
-| `a`         | toggle the Agent Pulse canvas (Herdr plugin launches only) |
+| `a`         | toggle the Agent Planets stage (Herdr plugin launches only) |
 | `/`         | search Radio Browser         |
 | `Esc`       | clear search / return        |
 | `q` / `Esc` | quit when not searching      |
@@ -243,10 +245,10 @@ manager:
 herdr plugin install takemo101/wave-tui
 ```
 
-Installation builds the release binary with `cargo build --release`. For local
-development you can point Herdr's plugin link/install command at a clone of
-this repository instead (see `herdr plugin --help` for your Herdr version's
-linking syntax).
+Installation builds the release binary with `cargo build --release`. Use
+`just herdr-open` to rebuild and open the installed plugin's dedicated radio
+tab. For development from this checkout, `just herdr-dev` rebuilds, links this
+repository with `herdr plugin link`, and opens that tab.
 
 ### Launching the radio tab
 
@@ -278,80 +280,111 @@ agent reported by the session's socket is shown.
 
 - **Wide and Medium layouts** add exactly one quiet line to Now Playing:
   `● n active`, a count of every agent on the socket. Names never appear in
-  the normal view.
+  the normal view. While the integration is eligible and its summary is
+  visible (live or reconnecting), the Wide/Medium footer also adds one
+  `a Agent Planets` hint; Compact, standalone, disabled, ineligible, and
+  unavailable states show no hint.
 - **Compact layout** shows no Agent Pulse line to preserve station and
-  playback context, but `a` still opens the canvas while the integration is
+  playback context, but `a` still opens the stage while the integration is
   active.
 - **Signal View** never shows Agent Pulse and ignores `a`.
-- Press `a` for the **Dual Phase Scope** canvas: Agent Pulse opens a
-  full-screen Dual Phase Scope with two real-audio Lissajous traces,
-  replacing the whole player surface. Each trace is a phase portrait of
-  paired played samples — no trace is a scrolling amplitude-over-time
-  waveform. With stereo output the primary trace plots the played
-  left/right sample pairs; mono streams pair the played mono mix with the
-  same mix at a documented 29-sample lag, and the secondary trace always
-  uses a distinct 97-sample mono lag, so every supported stream draws a real
-  oscilloscope figure. Up to two dim phosphor-persistence layers echo recent
-  real visualizer frames, and a breathing theme-phosphor vignette spreads
-  with RMS. Nothing animates on a timer: silence (or no audio) leaves the
-  scope dim and still. With no agents the canvas shows a calm
-  `agents · none active`.
-- Every agent is one small, stable frame whose position derives from the
-  agent's private identity. Agent frames keep state-colored edges; Working
-  has an audio-driven spinner core (`◜◝◞◟`, advanced only by newly played
-  audio data, never a clock), while Idle (`◌`), Blocked (`×`), and Done
-  (`·`) remain stationary. Working edges glow strongest (the playing
-  color), Blocked uses the error color, and idle/done/unknown stay muted; a
-  done frame stays muted/dim until the next snapshot omits it. RMS and each
-  frame's assigned FFT band still move its rectangle with a small bounded
-  scale/offset and soft shadow trails drawn from real recent visualizer
-  frames. Dense terminals shrink frame size and spacing rather than hiding
-  frames — every agent keeps one visible frame.
-- Selecting a frame brings it forward and shows only `name · status` for
-  agents with an explicit Herdr `name`, placed near that frame; an unnamed
-  selection shows no label at all. Pane ids, workspace ids, working
-  directories, and agent types never render.
-- In `--low-power`, trace, persistence, frame, shadow, and spinner geometry
-  are frozen while state edge/core colors may still refresh. The frozen
-  geometry is captured from the first *audible* visualizer frame after
-  startup (RMS above the silence threshold with real phase data); until
-  audio becomes audible, low power simply renders the current live frame.
+- Press `a` for the **Agent Planets** stage: a full-screen view that
+  replaces the whole player surface with the same centered hierarchy as
+  Single View — a Title Case `Agent Planets · n active` heading, the
+  current ICY title (falling back to the station name, then
+  `no station playing`), the exact Single View volume line (`volume n%`
+  with its accent `─` fill and muted `·` remainder) directly beneath that
+  title, the scope-and-planets field, and a compact footer with
+  selection/player/close hints (`z` is deliberately not advertised). There
+  is no separate playback-status/station context line and no dedicated
+  volume gauge row — the station title and volume come from the existing
+  player state, and no agent-private data appears in the stage chrome.
+- The field behind the planets is the unchanged **Dual Phase Scope**: two
+  real-audio Lissajous traces, each a phase portrait of paired played
+  samples — no trace is a scrolling amplitude-over-time waveform. With
+  stereo output the primary trace plots the played left/right sample pairs;
+  mono streams pair the played mono mix with the same mix at a documented
+  29-sample lag, and the secondary trace always uses a distinct 97-sample
+  mono lag, so every supported stream draws a real oscilloscope figure. Up
+  to two dim phosphor-persistence layers echo recent real visualizer
+  frames, and a breathing theme-phosphor vignette spreads with RMS. Nothing
+  animates on a timer: silence (or no audio) leaves the scope dim and
+  still. With no agents the field shows a calm `agents · none active`.
+- Every agent is one small, stable planet whose position derives from the
+  agent's private identity. Planet bodies are drawn from one of four
+  explicit round disc masks — 7×5, 5×3, 3×3, or a single cell — never a
+  calculated rectangle/ellipse silhouette, and never a full-tile shadow or
+  soft shadow trail; disc masks replaced the earlier rectangle shadows and
+  calculated planet silhouettes, so the scope stays readable around and
+  between discs. Each private identity owns a stable Banded gas, Ice-cap,
+  or Cratered-rock surface painted with active-theme colors inside the
+  mask; the surface is identity language only and never signals status,
+  audio, time, or selection. A thin status atmosphere is the only planet
+  decoration: Working advances a bright accent segment, Idle breathes muted,
+  Blocked weakly pulses in the error color, Done leaves a dim afterglow, and
+  Unknown remains nearly still (the atmosphere replaced the earlier status
+  orbit rings, Working arcs, Done satellites, and orbiting particles). These
+  changes advance only with newly played
+  audio data, never a clock; silence, stale state, and low-power mode freeze
+  them. Dense terminals fall through the disc masks 7×5 → 5×3 → 3×3 → one
+  selectable body cell — never omitting an agent; a tile too tight for the
+  gap simply drops its atmosphere rather than crowding the field.
+- The selected planet is marked only by four theme-colored corner brackets
+  around its tile — a foreground-only treatment with no painted selection
+  background. Brackets and atmosphere are decorative: only disc body cells
+  are click targets.
+- Planets keep no permanent label. Select a live planet, then press `Enter`
+  for a centered **Agent details** compact record. It shows non-empty
+  `name`, `agent`, normalized `status`, and `activity` (`terminal_title`)
+  rows in that order. It never shows pane/workspace/cwd/session identifiers,
+  terminal IDs, or raw status. The record clears only its bounded field area;
+  Activity truncates rather than overflowing.
+- In `--low-power`, trace, persistence, disc, atmosphere, and selection
+  bracket geometry are frozen while fresh agent snapshots may still update
+  status colors. The frozen geometry is captured
+  from the first *audible* visualizer frame after startup (RMS above the
+  silence threshold with real phase data); until audio becomes audible, low
+  power simply renders the current live frame.
 
-### Canvas controls
+### Stage controls
 
 | Key / input        | Action                                   |
 | ------------------ | ---------------------------------------- |
-| `a` / `Esc`        | close the canvas                         |
-| `Tab` / `Shift+Tab` / `↑↓` / `j`/`k` | select an agent frame  |
-| mouse click        | select an agent frame (its cells only)   |
-| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | normal player behavior |
+| `a`                | close details and the stage               |
+| `Tab` / `↓` / `j` | select the next planet (wraps last → first) |
+| `Shift+Tab` / `↑` / `k` | select the previous planet (wraps first → last) |
+| mouse click        | select a planet (its body cells only) when details are closed |
+| `Enter`            | open details for the selected live planet; close details when open |
+| `Esc`              | close details when open; otherwise close the stage |
+| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | consumed while details are open |
 | `q` / `Ctrl+C`     | quit the app                             |
 
-Search (`/`) and station navigation/selection (`g`/`G`/`Home`/`End`/`Enter`)
-are suppressed while the canvas is open, so canvas input can never play a
-station or move station selection. The global player shortcuts keep their
-exact normal semantics: `Space` still toggles playback only while the station
-list is the focused pane underneath, `f` favorites the station-list selection,
-and `z` switches to Signal View (which replaces the canvas surface). Mouse
-capture is enabled only for eligible plugin launches (native terminal text
-selection may then need `Shift`+drag); standalone launches leave terminal
-mouse behavior untouched. Selection resolves only while the connection is
-live — during `stale`/`unavailable` states mouse clicks and keyboard
-selection both change nothing, though `a`/`Esc` still close the canvas;
-selection input should not act on data that may no longer be current.
+Search (`/`) and station navigation/selection (`g`/`G`/`Home`/`End`) are
+suppressed while the stage is open. `Enter` opens details rather than playing a
+station. When details are closed, normal player shortcuts retain their existing
+canvas semantics; `z` is consumed as a no-op while Agent Planets is open and
+keeps its normal Single View toggle everywhere outside it. Mouse capture is
+enabled only for eligible plugin
+launches (native terminal text selection may then need `Shift`+drag);
+standalone launches leave terminal mouse behavior untouched. Selection
+resolves only while the connection is live — during `stale`/`unavailable`
+states mouse clicks and keyboard selection both change nothing, though
+`a`/`Esc` still close the stage; selection input should not act on data that
+may no longer be current.
 
 ### Connection loss and recovery
 
 The integration polls Herdr's `agent.list` every 5 seconds over the local Unix
 socket. Failures are recoverable and never interrupt playback:
 
-- After the first failed poll, the `● n active` count dims and the canvas
-  freezes the last live scope composition — phase traces, persistence,
-  frames, cores, and shadow trails — dimmed, under a `stale · reconnecting`
-  banner.
+- After the first failed poll, the `● n active` count dims and the stage
+  freezes the last live composition — phase traces, persistence, discs,
+  atmospheres, and focus brackets — dimmed, with a quiet `· reconnecting` note appended to the stage
+  heading. An open details record stays dimmed and marks its title
+  `reconnecting`.
 - After 15 seconds without a successful response, the summary disappears and
-  the canvas hides every frame and trace behind
-  `agents · unavailable · retrying`.
+  the stage closes details and hides its field behind
+  `agents · unavailable · retrying` (the stage chrome stays).
 - Polling continues; a fresh successful snapshot restores the live view.
 
 ### Privacy and read-only limits
@@ -365,8 +398,9 @@ Agent Pulse is strictly observational:
 - It shows every agent reported by the plugin invocation's local Herdr
   socket, across that session's workspaces; it never discovers other Herdr
   sessions or opens another socket.
-- Only a selected frame's explicit Herdr `name` is ever rendered; there is no
-  fallback label and no pane/workspace/cwd/agent-type detail on screen.
+- Details render only explicit Herdr `name`, Herdr `agent`, normalized
+  status, and `terminal_title` Activity when non-empty. Pane/workspace/cwd,
+  foreground cwd, terminal/tab/session IDs, and raw status never render.
 - It never changes volume, theme, station, playback, search, or the
   visualizer, and never emits OS notifications.
 - Nothing is persisted: agent state lives only in process memory for the
@@ -488,8 +522,34 @@ for findings and caveats.
 - [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
   — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
   presentation superseded by the Lissajous Scope design)
+- [`docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md)
+  — Agent Planets Stage design (current stage chrome and disc-mask
+  decision; its permanent Side Tags are superseded by the details-modal
+  design and its status rings by the orbiting-particles-focus design as
+  revised)
+- [`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md)
+  — Agent Planets details modal design (current selected-agent details
+  decision)
+- [`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md)
+  — Agent Planets orbiting particles and focus design (current status
+  atmosphere and focus-bracket decision as revised — the approved revision
+  removed the orbiting particles)
+- [`docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md)
+  — Agent Planets drifting particles design (historical; never implemented,
+  superseded by the orbiting-particles-focus design)
+- [`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md)
+  — Agent Pulse Pocket Planets design (surface palette and privacy
+  contracts current; its stage layout, shadowed presentation, selected-only
+  callout, and state-ring language are superseded by the later Agent
+  Planets designs)
+- [`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md)
+  — Agent Pulse Ringed Planets design (historical; planet scale/surface
+  presentation superseded by Pocket Planets, its selected callout by the
+  Agent Planets details modal, and its ring/satellite state language by
+  the Agent Planets status atmospheres)
 - [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
-  — Agent Pulse Lissajous Scope design (current presentation decision)
+  — Agent Pulse Lissajous Scope design (current Dual Phase Scope decision;
+  its agent-frame presentation is superseded by the planet designs)
 - [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
   — Agent Pulse Kinetic Collage design (historical; presentation superseded
   by the Lissajous Scope design)
@@ -503,6 +563,25 @@ for findings and caveats.
   — Kinetic Collage implementation plan
 - [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md)
   — Lissajous Scope implementation plan
+- [`docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md)
+  — Ringed Planets implementation plan (historical; docs pass superseded by
+  Pocket Planets)
+- [`docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md)
+  — Pocket Planets implementation plan (historical; presentation superseded
+  by the Agent Planets stage plan)
+- [`docs/superpowers/plans/2026-07-19-agent-planets-stage.md`](docs/superpowers/plans/2026-07-19-agent-planets-stage.md)
+  — Agent Planets Stage implementation plan (current for the stage chrome;
+  its Side Tag and status-ring tasks are superseded by the later plans
+  below)
+- [`docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md`](docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md)
+  — Agent Planets details modal implementation plan (current)
+- [`docs/superpowers/plans/2026-07-19-agent-planets-drifting-particles.md`](docs/superpowers/plans/2026-07-19-agent-planets-drifting-particles.md)
+  — Agent Planets drifting particles implementation plan (historical; never
+  implemented)
+- [`docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md`](docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md)
+  — Agent Planets orbiting particles and focus implementation plan (current
+  as revised — atmosphere and focus brackets only, orbiting particles
+  removed)
 
 ## Verification
 

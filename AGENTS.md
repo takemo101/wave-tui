@@ -26,9 +26,30 @@ Start here:
    / [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md)
    presentation — is superseded by
    [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
-   and [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md).
-   Read the Lissajous Scope design and plan before changing Agent Pulse
-   presentation.
+   and [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md),
+   which remain current for the Dual Phase Scope. The Lissajous design's
+   square agent frames were replaced by the historical
+   [`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md)
+   / [`docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md),
+   whose planet scale/surface presentation is in turn superseded by
+   [`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md)
+   and [`docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md);
+   the Pocket Planets stage layout, shadowed planet geometry, and
+   selected-only callout are superseded by the Agent Planets Stage design
+   and plan. Its permanent Side Tags are in turn superseded by the current
+   [`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md)
+   and [`docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md`](docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md),
+   and its ring/arc/satellite status language by the current
+   [`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md)
+   and [`docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md`](docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md)
+   as revised — the approved revision dropped that design's orbiting
+   particles, shipping thin per-status atmospheres and selection focus
+   brackets instead (the unimplemented drifting-particles design/plan pair
+   is historical).
+   Read the current details-modal and atmosphere-and-focus designs and
+   plans (plus the Lissajous Scope
+   design for the scope itself and the Pocket Planets design for the Banded
+   Worlds surface palette) before changing Agent Pulse presentation.
 
 Before changing playback, search, persistence, themes, layout, module
 boundaries, or user-facing controls, re-read the relevant doc first.
@@ -51,9 +72,17 @@ Stay inside the MVP unless the user explicitly expands scope:
 - three responsive layout tiers;
 - Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes;
 - the optional, read-only Herdr Agent Pulse companion when launched as the
-  official Herdr plugin (current design:
-  `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`).
-  It only observes agent status via `agent.list` on the plugin's local Herdr
+  official Herdr plugin (current designs:
+  `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
+  for the Dual Phase Scope and
+  `docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`
+  for the Agent Planets stage,
+  `docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`
+  for its selected-agent details presentation, and
+  `docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
+  as revised — no orbiting particles — for its status atmospheres and
+  selection focus brackets).
+  It only observes approved agent details via `agent.list` on the plugin's local Herdr
   socket (across that session's workspaces); it is not a daemon, remote
   control, or an internal plugin system.
 
@@ -304,9 +333,20 @@ Update docs when changing:
   `docs/ui-design-decisions.md`;
 - audio architecture findings or spike conclusions: `docs/audio-spike.md`;
 - Herdr plugin packaging or Agent Pulse behavior: `README.md`, `docs/SPEC.md`,
-  and `docs/ui-design-decisions.md` (presentation design record:
+  and `docs/ui-design-decisions.md` (current agent details design record:
+  `docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`;
+  current status-atmosphere and focus design record:
+  `docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
+  as revised, without orbiting particles;
+  Agent Planets stage design record:
+  `docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`;
+  Dual Phase Scope design record:
   `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`;
-  historical presentation record:
+  historical presentation records:
+  `docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md`,
+  `docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`,
+  `docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`,
+  and
   `docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`;
   integration design record:
   `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`);

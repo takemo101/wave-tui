@@ -1112,14 +1112,22 @@ fn handle_signal_view_key(
 ///
 /// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the tile
 /// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
-/// Station selection (`Enter`), list jumps, and search entry are consumed so
-/// canvas input can never play a station, move station selection, or enter
-/// the search strip. Every other outcome — playback, volume, theme,
-/// favorite, visualizer, Signal View — is deliberately not handled here: the
-/// caller runs the existing non-canvas branch exactly once, so the
-/// documented global player controls keep their normal semantics and side
-/// effects without recursive dispatch.
+/// `Enter` opens details for a selected planet without playing a station;
+/// `z` stays a canvas-local no-op. While details are open, every non-quit
+/// key is modal-local: Enter/Esc close details and `a` closes the whole stage.
+/// Outside the modal, the documented player shortcuts retain their existing
+/// canvas behavior.
 fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
+    if app.is_agent_details_open() {
+        match outcome {
+            KeyOutcome::Quit => return Some(Flow::Quit),
+            KeyOutcome::ToggleAgentPulse => app.apply(Action::CloseAgentOverlay),
+            KeyOutcome::ExitOrBack | KeyOutcome::Play => app.apply(Action::CloseAgentDetails),
+            _ => {}
+        }
+        return Some(Flow::Continue);
+    }
+
     match outcome {
         KeyOutcome::Quit => Some(Flow::Quit),
         KeyOutcome::ToggleAgentPulse | KeyOutcome::ExitOrBack => {
@@ -1142,7 +1150,11 @@ fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
         | KeyOutcome::ClearSearch
         | KeyOutcome::SelectFirst
         | KeyOutcome::SelectLast
-        | KeyOutcome::Play => Some(Flow::Continue),
+        | KeyOutcome::ToggleSignalView => Some(Flow::Continue),
+        KeyOutcome::Play => {
+            app.apply(Action::OpenAgentDetails);
+            Some(Flow::Continue)
+        }
         _ => None,
     }
 }
@@ -1883,7 +1895,7 @@ mod tests {
     // --- Agent Pulse: flag, key routing, monitor events, and mouse --------
 
     use crate::app::AgentPulseConnection;
-    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, MonitorEvent};
+    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus, MonitorEvent};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
@@ -1891,7 +1903,11 @@ mod tests {
         AgentSnapshot {
             id: AgentId::new("ws", pane),
             // Distinct names keep the reducer's name sort stable.
-            name: Some(pane.to_string()),
+            details: AgentDetails {
+                name: Some(pane.to_string()),
+                agent: None,
+                activity: None,
+            },
             status: AgentStatus::Working,
         }
     }
@@ -2369,27 +2385,37 @@ mod tests {
     }
 
     #[test]
-    fn collage_delegates_signal_view_toggle_to_the_normal_path() {
-        let (audio, _cmd_rx) = fake_audio();
+    fn enter_opens_details_only_for_selected_planet_and_modal_consumes_controls() {
         let (mut app, mut debounce, mut persistence) = controller();
+        let (audio, command_rx) = fake_audio();
         connect_agent_pulse(&mut app, &["alpha"]);
         app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        let playback = app.playback().clone();
 
-        // `z` keeps its normal meaning; Signal View then owns the surface.
-        handle_key(
-            key(KeyCode::Char('z')),
-            &mut app,
-            &audio,
-            &mut debounce,
-            &mut persistence,
+        assert_eq!(
+            handle_key(
+                key(KeyCode::Enter),
+                &mut app,
+                &audio,
+                &mut debounce,
+                &mut persistence,
+            ),
+            Flow::Continue
         );
-        assert!(app.is_signal_view(), "z enters Signal View from the canvas");
-        assert!(
-            app.is_agent_overlay_open(),
-            "the canvas stays open (suppressed) underneath"
-        );
+        assert!(app.is_agent_details_open());
+        assert_eq!(app.playback(), &playback);
+        assert!(command_rx.try_recv().is_err());
 
-        // Esc is routed by the Signal View gate first and only leaves it.
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Char(' '),
+            KeyCode::Char('+'),
+            KeyCode::Char('z'),
+        ] {
+            handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+            assert!(app.is_agent_details_open(), "{code:?} is modal-local");
+        }
         handle_key(
             key(KeyCode::Esc),
             &mut app,
@@ -2397,8 +2423,65 @@ mod tests {
             &mut debounce,
             &mut persistence,
         );
-        assert!(!app.is_signal_view());
-        assert!(app.is_agent_overlay_open(), "back to the open canvas");
+        assert!(!app.is_agent_details_open());
+        assert!(app.is_agent_overlay_open(), "Esc closes only details");
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_agent_details_open());
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(!app.is_agent_details_open());
+        assert!(!app.is_agent_overlay_open(), "a closes the whole stage");
+    }
+
+    #[test]
+    fn z_is_consumed_in_agent_planets_but_toggles_signal_view_elsewhere() {
+        let (audio, _cmd_rx) = fake_audio();
+        let (mut canvas, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut canvas, &["alpha"]);
+        canvas.apply(Action::ToggleAgentOverlay);
+
+        // `z` is consumed while the canvas is open: Single View never opens
+        // over Agent Planets, and the canvas stays exactly as it was.
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut canvas,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(
+            !canvas.is_signal_view(),
+            "z must not enter Signal View from the canvas"
+        );
+        assert!(canvas.is_agent_overlay_open(), "the canvas stays open");
+
+        // Outside the canvas the same eligible app keeps the documented
+        // Single View toggle.
+        let (mut normal, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut normal, &["alpha"]);
+        handle_key(
+            key(KeyCode::Char('z')),
+            &mut normal,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(
+            normal.is_signal_view(),
+            "z still toggles Signal View outside the canvas"
+        );
     }
 
     /// The canvas-sized terminal area the collage mouse tests click within.
@@ -2415,8 +2498,8 @@ mod tests {
     }
 
     /// Scan the open Kinetic Collage canvas for the first cell the pure hit
-    /// test resolves to a tile, so mouse tests target the actual drawn tile
-    /// rectangles instead of assuming any particular collage shape.
+    /// test resolves to a planet, so mouse tests target the actual drawn
+    /// planet body/ring cells instead of assuming any particular shape.
     fn first_collage_tile_hit(app: &App) -> (u16, u16) {
         let area = canvas_area();
         for row in 0..area.height {
@@ -2476,8 +2559,8 @@ mod tests {
         ))));
         let area = canvas_area();
 
-        // A discriminating cell: covered by an audio-moved tile, but empty in
-        // the frozen low-power collage.
+        // A discriminating cell: covered by an audio-moved planet's body or
+        // ring, but empty in the frozen low-power collage.
         let moved_only = (0..area.height)
             .flat_map(|row| (0..area.width).map(move |column| (column, row)))
             .find(|&(column, row)| {

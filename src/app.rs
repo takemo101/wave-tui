@@ -18,7 +18,7 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::herdr::{self, AgentId, AgentSnapshot, AgentStatus};
+use crate::herdr::{self, AgentDetails, AgentId, AgentSnapshot, AgentStatus};
 use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
@@ -121,13 +121,13 @@ pub(crate) enum AgentPulseConnection {
 ///
 /// `observed_at` is when this app first saw the agent in its current status —
 /// a locally derived estimate, not an assertion about the agent's true
-/// process start time. The view deliberately carries no pane id, cwd, or
-/// agent type: the explicit `name` is the only displayable label, and the
+/// process start time. The view carries only the approved modal details; the
 /// private [`AgentId`] exists solely for identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentView {
     pub(crate) id: AgentId,
-    /// Explicit Herdr agent name; the only label the UI may ever show.
+    pub(crate) details: AgentDetails,
+    /// Transitional mirror for the legacy Side Tag renderer; Task 3 removes it.
     pub(crate) name: Option<String>,
     pub(crate) status: AgentStatus,
     pub(crate) observed_at: Instant,
@@ -151,6 +151,13 @@ impl AgentView {
 pub(crate) enum AgentOverlay {
     Closed,
     Open,
+}
+
+/// Ephemeral details modal for the selected Agent Planets identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentDetailsOverlay {
+    Closed,
+    Open(AgentId),
 }
 
 /// The visualizer display frozen at the Connected→Stale edge: the
@@ -177,6 +184,7 @@ struct AgentPulse {
     /// Identity of the selected active agent.
     selected: Option<AgentId>,
     overlay: AgentOverlay,
+    details: AgentDetailsOverlay,
     /// When the last successful snapshot arrived.
     last_success: Option<Instant>,
     /// When the current failure streak began; cleared by any success.
@@ -194,6 +202,7 @@ impl AgentPulse {
             active: Vec::new(),
             selected: None,
             overlay: AgentOverlay::Closed,
+            details: AgentDetailsOverlay::Closed,
             last_success: None,
             first_failure: None,
             stale_viz: None,
@@ -211,20 +220,22 @@ impl AgentPulse {
     fn clamp_selection(&mut self) {
         if self.selected_index().is_none() {
             self.selected = None;
+            self.details = AgentDetailsOverlay::Closed;
         }
     }
 }
 
-/// Sort active agents by state (working, blocked, idle, done, unknown), then
-/// by explicit name (named agents before unnamed ones), with the stable
-/// identity as the final tiebreaker so equal entries keep a deterministic
-/// order across snapshots.
+/// Sort active agents by state (working, blocked, idle, done, then unknown), then
+/// by the first available approved label, with the stable identity as the final
+/// tiebreaker so equal entries keep a deterministic order across snapshots.
 fn sort_active_agents(agents: &mut [AgentView]) {
     agents.sort_by(|a, b| {
+        let a_label = a.details.name.as_ref().or(a.details.agent.as_ref());
+        let b_label = b.details.name.as_ref().or(b.details.agent.as_ref());
         a.status_rank()
             .cmp(&b.status_rank())
-            .then_with(|| match (&a.name, &b.name) {
-                (Some(a_name), Some(b_name)) => a_name.cmp(b_name),
+            .then_with(|| match (a_label, b_label) {
+                (Some(a_label), Some(b_label)) => a_label.cmp(b_label),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
@@ -410,6 +421,10 @@ pub enum Action {
     SelectNextAgent,
     /// Move the overlay selection up the sorted active-agent list.
     SelectPreviousAgent,
+    /// Open details for the selected live agent; no-op with no selection.
+    OpenAgentDetails,
+    /// Close the temporary Agent Planets details modal.
+    CloseAgentDetails,
     /// Select an active agent by its stable identity (mouse/particle
     /// selection).
     SelectAgent(AgentId),
@@ -537,6 +552,8 @@ impl App {
             Action::CloseAgentOverlay => self.close_agent_overlay(),
             Action::SelectNextAgent => self.select_next_agent(),
             Action::SelectPreviousAgent => self.select_previous_agent(),
+            Action::OpenAgentDetails => self.open_agent_details(),
+            Action::CloseAgentDetails => self.close_agent_details(),
             Action::SelectAgent(id) => self.select_agent(id),
         }
     }
@@ -767,7 +784,10 @@ impl App {
     /// playback state, so background activity continues unchanged underneath.
     fn toggle_signal_view(&mut self) {
         self.display_mode = match self.display_mode {
-            DisplayMode::Normal => DisplayMode::SignalView,
+            DisplayMode::Normal => {
+                self.agent_pulse.details = AgentDetailsOverlay::Closed;
+                DisplayMode::SignalView
+            }
             DisplayMode::SignalView => DisplayMode::Normal,
         };
     }
@@ -933,7 +953,8 @@ impl App {
                 AgentView {
                     observed_at: carried.map_or(now, |view| view.observed_at),
                     id: snapshot.id,
-                    name: snapshot.name,
+                    name: snapshot.details.name.clone(),
+                    details: snapshot.details,
                     status: snapshot.status,
                 }
             })
@@ -971,6 +992,7 @@ impl App {
         };
         if pulse.connection == AgentPulseConnection::Unavailable {
             pulse.stale_viz = None;
+            pulse.details = AgentDetailsOverlay::Closed;
         }
     }
 
@@ -986,6 +1008,7 @@ impl App {
         if Self::agent_response_overdue(pulse, now) {
             pulse.connection = AgentPulseConnection::Unavailable;
             pulse.stale_viz = None;
+            pulse.details = AgentDetailsOverlay::Closed;
         }
     }
 
@@ -1024,7 +1047,10 @@ impl App {
         }
         self.agent_pulse.overlay = match self.agent_pulse.overlay {
             AgentOverlay::Closed => AgentOverlay::Open,
-            AgentOverlay::Open => AgentOverlay::Closed,
+            AgentOverlay::Open => {
+                self.agent_pulse.details = AgentDetailsOverlay::Closed;
+                AgentOverlay::Closed
+            }
         };
     }
 
@@ -1033,39 +1059,64 @@ impl App {
             return;
         }
         self.agent_pulse.overlay = AgentOverlay::Closed;
+        self.agent_pulse.details = AgentDetailsOverlay::Closed;
     }
 
-    /// Move the overlay selection down one row, never past the last agent;
-    /// with no selection it starts at the first sorted agent.
+    fn open_agent_details(&mut self) {
+        if !self.agent_selection_interactive() {
+            return;
+        }
+        if let Some(id) = self.agent_pulse.selected.clone() {
+            self.agent_pulse.details = AgentDetailsOverlay::Open(id);
+        }
+    }
+
+    fn close_agent_details(&mut self) {
+        self.agent_pulse.details = AgentDetailsOverlay::Closed;
+    }
+
+    /// Move the overlay selection to the next sorted agent, wrapping from
+    /// the last back to the first; with no selection it starts at the first
+    /// sorted agent.
     fn select_next_agent(&mut self) {
         if !self.agent_selection_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
+        if pulse.active.is_empty() {
+            pulse.selected = None;
+            return;
+        }
         let index = match pulse.selected_index() {
-            Some(index) => (index + 1).min(pulse.active.len().saturating_sub(1)),
+            Some(index) => (index + 1) % pulse.active.len(),
             None => 0,
         };
         pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
     }
 
-    /// Move the overlay selection up one row, never above the first agent;
-    /// with no selection it starts at the last sorted agent.
+    /// Move the overlay selection to the previous sorted agent, wrapping from
+    /// the first back to the last; with no selection it starts at the last
+    /// sorted agent.
     fn select_previous_agent(&mut self) {
         if !self.agent_selection_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
+        if pulse.active.is_empty() {
+            pulse.selected = None;
+            return;
+        }
+        let last = pulse.active.len() - 1;
         let index = match pulse.selected_index() {
-            Some(index) => index.saturating_sub(1),
-            None => pulse.active.len().saturating_sub(1),
+            Some(0) | None => last,
+            Some(index) => index - 1,
         };
         pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
     }
 
     /// Select an active agent by its identity; unknown agents change nothing.
     fn select_agent(&mut self, id: AgentId) {
-        if !self.agent_selection_interactive() {
+        if !self.agent_selection_interactive() || self.is_agent_details_open() {
             return;
         }
         let pulse = &mut self.agent_pulse;
@@ -1261,6 +1312,20 @@ impl App {
     /// Whether the Agent Pulse overlay is open.
     pub(crate) fn is_agent_overlay_open(&self) -> bool {
         self.agent_pulse.overlay == AgentOverlay::Open
+    }
+
+    /// Whether Agent Planets is currently showing details for its selection.
+    pub(crate) fn is_agent_details_open(&self) -> bool {
+        matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
+    }
+
+    /// Approved details for the identity whose modal is open.
+    pub(crate) fn selected_agent_details(&self) -> Option<&AgentDetails> {
+        let AgentDetailsOverlay::Open(id) = &self.agent_pulse.details else {
+            return None;
+        };
+        let selected = self.selected_agent()?;
+        (&selected.id == id).then_some(&selected.details)
     }
 
     /// The visualizer display captured when the connection dimmed to
@@ -2432,7 +2497,11 @@ mod tests {
     ) -> AgentSnapshot {
         AgentSnapshot {
             id: AgentId::new(workspace, pane),
-            name: name.map(str::to_string),
+            details: AgentDetails {
+                name: name.map(str::to_string),
+                agent: None,
+                activity: None,
+            },
             status,
         }
     }
@@ -2637,6 +2706,29 @@ mod tests {
                 Some("unknown"),
             ]
         );
+    }
+
+    #[test]
+    fn agent_snapshot_preserves_allowed_details_without_private_identity() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(
+            vec![AgentSnapshot {
+                id: AgentId::new("workspace-private", "pane-private"),
+                details: AgentDetails {
+                    name: Some("research".to_string()),
+                    agent: Some("pi".to_string()),
+                    activity: Some("Review the modal".to_string()),
+                },
+                status: AgentStatus::Working,
+            }],
+            Instant::now(),
+        ));
+
+        let view = app.active_agents().first().expect("one active agent");
+        assert_eq!(view.details.name.as_deref(), Some("research"));
+        assert_eq!(view.details.agent.as_deref(), Some("pi"));
+        assert_eq!(view.details.activity.as_deref(), Some("Review the modal"));
+        assert_ne!(view.id, AgentId::new("different", "identity"));
     }
 
     #[test]
@@ -2980,6 +3072,112 @@ mod tests {
     }
 
     #[test]
+    fn details_open_only_for_a_selected_connected_agent_and_close_without_radio_mutation() {
+        let mut app = app_with_agents(vec![agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        let playback = app.playback().clone();
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::OpenAgentDetails);
+        assert!(!app.is_agent_details_open());
+
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        assert!(app.is_agent_details_open());
+        assert_eq!(
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref()),
+            Some("research")
+        );
+        app.apply(Action::CloseAgentDetails);
+        assert!(!app.is_agent_details_open());
+        assert_eq!(app.playback(), &playback);
+    }
+
+    #[test]
+    fn details_modal_ignores_mouse_style_selection_changes() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::SelectAgent(agent_id("ws", "p2")));
+
+        assert!(app.is_agent_details_open());
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
+            Some("alpha")
+        );
+        assert_eq!(
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref()),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn details_close_on_overlay_close_signal_view_unavailable_and_missing_selection() {
+        let mut app = app_with_agents(vec![agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::CloseAgentOverlay);
+        assert!(!app.is_agent_details_open());
+
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::ToggleSignalView);
+        assert!(!app.is_agent_details_open());
+        app.apply(Action::LeaveSignalView);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + herdr::STALE_AFTER,
+        });
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Unavailable
+        );
+        assert!(!app.is_agent_details_open());
+    }
+
+    #[test]
+    fn stale_details_remain_for_the_selected_identity_and_recover_live() {
+        let now = Instant::now();
+        let mut app = app_with_agents(vec![agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::AgentPollFailed { now });
+        assert!(app.is_agent_details_open());
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", Some("review"), AgentStatus::Working)],
+            now + Duration::from_secs(1),
+        ));
+        assert_eq!(
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref()),
+            Some("review")
+        );
+    }
+
+    #[test]
     fn signal_view_suppresses_all_agent_overlay_actions() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
@@ -3011,7 +3209,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_selection_moves_and_clamps_within_the_sorted_active_list() {
+    fn overlay_selection_cycles_within_the_sorted_active_list() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
             vec![
@@ -3032,9 +3230,6 @@ mod tests {
         assert_eq!(selected_name(&app).as_deref(), Some("beta"));
         app.apply(Action::SelectNextAgent);
         assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
-        // Down at the end stays put.
-        app.apply(Action::SelectNextAgent);
-        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
 
         // Selecting an unknown identity changes nothing.
         app.apply(Action::SelectAgent(agent_id("ws", "missing")));
@@ -3044,13 +3239,40 @@ mod tests {
         assert_eq!(selected_name(&app).as_deref(), Some("beta"));
         app.apply(Action::SelectPreviousAgent);
         assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
-        // Up at the top stays put.
-        app.apply(Action::SelectPreviousAgent);
-        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
 
         // Direct selection by identity (mouse path).
         app.apply(Action::SelectAgent(agent_id("ws", "p3")));
         assert_eq!(selected_name(&app).as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn agent_selection_next_wraps_last_to_first() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            agent("ws", "p3", Some("gamma"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("ws", "p3")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("gamma"));
+
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn agent_selection_previous_wraps_first_to_last() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            agent("ws", "p3", Some("gamma"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("gamma"));
     }
 
     #[test]

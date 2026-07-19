@@ -32,7 +32,7 @@ use ratatui::{
 
 use std::time::Instant;
 
-use crate::app::{Action, App, FocusPane, ListSource, SearchStatus};
+use crate::app::{Action, AgentPulseConnection, App, FocusPane, ListSource, SearchStatus};
 use crate::layout::LayoutTier;
 use crate::model::{CodecKind, PlaybackState, Station};
 use crate::theme::Theme;
@@ -68,7 +68,7 @@ pub(crate) fn render_splash(kind: SplashKind, theme: &Theme, tick: u16, frame: &
 /// This is the only entry point the controller/event loop calls each frame. It
 /// reads display data from `app` and draws into the frame's buffer; it performs
 /// no state mutation. `low_power` is the controller's `--low-power` flag: it
-/// freezes the Kinetic Collage background, tile geometry, and shadow trails,
+/// freezes the Agent Planets scope background and disc/tag geometry,
 /// mirroring how the splash loop receives its low-power timing, without adding
 /// persistent app state.
 pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
@@ -84,7 +84,7 @@ pub fn render(app: &App, low_power: bool, frame: &mut Frame) {
 /// Pure hit test for Agent Pulse mouse input.
 ///
 /// Maps a click at (`column`, `row`) within the rendered `area` to the
-/// read-only Kinetic Collage tile selection and `None` for every
+/// read-only Agent Planets planet selection and `None` for every
 /// other click.
 /// The CLI event loop owns applying the returned action; this function never
 /// mutates `App` and never returns playback, station, search, or settings
@@ -133,7 +133,7 @@ fn render_into(app: &App, low_power: bool, now: Instant, area: Rect, buf: &mut B
         LayoutTier::Compact => render_compact(app, &theme, area, buf),
     }
 
-    // The full-screen Kinetic Collage canvas draws over the composed
+    // The full-screen Agent Planets stage draws over the composed
     // normal layout; a no-op for standalone/hidden launches and while it is
     // closed.
     agent_pulse::render_canvas(app, &theme, low_power, now, area, buf);
@@ -1000,8 +1000,8 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
     let accent = theme.accent_style();
     let muted = Style::default().fg(theme.muted);
 
-    let hints: &[(&str, &str)] = if compact {
-        &[
+    let mut hints: Vec<(&str, &str)> = if compact {
+        vec![
             ("Tab", "focus"),
             ("/", "search"),
             ("\u{21B5}", "play"),
@@ -1012,7 +1012,7 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
             ("q", "quit"),
         ]
     } else {
-        &[
+        vec![
             ("Tab", "focus"),
             ("/", "search"),
             ("Enter", "play"),
@@ -1023,10 +1023,23 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
             ("q", "quit"),
         ]
     };
+    // Discovery for the eligible plugin launch only: the same connection
+    // states that show the quiet Now Playing summary advertise the Agent
+    // Planets canvas. Hidden (standalone/disabled/ineligible) and unavailable
+    // states append nothing, so their footers stay byte-identical; the compact
+    // tier keeps its trimmed hint row.
+    if !compact
+        && matches!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected | AgentPulseConnection::Stale
+        )
+    {
+        hints.push(("a", "Agent Planets"));
+    }
 
     let mut spans = Vec::new();
     for (key, label) in hints {
-        spans.push(Span::styled(*key, accent));
+        spans.push(Span::styled(key, accent));
         spans.push(Span::styled(format!(" {label}  "), muted));
     }
     spans.push(network_span(app, theme));
@@ -2397,7 +2410,7 @@ mod tests {
 
     // --- Agent Pulse: quiet count + full-screen Kinetic Collage -----------
 
-    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
+    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
     use std::time::Duration;
 
     fn pulse_agent(
@@ -2408,7 +2421,11 @@ mod tests {
     ) -> AgentSnapshot {
         AgentSnapshot {
             id: AgentId::new(workspace, pane),
-            name: name.map(str::to_string),
+            details: AgentDetails {
+                name: name.map(str::to_string),
+                agent: None,
+                activity: None,
+            },
             status,
         }
     }
@@ -2459,6 +2476,53 @@ mod tests {
         );
     }
 
+    /// An eligible plugin launch whose integration is live, the way a
+    /// successful snapshot would produce it.
+    fn connected_agent_app() -> App {
+        app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )])
+    }
+
+    /// A disabled or ineligible launch: the integration never leaves
+    /// `Hidden`, even after the user pressed the (no-op) canvas toggle.
+    fn hidden_agent_app() -> App {
+        let mut app = base_app();
+        app.apply(Action::ToggleAgentOverlay);
+        app
+    }
+
+    #[test]
+    fn eligible_normal_footer_advertises_a_agent_planets() {
+        let app = connected_agent_app();
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            text.contains("a Agent Planets"),
+            "eligible normal footer must advertise the canvas: {text}"
+        );
+        let compact = buffer_text(&render_buffer(&app, 60, 16));
+        assert!(
+            !compact.contains("Agent Planets"),
+            "compact keeps its trimmed footer: {compact}"
+        );
+    }
+
+    #[test]
+    fn standalone_and_disabled_footer_do_not_advertise_agent_planets() {
+        assert!(
+            !buffer_text(&render_buffer(&base_app(), 120, 36)).contains("Agent Planets"),
+            "standalone footer must not advertise the canvas"
+        );
+        let disabled = hidden_agent_app();
+        assert!(
+            !buffer_text(&render_buffer(&disabled, 120, 36)).contains("Agent Planets"),
+            "disabled footer must not advertise the canvas"
+        );
+    }
+
     #[test]
     fn hidden_agent_actions_leave_standalone_render_unchanged() {
         let sizes = [(120, 36), (80, 20), (60, 16)];
@@ -2478,9 +2542,12 @@ mod tests {
         }
     }
 
-    /// Cells drawn with tile-art glyphs anywhere in the buffer.
+    /// Cells drawn with planet glyphs (body, orbit ring, or satellite)
+    /// anywhere in the buffer. The Working arc `●` stays excluded because
+    /// the quiet summary line shares that glyph, and the crater `░` because
+    /// the normal-layout Now Playing gauge shares it.
     fn tile_cell_count(text: &str) -> usize {
-        ["░", "▒", "╱", "╲", "◌"]
+        ["▓", "∘", "▪"]
             .iter()
             .map(|glyph| text.matches(glyph).count())
             .sum()
@@ -2499,7 +2566,10 @@ mod tests {
 
         app.apply(Action::ToggleAgentOverlay);
         let canvas = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(canvas.contains("Agent Pulse"), "canvas title: {canvas}");
+        assert!(
+            canvas.contains("Agent Planets · 1 active"),
+            "stage heading: {canvas}"
+        );
         assert!(
             !canvas.contains("All Stations"),
             "the canvas replaces the whole player surface: {canvas}"
@@ -2507,7 +2577,7 @@ mod tests {
     }
 
     #[test]
-    fn collage_canvas_hides_agent_details_until_selected() {
+    fn agent_planets_canvas_shows_details_only_after_selection_opens_modal() {
         let mut app = app_with_agents(vec![pulse_agent(
             "alpha",
             "p1",
@@ -2516,17 +2586,16 @@ mod tests {
         )]);
         app.apply(Action::ToggleAgentOverlay);
         let unselected = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(
-            !unselected.contains("research"),
-            "no label before selection: {unselected}"
-        );
+        assert!(!unselected.contains("research"));
+        assert!(!unselected.contains("working"));
 
         app.apply(Action::SelectNextAgent);
-        let selected = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(
-            selected.contains("research · working"),
-            "selected explicit-name label missing: {selected}"
-        );
+        app.apply(Action::OpenAgentDetails);
+        let modal = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(modal.contains("Agent details"));
+        assert!(modal.contains("research"));
+        assert!(modal.contains("working"));
+        assert!(!modal.contains("alpha") && !modal.contains("p1"));
     }
 
     #[test]
@@ -2558,6 +2627,98 @@ mod tests {
     }
 
     #[test]
+    fn agent_planets_stage_centers_now_playing_title_and_volume_bar() {
+        let mut app = app_with_agents(vec![
+            pulse_agent("ws", "p1", Some("research"), AgentStatus::Working),
+            pulse_agent("ws", "p2", None, AgentStatus::Idle),
+        ]);
+        play_first(&mut app);
+        let station = app.current_station().unwrap().id.clone();
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            station,
+            title: "Aurora Drift - Nightwave".to_string(),
+        }));
+        app.apply(Action::ToggleAgentOverlay);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            text.contains("Agent Planets"),
+            "the stage heading renders: {text}"
+        );
+        assert!(text.contains("· 2 active"), "the heading counts: {text}");
+        assert!(
+            text.contains(app.now_playing_title().unwrap()),
+            "the ICY title renders on the stage: {text}"
+        );
+        assert!(
+            text.contains("volume 60%"),
+            "the numeric volume renders: {text}"
+        );
+        assert!(
+            text.contains("─"),
+            "the volume line accent fill renders: {text}"
+        );
+    }
+
+    #[test]
+    fn agent_planets_stage_shows_calm_copy_without_a_station() {
+        let mut app = app_with_agents(vec![pulse_agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            text.contains("no station playing"),
+            "the stage keeps calm no-station copy: {text}"
+        );
+    }
+
+    #[test]
+    fn agent_planets_heading_uses_single_view_title_case() {
+        let mut app = app_with_agents(vec![
+            pulse_agent("ws", "p1", Some("research"), AgentStatus::Working),
+            pulse_agent("ws", "p2", Some("review"), AgentStatus::Idle),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            text.contains("Agent Planets · 2 active"),
+            "the heading matches Single View Title Case: {text}"
+        );
+        assert!(
+            !text.contains("AGENT PLANETS"),
+            "no uppercase stage heading remains: {text}"
+        );
+    }
+
+    #[test]
+    fn agent_planets_reuses_the_exact_single_view_volume_line_in_its_title_block() {
+        let mut app = app_with_agents(vec![
+            pulse_agent("ws", "p1", Some("research"), AgentStatus::Working),
+            pulse_agent("ws", "p2", Some("review"), AgentStatus::Idle),
+        ]);
+        play_first(&mut app);
+        app.apply(Action::ToggleAgentOverlay);
+        let stage = buffer_text(&render_buffer(&app, 120, 36));
+        let signal_line =
+            signal_view_volume_line(&app, &Theme::for_name(ThemeName::Minimal), 120).to_string();
+        assert!(
+            stage.contains(&signal_line),
+            "the stage carries the byte-for-byte Signal View volume line: {stage}"
+        );
+        assert!(
+            stage.contains("volume 60%"),
+            "the Signal View volume prefix renders: {stage}"
+        );
+        assert!(
+            !stage.contains("Vol "),
+            "the Now Playing gauge label never renders on the stage: {stage}"
+        );
+    }
+
+    #[test]
     fn signal_view_never_shows_the_collage_canvas() {
         let mut app = app_with_agents(vec![pulse_agent(
             "ws",
@@ -2567,7 +2728,7 @@ mod tests {
         )]);
         app.apply(Action::ToggleSignalView);
         let text = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(!text.contains("Agent Pulse"), "no canvas: {text}");
+        assert!(!text.contains("Agent Planets"), "no canvas: {text}");
         assert!(
             !text.contains("● 1 active"),
             "Signal View reserves no Pulse line: {text}"
@@ -2578,7 +2739,10 @@ mod tests {
         app.apply(Action::ToggleAgentOverlay);
         app.apply(Action::ToggleSignalView);
         let text = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(!text.contains("Agent Pulse"), "no canvas over Signal View");
+        assert!(
+            !text.contains("Agent Planets"),
+            "no canvas over Signal View"
+        );
     }
 
     #[test]

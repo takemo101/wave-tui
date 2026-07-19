@@ -479,12 +479,13 @@ MVP includes automatic and CLI-controlled low-power behavior.
 - `--low-power` explicitly lowers visual update cadence.
 - Compact/small layouts may automatically reduce visualizer/update intensity.
 - Audio playback must remain unaffected.
-- The Agent Pulse Dual Phase Scope renders statically in low-power mode:
-  phase-trace/persistence positions, frame geometry, shadow trails, and the
-  Working spinner orientation are frozen while state edge/core colors still
-  refresh. The frozen geometry is captured from the first *audible*
-  visualizer frame after startup (RMS above the silence threshold with real
-  phase data); until such a frame arrives, low power renders the live frame.
+- The Agent Planets stage renders statically in low-power mode:
+  phase-trace/persistence positions and planet disc, status-atmosphere, and
+  focus-bracket geometry are frozen while fresh agent
+  snapshots may still update the per-status atmosphere treatment and colors. The
+  frozen geometry is captured from the first *audible* visualizer frame
+  after startup (RMS above the silence threshold with real phase data);
+  until such a frame arrives, low power renders the live frame.
 
 ### Herdr Agent Pulse (Optional Integration)
 
@@ -493,11 +494,27 @@ plugin, shows a **read-only Agent Pulse**: the live status of the AI coding
 agents visible on that Herdr session's local control socket, presented as
 ambient context beside radio playback. The integration design (packaging,
 eligibility, monitoring) is
-`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`; its
-presentation is superseded by the approved
+`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`. The canvas
+background remains the Dual Phase Scope of
 `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
-(which in turn supersedes the interim Kinetic Collage presentation in
-`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`).
+(which superseded the interim Kinetic Collage presentation in
+`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`);
+the agent presentation is the Agent Planets stage of
+`docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`, which
+supersedes the stage layout, shadowed planet geometry, and selected-only
+callout of the Pocket Planets refinement in
+`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`
+(whose surface palette and privacy contracts remain current). The stage's
+permanent Side Tags are superseded by the on-demand Agent details modal of
+`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`,
+and its ring/arc/satellite status language by the status-atmosphere and
+focus-bracket language of
+`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
+as revised — the approved revision removed that design's orbiting
+particles, so the thin per-status atmosphere is the only planet
+decoration. Pocket Planets in turn superseded the planet scale/surface presentation of
+`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`
+(itself superseding the Lissajous design's square agent frames).
 This section records the product behavior as implemented.
 
 This is an optional Herdr integration, not a plugin system inside `wave-tui`,
@@ -561,12 +578,12 @@ enabled.
 
 #### Connection states and recovery
 
-| Condition | Wide/Medium summary | Canvas (`a`) |
+| Condition | Wide/Medium summary | Agent Planets stage (`a`) |
 | --- | --- | --- |
-| Connected | `● n active` count | Live Dual Phase Scope (`agents · none active` when empty) |
-| First failed poll | Count dims | Last live scope (traces/persistence/frames/cores/trails) frozen, dimmed, `stale · reconnecting` banner |
-| ≥ 15 seconds without success | Summary disappears | Frames and traces hidden behind `agents · unavailable · retrying` |
-| Fresh snapshot | Live count | Live scope |
+| Connected | `● n active` count | Live stage (`agents · none active` in an empty field) |
+| First failed poll | Count dims | Last live composition (traces/persistence/discs/atmospheres/brackets) frozen, dimmed, a quiet `· reconnecting` note on the stage heading; an open details record stays dimmed with `reconnecting` in its title |
+| ≥ 15 seconds without success | Summary disappears | Details closed and the field hidden behind `agents · unavailable · retrying`; the stage chrome stays |
+| Fresh snapshot | Live count | Live stage |
 
 Socket errors, malformed replies, and timeouts are recoverable: they never
 panic the TUI or interrupt playback, and polling continues. A per-loop timer
@@ -577,13 +594,26 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 #### UI and input contract
 
 - Wide and Medium add exactly one `● n active` line to Now Playing — a count
-  only, never names. Compact shows no Agent Pulse line (but `a` still opens
-  the canvas while the integration is active); Signal View never shows Agent
-  Pulse and ignores `a`.
-- `a` opens the full-screen **Dual Phase Scope** canvas, replacing the whole
-  player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit. Agent
-  Pulse opens a full-screen Dual Phase Scope with two real-audio Lissajous
-  traces: overlapping phase portraits of paired played samples, never a
+  only, never names. While the summary is visible (Connected or Stale), the
+  Wide/Medium footer also appends exactly one `a Agent Planets` hint;
+  Compact, standalone, disabled, ineligible, and unavailable states append
+  nothing, so their footers stay byte-identical. Compact shows no Agent
+  Pulse line (but `a` still opens the stage while the integration is
+  active); Signal View never shows Agent Pulse and ignores `a`.
+- `a` opens the full-screen **Agent Planets** stage, replacing the whole
+  player surface; `a`/`Esc` close it and `q`/`Ctrl+C` still quit. The stage
+  centers the same hierarchy as Single View: a Title Case
+  `Agent Planets · n active` heading, the current ICY title (falling back
+  to the station name, then `no station playing`), the exact Single View
+  `signal_view_volume_line` (`volume n%` with its accent `─` fill and
+  muted `·` remainder) directly beneath that title as the lowest
+  title-metadata row, the scope/planet field, and a compact footer with
+  selection/player/close hints that deliberately does not advertise `z`.
+  There is no playback-status/station context line and no dedicated volume
+  gauge row. The title and volume reuse the existing app station/ICY/volume
+  state and expose no agent-private data.
+- The field is the unchanged Dual Phase Scope: two real-audio Lissajous
+  traces — overlapping phase portraits of paired played samples, never a
   scrolling amplitude-over-time waveform. With stereo output the primary
   trace plots the played left/right sample pairs; mono streams pair the
   played mono mix with the same mix at a documented 29-sample lag, and the
@@ -592,41 +622,70 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   breathing theme-phosphor vignette spreads with RMS. Nothing advances from
   wall-clock time: identical visualizer data renders identical cells, and
   silence leaves the scope dim and still.
-- The canvas renders one small, stable frame rectangle per agent, laid out
+- The stage renders one small, stable planet per agent, laid out
   deterministically from the agent's private workspace-qualified identity so
-  frames stay recognizable and never swap positions. Agent frames keep
-  state-colored edges; Working has an audio-driven spinner core (`◜◝◞◟`,
-  whose orientation advances only from newly received played-audio phase
-  data), while Idle (`◌`), Blocked (`×`), and Done (`·`) remain stationary.
-  RMS combined with each frame's assigned FFT band moves its rectangle with
-  a small bounded scale/offset and adds a one- or two-layer soft shadow
-  trail drawn from real recent visualizer frames. Dense terminals shrink
-  frame size and spacing rather than omitting frames; every agent keeps one
-  visible frame.
-- State colors come from the active theme only: working edges glow strongest
-  (the playing color), blocked uses the error color for edge and core;
-  idle/done/unknown stay muted and a done frame stays muted/dim until its
-  snapshot omits it. In `--low-power`, phase-trace/persistence positions,
-  frame geometry, shadow trails, and spinner orientation are frozen (from
-  the first audible frame captured after startup) while state edge/core
-  colors still update.
-- `Tab`/`Shift+Tab`/arrows/`j`/`k` select a frame, bringing it forward.
-  A selected named agent shows only `name · status`, placed near its frame;
-  an unnamed selection shows no label. Search (`/`) and station
-  navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed, so
-  canvas input can never play a station or move station selection.
+  planets stay recognizable and never swap positions. Planet bodies use one
+  of four explicit round disc masks — 7×5, 5×3, 3×3, or a single cell —
+  never a calculated rectangle/ellipse silhouette, and never a full-tile
+  shadow or soft shadow trail: disc masks replaced the earlier rectangle
+  shadows and calculated planet silhouettes. Each private identity owns a
+  stable Banded gas, Ice-cap, or Cratered-rock surface painted only on mask
+  cells using active-theme colors (two stable theme spectrum positions per
+  identity); the surface is identity language only, never a status, audio,
+  time, or selection signal. RMS combined with each planet's assigned FFT
+  band moves the whole disc and atmosphere with a small bounded transform.
+  Dense terminals fall through the disc masks 7×5 → 5×3 → 3×3 → one
+  selectable body cell — never omitting an agent.
+- A thin status atmosphere outside a one-cell body gap is the only planet
+  decoration, using active-theme colors only; its ring of cells never
+  moves, and it replaced the earlier status orbits, Working arcs, Done
+  satellites, and orbiting particles. Working paints the playing color and
+  advances one bright accent segment, only on newly received played-audio
+  phase data (never a clock); Idle breathes its muted atmosphere slowly;
+  Blocked carries a short `theme.error` segment with a weak, deterministic,
+  irregular pulse — no blinking timer, cross glyph, or broken orbit; Done
+  dims its body and slowly pulses a dim afterglow until its snapshot omits
+  it; Unknown stays dim and near-static. Silence rests every treatment. In
+  `--low-power`, phase-trace/persistence positions and planet
+  disc/atmosphere/bracket geometry are frozen (from the first audible frame
+  captured after startup) while fresh agent snapshots may still update the
+  per-status atmosphere treatment and colors. A tile too tight to keep the
+  body gap drops its atmosphere rather than crowding the field.
+- Planets keep no permanent label. While the stage selection is
+  interactive (overlay open on a live connection), `Tab`/`↓`/`j` select the
+  next planet and wrap from the last agent back to the first, and
+  `Shift+Tab`/`↑`/`k` select the previous planet and wrap from the first
+  agent to the last (with no selection, next starts at the first agent and
+  previous at the last). The selected planet gains four theme-colored
+  corner brackets around its allocated tile — a foreground-only treatment
+  that never paints a selection background, never restyles the atmosphere,
+  and is decorative rather than a hit target. `Enter` opens the centered
+  **Agent details** record for the selected live planet (no-op without
+  one), showing non-empty `name`, `agent`, normalized `status`, and
+  `activity` (`terminal_title`) rows in that order; `Enter`/`Esc` close
+  only the record, `a` closes the record and the stage, and while it is
+  open selection, player, theme, favorite, visualizer, search, and Signal
+  View input is consumed (`q`/`Ctrl+C` still quit). Normal-layout
+  navigation keys keep their non-wrapping behavior outside the stage.
+  Search (`/`) and
+  station navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed,
+  so stage input can never play a station or move station selection.
 - The documented global player shortcuts fall through with their exact normal
   semantics and side effects: `Space` (playback toggle, still conditional on
   the station list being the focused pane underneath), `+`/`-` (volume), `f`
-  (favorite for the station-list selection), `t` (theme), `v` (visualizer
-  mode), and `z` (Signal View, which replaces the canvas surface).
+  (favorite for the station-list selection), `t` (theme), and `v`
+  (visualizer mode). `z` is consumed as a no-op while Agent Planets is open
+  and never enters Single View from the stage; outside the stage `z` keeps
+  its exact documented Signal View toggle.
 - Mouse capture is enabled only for eligible plugin launches, solely to feed
-  frame-selection clicks; background trace, vignette, and shadow cells
-  resolve nothing. Clicks resolve against the frame geometry actually drawn
+  planet-selection clicks; only a planet's disc body cells select —
+  background trace, vignette, atmosphere, focus-bracket, and empty cells
+  resolve nothing, and clicks are consumed while the details record is
+  open. Clicks resolve against the planet geometry actually drawn
   (including low-power frozen geometry) and only while the connection is
   `Connected`. During stale/unavailable states selection is frozen entirely —
   mouse clicks and keyboard selection both change nothing, while `a`/`Esc`
-  still close the canvas. Selection input, from either device, must not act
+  still close the stage. Selection input, from either device, must not act
   on data that may no longer be current.
 
 #### Privacy and read-only guarantees
@@ -637,9 +696,12 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 - Every agent reported by the plugin invocation's local Herdr socket is
   shown, across that session's workspaces; other Herdr sessions are never
   discovered.
-- Only a selected frame's explicit Herdr `name` is ever rendered. There is
-  no fallback label; pane ids, workspace ids, working directories, and agent
-  types never appear on screen.
+- The stage field renders no agent text at all. Only the on-demand Agent
+  details record renders agent data, and only an agent's explicit Herdr
+  `name`, its `agent` runtime label, normalized status, and
+  `terminal_title` Activity when non-empty. Pane ids, workspace ids,
+  working directories, terminal/session ids, and raw status never appear
+  on screen.
 - Agent activity changes colors/low-rate rendering only — never audio,
   playback, search, settings, theme, visualizer, or OS notifications.
 - Nothing is persisted: agent state exists only in process memory, and
@@ -779,7 +841,8 @@ tier, and built-in retry candidates stay visible
 
 ### Herdr Agent Pulse — Verification Status
 
-Status as of the Lissajous Scope documentation pass (2026-07-19).
+Status as of the Agent Planets atmosphere-and-focus documentation pass
+(2026-07-19).
 
 **Automated (all green in this pass):** `cargo fmt --check`, `cargo test`,
 `cargo check`, and `cargo clippy --all-targets -- -D warnings` all exit 0.
@@ -793,33 +856,56 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
 - monitor failure reporting and clean shutdown against a nonexistent socket
   (`herdr`);
 - snapshot/lifecycle reducers: sort order, cross-workspace identity
-  distinctness and selection, done agents staying until a snapshot omits
-  them, the stale-edge visualizer freeze capture, stale → unavailable
-  (15 s) → recovery transitions, and the per-loop staleness tick (`app`);
+  distinctness and selection — including overlay-only cyclic next/previous
+  selection wrapping at both ends while stale/unavailable selection stays
+  inert — done agents staying until a snapshot omits them, the stale-edge
+  visualizer freeze capture, stale → unavailable (15 s) → recovery
+  transitions, and the per-loop staleness tick (`app`);
 - normalized `PhaseTrace` clamping/pairing, typed `PlayedSample` stereo/mono
   boundaries, and analyzer phase traces built from real played samples —
   stereo left/right primary pairs plus distinct documented mono lags
   (29-sample primary fallback, 97-sample secondary) — with no scrolling
   waveform substitution (`model`, `audio::output`, `audio::analyzer`);
 - `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
-  the canvas key gate (frame selection, suppressed search/station
-  navigation, preserved global player shortcuts, Signal View delegation),
-  and monitor/mouse-capture/click routing including the low-power geometry
+  the stage key gate (planet selection, details open/close and
+  details-open input consumption, suppressed search/station
+  navigation, preserved global player shortcuts, and stage-local `z`
+  consumption with unchanged Signal View routing outside the stage), and
+  monitor/mouse-capture/click routing including the low-power geometry
   path (`cli`);
 - the App-owned low-power visual capture: silent startup frames capture
   nothing, the first audible frame (RMS above the silence threshold with
   real phase data) becomes the frozen geometry source while live frames
   still update colors, and disabling the policy clears the capture (`app`);
-- summary visibility per tier and connection state, full-screen canvas
-  coverage, two centered clock-free Dual Phase Scope traces with dim
-  phosphor persistence, deterministic per-identity frame layout,
-  one-frame-per-agent density, RMS/FFT-driven frame motion and shadow
-  trails, silence stillness, audio-driven Working spinner cores versus
-  stationary Idle/Blocked/Done/Unknown cores, stale/low-power frozen
-  geometry, state edge glow and `theme.error` Blocked cores,
-  selected-name-only privacy with near-frame label placement, stale
-  freeze/unavailable rendering, and frame-only hit testing (`ui`,
-  `ui::agent_pulse`).
+- summary visibility per tier and connection state, the eligible-only
+  Wide/Medium `a Agent Planets` footer hint with byte-identical
+  standalone/disabled footers and compact suppression, full-screen stage
+  coverage, the centered stage chrome (the Title Case
+  `Agent Planets · n active` heading, ICY → station → `no station playing`
+  title fallback,
+  the exact Single View volume line rendered directly beneath the title as
+  the lowest title-metadata row — no status/context line and no dedicated
+  volume gauge row — and a stage footer that never advertises `z`), two
+  centered clock-free Dual
+  Phase Scope traces with dim phosphor persistence, deterministic
+  per-identity planet layout using the explicit 7×5/5×3/3×3/one-cell round
+  disc masks with dense fall-through and no full-tile shadow or
+  shadow-trail cells, stable identity-seeded Banded gas/Ice-cap/
+  Cratered-rock surfaces painted only on mask cells with theme-spectrum
+  palette pairs, one-selectable-planet-per-agent density, RMS/FFT-driven
+  bounded planet motion, silence stillness, the thin status atmosphere as
+  the only planet decoration with a ring of cells that never moves, the
+  Working accent segment traveling only with the played phase frame,
+  Idle/Done breathing and afterglow lifts with a near-static Unknown, the
+  short irregular `theme.error` Blocked segment, silence resting every
+  atmosphere treatment, no old ring/arc/satellite glyphs and no
+  orbiting-particle cells, the selected planet's four bounded corner
+  brackets that never select and stay off atmosphere cells, decorative
+  cells kept gapped from the disc body and out of hit cells, the Agent
+  details record's field ordering/truncation/privacy exclusions,
+  stale/low-power frozen disc/atmosphere/bracket geometry with per-status
+  colors still refreshing, stale freeze/unavailable rendering, and
+  body-only hit testing (`ui`, `ui::agent_pulse`).
 
 **Manual checklist (NOT run in this pass).** This documentation pass was
 performed without a Herdr 0.7.0+ installation, a real terminal session, or
@@ -832,40 +918,62 @@ the release as fully validated:
       runs during `herdr plugin install`/link.
 - [ ] Open the `Open wave-tui radio tab` action; confirm a dedicated tab with
       the Wide or Medium layout and working playback.
-- [ ] Play a real **stereo** stream with the canvas open and judge the live
+- [ ] Play a real **stereo** stream with the stage open and judge the live
       Dual Phase Scope: the primary trace draws a left/right phase portrait,
       the secondary trace differs from it, dim phosphor persistence echoes
-      recent motion, frames breathe with RMS/band energy and grow soft
-      shadow trails, Working spinner cores advance with the music, and
-      silence leaves a dim, still scope with no timer motion — never a
-      scrolling waveform.
+      recent motion, planets breathe with RMS/band energy with no shadow
+      trail or full-tile shadow anywhere, Working atmosphere accent
+      segments advance with the music while Idle/Done atmospheres breathe
+      and pulse gently, and silence leaves a dim, still scope with no timer
+      motion — never a scrolling waveform. Confirm the stage chrome reads
+      well live: the centered Title Case `Agent Planets · n active`
+      heading, the current ICY/station title, and the Single View volume
+      line directly beneath that title with no extra status/context line
+      or dedicated volume row.
 - [ ] Play a real **mono** stream and confirm both lagged-mono traces stay
       non-diagonal, distinct oscilloscope figures rather than a flat line or
       a scrolling waveform.
-- [ ] Cycle all six themes on the canvas and confirm traces, vignette, frame
-      edges, and status cores stay legible on each.
+- [ ] Cycle all six themes on the stage and confirm traces, vignette,
+      Banded Worlds planet surfaces, status atmospheres, and selection
+      brackets stay legible on each.
 - [ ] With agents across multiple workspaces of the same Herdr session,
-      confirm `● n active` counts them all and the canvas keeps one
-      recognizable frame per agent at stable positions, including dense
-      agent counts and after resizes.
-- [ ] Select frames with keyboard and mouse clicks; confirm clicks land only
-      on frame cells, the selected frame comes forward, only explicit
-      `name · status` labels render near the frame, and unnamed agents show
-      no label.
-- [ ] Resize the tab through Wide/Medium/Compact; confirm the summary hides
-      in Compact while `a` still opens the full-screen canvas, and the
-      canvas redraws cleanly across sizes.
-- [ ] Temporarily remove socket access; confirm the dimmed count and frozen
-      `stale · reconnecting` canvas (traces, frames, cores, and trails
-      frozen and dimmed), the 15-second `agents · unavailable · retrying`
-      state hiding every frame and trace, and full recovery when the socket
+      confirm `● n active` counts them all and the stage keeps one
+      recognizable round disc-mask planet per agent at stable positions —
+      including dense agent counts, where discs fall through
+      7×5 → 5×3 → 3×3 → one body cell without omitting an agent and tight
+      tiles drop their atmospheres rather than crowding — and after
+      resizes.
+- [ ] Select planets with keyboard and mouse clicks; confirm `Tab`/`↓`/`j`
+      step forward and wrap from the last planet back to the first,
+      `Shift+Tab`/`↑`/`k` step backward and wrap from the first planet to
+      the last, clicks land only on planet disc body cells (atmosphere and
+      bracket cells select nothing), the selected planet shows only four
+      corner brackets with no painted selection background, and `Enter`
+      opens the Agent details record with only non-empty name/agent/
+      status/activity rows — no pane, workspace, cwd, or session data.
+- [ ] Resize the tab through Wide/Medium/Compact; confirm the eligible
+      Wide/Medium footer shows the `a Agent Planets` hint, the summary and
+      hint hide in Compact while `a` still opens the full-screen stage, and
+      the stage chrome, discs, atmospheres, and brackets redraw cleanly
+      across sizes.
+- [ ] Press `z` while the stage is open and confirm it is ignored — no
+      Single View, stage unchanged; close the stage and confirm `z` still
+      toggles Signal View as documented.
+- [ ] Temporarily remove socket access; confirm the dimmed count, the
+      frozen stale stage (traces, discs, atmospheres, and brackets frozen
+      and dimmed under the heading's `· reconnecting` note, an open
+      details record dimmed with `reconnecting` in its title), the
+      15-second `agents · unavailable · retrying` state closing details
+      and hiding the field
+      while the stage chrome stays, and full recovery when the socket
       returns — with playback unaffected throughout, and mouse clicks and
       keyboard selection changing nothing while stale/unavailable.
 - [ ] Detach and reattach the Herdr session; confirm the tab process and
       playback follow Herdr's normal pane lifecycle.
 - [ ] Run `wave-tui --low-power` inside Herdr and confirm frozen trace,
-      persistence, frame, shadow, and spinner geometry while state
-      edge/core colors still refresh — including that a launch into silence
+      persistence, and planet disc/atmosphere/bracket geometry
+      while fresh snapshots still update per-status atmosphere treatment
+      and colors — including that a launch into silence
       renders the live frame until audio becomes audible, after which the
       first audible frame stays the frozen geometry — and that clicks still
       select against the frozen geometry.

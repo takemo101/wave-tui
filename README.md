@@ -37,7 +37,7 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   the discovery UI and shows the current station center-stage with a large
   visualizer; `z`/`Esc` return and `q` quits. It is not persisted and has no CLI
   flag.
-- **Herdr Agent Pulse (optional)** — when launched as the official Herdr
+- **Herdr Agent Planets (optional)** — when launched as the official Herdr
   plugin (Herdr 0.7.0+), a quiet, read-only `● n active` count of the AI
   coding agents on the local Herdr socket appears in Wide/Medium layouts, and
   `a` opens a full-screen **Agent Planets** stage: the current station/ICY
@@ -47,7 +47,7 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   changes stay inside each disc; selecting one and pressing `Enter`
   opens a read-only Agent details record. It never reads
   agent output, never controls panes, and standalone launches are completely
-  unchanged (see [Herdr Agent Pulse](#herdr-agent-pulse-optional)).
+  unchanged (see [Herdr Agent Planets](#herdr-agent-planets-optional)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
@@ -224,7 +224,7 @@ connecting, playing, and failed states instead of dropping you back to the
 normal UI. The title area includes a thin, near-full-width volume bar without
 mixing in unrelated status labels.
 
-## Herdr Agent Pulse (optional)
+## Herdr Agent Planets (optional)
 
 When `wave-tui` is launched by its official Herdr plugin, it can quietly show
 the live status of the AI coding agents visible on that Herdr session's local
@@ -266,9 +266,9 @@ tab owns the audio process: closing the tab exits `wave-tui` and stops
 playback, and detaching/reattaching the Herdr session leaves the process under
 Herdr's normal pane lifecycle.
 
-### When Agent Pulse is active
+### When Agent Planets is active
 
-Agent Pulse enables itself only when **all** of the following hold:
+The Agent Planets companion enables itself only when **all** of the following hold:
 
 1. `--no-agent-pulse` was not passed.
 2. `HERDR_ENV` is exactly `1`.
@@ -414,7 +414,7 @@ socket. Failures are recoverable and never interrupt playback:
 
 ### Privacy and read-only limits
 
-Agent Pulse is strictly observational:
+The Agent Planets companion is strictly observational:
 
 - It only calls `agent.list`; it never reads pane output, prompts, files, or
   terminal scrollback.

@@ -4,9 +4,9 @@
 //! Everything here is read-only presentation over the Agent Pulse display
 //! accessors on [`App`]: this module never calls the Herdr adapter, opens
 //! sockets, or mutates app state. The stage centers the same hierarchy as
-//! Single View: an `AGENT PLANETS · n ACTIVE` heading, the current
-//! ICY/station title, the Dual Phase Scope field, a now-playing context
-//! line, a near-full-width volume gauge, and a footer. Behind the planets
+//! Single View: an `Agent Planets · n active` heading, a title block with
+//! the current ICY/station title over the exact Single View volume line,
+//! the Dual Phase Scope field, and a footer. Behind the planets
 //! the field plots two real played-audio phase portraits from the current
 //! [`crate::model::VizFrame`] — paired samples on X/Y axes (stereo
 //! left/right, or documented mono lags), never an amplitude-over-time
@@ -815,37 +815,32 @@ fn canvas_active(app: &App) -> bool {
         && app.agent_pulse_connection() != AgentPulseConnection::Hidden
 }
 
-/// The centered Agent Planets stage partitions: heading, current title,
-/// scope/planet field, now-playing context, volume, and footer rows.
+/// The centered Agent Planets stage partitions: heading, title block
+/// (current title with the Single View volume line beneath it), scope/planet
+/// field, and footer rows.
 struct AgentStageLayout {
     heading: Rect,
-    title: Rect,
+    title_block: Rect,
     field: Rect,
-    now_playing: Rect,
-    volume: Rect,
     footer: Rect,
 }
 
-/// Partition the stage. The field takes every flexible row; the title keeps
-/// two rows only when the terminal is tall enough, so small stages retain a
-/// positive field.
+/// Partition the stage. The field takes every flexible row; the title block
+/// keeps a second title row only when the terminal is tall enough, so small
+/// stages retain a positive field.
 fn agent_stage_layout(area: Rect) -> AgentStageLayout {
     let rows = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(if area.height >= 15 { 2 } else { 1 }),
+        Constraint::Length(if area.height >= 15 { 3 } else { 2 }),
         Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(area);
     AgentStageLayout {
         heading: rows[0],
-        title: rows[1],
+        title_block: rows[1],
         field: rows[2],
-        now_playing: rows[3],
-        volume: rows[4],
-        footer: rows[5],
+        footer: rows[3],
     }
 }
 
@@ -926,8 +921,9 @@ pub(super) fn hit_test(
 ///
 /// A no-op unless the canvas is active, so normal and standalone output is
 /// untouched. Clears the full area, then draws the centered stage chrome
-/// (heading, current ICY/station title, now-playing context, volume gauge,
-/// and footer) and, inside the stage field, the breathing vignette, the
+/// (heading, the current ICY/station title with the exact Single View
+/// volume line beneath it, and footer) and, inside the stage field, the
+/// breathing vignette, the
 /// phosphor-persistence and dual phase-trace layers, each planet's disc-mask
 /// body, craters, and status orbit ring, and every named planet's permanent
 /// two-line side tag with the selected tag bright and drawn last. Stale
@@ -968,9 +964,7 @@ fn render_agent_planets_stage(
 
     let stage = agent_stage_layout(area);
     render_stage_heading(theme, agents.len(), stale, stage.heading, buf);
-    render_stage_title(app, theme, stale, stage.title, buf);
-    render_stage_now_playing(app, theme, stale, stage.now_playing, buf);
-    render_stage_volume(app, theme, stage.volume, buf);
+    render_stage_title_block(app, theme, stale, stage.title_block, buf);
     render_stage_footer(theme, stage.footer, buf);
 
     if connection == AgentPulseConnection::Unavailable {
@@ -1061,8 +1055,9 @@ fn render_agent_planets_stage(
     }
 }
 
-/// Centered stage heading: `AGENT PLANETS · n ACTIVE`, with the quiet
-/// reconnect note appended while the connection is stale.
+/// Centered stage heading: `Agent Planets · n active` in the same Title
+/// Case presentation as Single View, with the quiet reconnect note appended
+/// while the connection is stale.
 fn render_stage_heading(theme: &Theme, count: usize, stale: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -1074,8 +1069,8 @@ fn render_stage_heading(theme: &Theme, count: usize, stale: bool, area: Rect, bu
         count_style = count_style.add_modifier(Modifier::DIM);
     }
     let mut spans = vec![
-        Span::styled("AGENT PLANETS", heading),
-        Span::styled(format!(" · {count} ACTIVE"), count_style),
+        Span::styled("Agent Planets", heading),
+        Span::styled(format!(" · {count} active"), count_style),
     ];
     if stale {
         spans.push(Span::styled(
@@ -1102,9 +1097,12 @@ fn stage_primary_title(app: &App) -> String {
     }
 }
 
-/// Centered current-title block, truncated to the row budget with the same
-/// two-line wrapping approach as Signal View.
-fn render_stage_title(app: &App, theme: &Theme, stale: bool, area: Rect, buf: &mut Buffer) {
+/// Centered title block: the current title truncated to the row budget with
+/// the same two-line wrapping approach as Signal View, then the exact Single
+/// View volume line as the lowest title-metadata row — the same placement it
+/// has in Signal View. The line is reused verbatim, so it is never restyled
+/// here.
+fn render_stage_title_block(app: &App, theme: &Theme, stale: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -1114,58 +1112,19 @@ fn render_stage_title(app: &App, theme: &Theme, stale: bool, area: Rect, buf: &m
     if stale {
         style = style.add_modifier(Modifier::DIM);
     }
-    let mut lines = super::title_lines(&stage_primary_title(app), area.width);
-    lines.truncate(area.height as usize);
-    let lines: Vec<Line> = lines
+    let mut title = super::title_lines(&stage_primary_title(app), area.width);
+    title.truncate((area.height as usize).saturating_sub(1).max(1));
+    let mut lines: Vec<Line> = title
         .into_iter()
         .map(|line| Line::from(Span::styled(line, style)))
         .collect();
+    if area.height >= 2 {
+        lines.push(super::signal_view_volume_line(app, theme, area.width));
+    }
     Paragraph::new(lines)
         .alignment(Alignment::Center)
         .style(theme.base_style())
         .render(area, buf);
-}
-
-/// Centered muted now-playing context: playback status plus station name;
-/// blank without a current station.
-fn render_stage_now_playing(app: &App, theme: &Theme, stale: bool, area: Rect, buf: &mut Buffer) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let Some(station) = app.current_station() else {
-        return;
-    };
-    let status = super::signal_view_status_label(app.playback());
-    let mut style = Style::default().fg(theme.muted);
-    if stale {
-        style = style.add_modifier(Modifier::DIM);
-    }
-    Paragraph::new(Line::from(Span::styled(
-        format!("{status} · {}", station.name.as_str()),
-        style,
-    )))
-    .alignment(Alignment::Center)
-    .style(theme.base_style())
-    .render(area, buf);
-}
-
-/// Centered near-full-width volume gauge with its numeric percent, reusing
-/// the shared Now Playing gauge language.
-fn render_stage_volume(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    // Leave room for the `Vol ` label and ` 100%` suffix so the near-full-
-    // width bar never clips.
-    let gauge = (area.width as usize).saturating_sub(11).max(4);
-    Paragraph::new(super::volume_gauge_line(
-        theme,
-        app.settings().volume.get(),
-        gauge,
-    ))
-    .alignment(Alignment::Center)
-    .style(theme.base_style())
-    .render(area, buf);
 }
 
 /// Centered restrained footer: selection, player, and close hints. `z` is
@@ -1730,8 +1689,8 @@ mod tests {
     }
 
     /// Cells drawn with agent-planet glyphs (bodies, craters, or rings)
-    /// inside the stage field, so the volume gauge's shared `░`/`█` cells in
-    /// the chrome rows never count as planets.
+    /// inside the stage field, so chrome rows (heading, title block, and
+    /// footer) never count as planets.
     fn count_planet_cells(buf: &Buffer) -> usize {
         field_cells(buf)
             .iter()

@@ -2541,7 +2541,7 @@ mod tests {
     /// Cells drawn with planet glyphs (body, orbit ring, or satellite)
     /// anywhere in the buffer. The Working arc `●` stays excluded because
     /// the quiet summary line shares that glyph, and the crater `░` because
-    /// the stage volume gauge shares it.
+    /// the normal-layout Now Playing gauge shares it.
     fn tile_cell_count(text: &str) -> usize {
         ["▓", "∘", "▪"]
             .iter()
@@ -2562,7 +2562,10 @@ mod tests {
 
         app.apply(Action::ToggleAgentOverlay);
         let canvas = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(canvas.contains("AGENT PLANETS"), "stage heading: {canvas}");
+        assert!(
+            canvas.contains("Agent Planets · 1 active"),
+            "stage heading: {canvas}"
+        );
         assert!(
             !canvas.contains("All Stations"),
             "the canvas replaces the whole player surface: {canvas}"
@@ -2643,16 +2646,22 @@ mod tests {
         app.apply(Action::ToggleAgentOverlay);
         let text = buffer_text(&render_buffer(&app, 120, 36));
         assert!(
-            text.contains("AGENT PLANETS"),
+            text.contains("Agent Planets"),
             "the stage heading renders: {text}"
         );
-        assert!(text.contains("2 ACTIVE"), "the heading counts: {text}");
+        assert!(text.contains("· 2 active"), "the heading counts: {text}");
         assert!(
             text.contains(app.now_playing_title().unwrap()),
             "the ICY title renders on the stage: {text}"
         );
-        assert!(text.contains("60%"), "the numeric volume renders: {text}");
-        assert!(text.contains("█"), "the volume gauge fill renders: {text}");
+        assert!(
+            text.contains("volume 60%"),
+            "the numeric volume renders: {text}"
+        );
+        assert!(
+            text.contains("─"),
+            "the volume line accent fill renders: {text}"
+        );
     }
 
     #[test]
@@ -2672,6 +2681,49 @@ mod tests {
     }
 
     #[test]
+    fn agent_planets_heading_uses_single_view_title_case() {
+        let mut app = app_with_agents(vec![
+            pulse_agent("ws", "p1", Some("research"), AgentStatus::Working),
+            pulse_agent("ws", "p2", Some("review"), AgentStatus::Idle),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        let text = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(
+            text.contains("Agent Planets · 2 active"),
+            "the heading matches Single View Title Case: {text}"
+        );
+        assert!(
+            !text.contains("AGENT PLANETS"),
+            "no uppercase stage heading remains: {text}"
+        );
+    }
+
+    #[test]
+    fn agent_planets_reuses_the_exact_single_view_volume_line_in_its_title_block() {
+        let mut app = app_with_agents(vec![
+            pulse_agent("ws", "p1", Some("research"), AgentStatus::Working),
+            pulse_agent("ws", "p2", Some("review"), AgentStatus::Idle),
+        ]);
+        play_first(&mut app);
+        app.apply(Action::ToggleAgentOverlay);
+        let stage = buffer_text(&render_buffer(&app, 120, 36));
+        let signal_line =
+            signal_view_volume_line(&app, &Theme::for_name(ThemeName::Minimal), 120).to_string();
+        assert!(
+            stage.contains(&signal_line),
+            "the stage carries the byte-for-byte Signal View volume line: {stage}"
+        );
+        assert!(
+            stage.contains("volume 60%"),
+            "the Signal View volume prefix renders: {stage}"
+        );
+        assert!(
+            !stage.contains("Vol "),
+            "the Now Playing gauge label never renders on the stage: {stage}"
+        );
+    }
+
+    #[test]
     fn signal_view_never_shows_the_collage_canvas() {
         let mut app = app_with_agents(vec![pulse_agent(
             "ws",
@@ -2681,7 +2733,7 @@ mod tests {
         )]);
         app.apply(Action::ToggleSignalView);
         let text = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(!text.contains("AGENT PLANETS"), "no canvas: {text}");
+        assert!(!text.contains("Agent Planets"), "no canvas: {text}");
         assert!(
             !text.contains("● 1 active"),
             "Signal View reserves no Pulse line: {text}"
@@ -2693,7 +2745,7 @@ mod tests {
         app.apply(Action::ToggleSignalView);
         let text = buffer_text(&render_buffer(&app, 120, 36));
         assert!(
-            !text.contains("AGENT PLANETS"),
+            !text.contains("Agent Planets"),
             "no canvas over Signal View"
         );
     }

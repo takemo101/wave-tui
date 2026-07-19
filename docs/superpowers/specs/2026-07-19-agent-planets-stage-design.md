@@ -1,6 +1,8 @@
 # Agent Planets Stage redesign
 
-**Status:** Approved for implementation on 2026-07-19; **not yet implemented**.
+**Status:** Approved for implementation on 2026-07-19; implemented on
+2026-07-19 (stage rendering and footer/`z` input slices shipped, automated
+gates green; live manual checks in `docs/SPEC.md` remain pending).
 This document supersedes Pocket Planets' canvas layout, planet mask, label, and
 shadow presentation in
 [`2026-07-19-agent-pulse-pocket-planets-design.md`](2026-07-19-agent-pulse-pocket-planets-design.md).
@@ -43,16 +45,21 @@ silhouette.
 
 Agent Planets uses the same centered hierarchy as Single View:
 
-1. centered `AGENT PLANETS · n ACTIVE` heading;
+1. centered `Agent Planets · n active` heading, matching Single View's
+   Title Case presentation;
 2. centered current ICY title, otherwise station name, otherwise calm no-station
    copy;
-3. Lissajous scope and the small planet field;
-4. a thin near-full-width volume bar plus numeric volume at the bottom;
+3. the exact Single View volume line directly under that title;
+4. Lissajous scope and the small planet field;
 5. compact footer hints including selection and close behavior, but not `z` as
    a Single View action.
 
-The Now Playing title and volume display use the existing app station/ICY/
-volume state. They do not expose agent-private data.
+Agent Planets reuses the existing `signal_view_volume_line` display verbatim:
+`volume n%` followed by the same accent `─` fill and muted `·` remainder. It
+occupies the same lowest-priority title-metadata position directly beneath the
+station/ICY title, not a stage-specific bottom gauge. The Now Playing title and
+volume display use the existing app station/ICY/volume state and do not expose
+agent-private data.
 
 ### Disc-mask planets
 

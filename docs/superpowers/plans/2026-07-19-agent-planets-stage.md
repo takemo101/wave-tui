@@ -4,17 +4,18 @@
 
 **Goal:** Turn the `a` canvas into a centered Agent Planets stage with true round disc-mask planets, per-planet name/state side tags, station title and volume context, a normal footer hint, and `z` suppression while the stage is open.
 
-**Architecture:** Keep the existing Dual Phase Scope and App/Herdr state intact. Replace `ui::agent_pulse`'s calculated ellipse/ring/shadow presentation with discrete disc/ring masks and stage partitions; layout each named planet with a two-line side tag. Add only the normal UI footer eligibility hint and a CLI canvas-local `z` consume rule; reuse existing station title and volume helpers rather than persisting new state.
+**Architecture:** Keep the existing Dual Phase Scope and App/Herdr state intact. Replace `ui::agent_pulse`'s calculated ellipse/ring/shadow presentation with discrete disc/ring masks and stage partitions; layout each named planet with a two-line side tag. Reuse the exact Single View `signal_view_volume_line` helper inside the Agent Planets title block; add only the normal UI footer eligibility hint and a CLI canvas-local `z` consume rule, without persisting new state.
 
 **Tech Stack:** Rust 2018, Ratatui `Buffer`/`Layout`, existing `App`/Theme/volume helpers, pure UI and CLI tests, GitButler `but`.
 
 ## Global Constraints
 
-- User-facing copy says **Agent Planets**; retain technical `AgentPulse` state and the read-only same-socket `agent.list` boundary.
+- User-facing copy says **Agent Planets** in Title Case (including `Agent Planets · n active`); retain technical `AgentPulse` state and the read-only same-socket `agent.list` boundary.
 - Preserve the current Dual Phase Scope data, two real traces, persistence, silence rule, audio timing, stale capture, and first-audible low-power capture.
 - `a` opens/closes Agent Planets. Outside Agent Planets, `z` keeps its current Single View behavior; inside Agent Planets, `z` is consumed and must not enter Single View.
 - In eligible normal layouts only, render the footer hint `a Agent Planets`. Standalone, disabled, and ineligible layouts remain byte-identical with no hint.
 - Remove every full-tile/rectangle planet shadow. Scope phosphor persistence may remain behind discs.
+- Render the exact existing Single View `signal_view_volume_line` directly beneath the centered station/ICY title in the Agent Planets title block; do not use the Now Playing `volume_gauge_line`, `Vol` label, dedicated bottom volume row, or a separate numeric suffix.
 - Planet bodies use only 7×5, 5×3, 3×3, or one-cell discrete masks; no calculated rectangle/ellipse body or ring can create a cross-like silhouette.
 - Each named planet always has a two-line adjacent tag: explicit name then normalized status. Tags never reveal pane/workspace/cwd/type/fallback names; unnamed planets have no tag.
 - Tags prefer right, then left, below, above; non-overlap checks cover other discs and tags. Long names truncate, status remains. Selected tag is bright and draws last.
@@ -37,7 +38,7 @@
 - Produces: private `AgentStageLayout`, `DiscMask`, `disc_geometry`, `ring_mask`, `PlanetTag`, `planet_tag_placements`, and `render_agent_planets_stage`.
 - Preserves: `phase_layers`, real phase mapping, `App` visual capture precedence, existing action routing, and `agent_pulse_hit_test` public surface.
 
-- [ ] **Step 1: Add failing stage/disc/tag tests.**
+- [x] **Step 1: Add failing stage/disc/tag tests.**
 
 In `src/ui/agent_pulse.rs` tests, replace ellipse/rectangle-only geometry assertions with these contract tests:
 
@@ -90,13 +91,13 @@ fn agent_planets_stage_centers_now_playing_title_and_volume_bar() {
     play_first(&mut app);
     app.apply(Action::ToggleAgentOverlay);
     let text = buffer_text(&render_buffer(&app, 120, 36));
-    assert!(text.contains("AGENT PLANETS"));
+    assert!(text.contains("Agent Planets"));
     assert!(text.contains(app.now_playing_title().unwrap()));
     assert!(text.contains("64%"));
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure.**
+- [x] **Step 2: Run focused tests and verify failure.**
 
 Run:
 
@@ -108,36 +109,33 @@ cargo test ui::tests::agent_planets_stage_centers
 
 Expected: FAIL because stage partitions, discrete masks, tag layout, and stage chrome do not exist.
 
-- [ ] **Step 3: Add stage partitions and reuse station/volume presentation.**
+- [x] **Step 3: Add stage partitions and reuse station/volume presentation.**
 
 Replace the current full-area `collage_area` presentation with a private stage layout that reserves header, centered title, scope field, Now Playing label, volume, and footer rows while retaining a positive field at small sizes:
 
 ```rust
 struct AgentStageLayout {
     heading: Rect,
-    title: Rect,
+    title_block: Rect,
     field: Rect,
-    now_playing: Rect,
-    volume: Rect,
     footer: Rect,
 }
 
 fn agent_stage_layout(area: Rect) -> AgentStageLayout {
+    let title_height = if area.height >= 15 { 3 } else { 2 };
     let rows = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(if area.height >= 15 { 2 } else { 1 }),
+        Constraint::Length(title_height),
         Constraint::Min(1),
         Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
     ]).split(area);
-    AgentStageLayout { heading: rows[0], title: rows[1], field: rows[2], now_playing: rows[3], volume: rows[4], footer: rows[5] }
+    AgentStageLayout { heading: rows[0], title_block: rows[1], field: rows[2], footer: rows[3] }
 }
 ```
 
-Render centered `AGENT PLANETS · n ACTIVE`. Render current ICY title, otherwise station name, otherwise `no station playing`; use the same truncation/centering approach as Signal View. Render `super::volume_gauge_line(theme, app.settings().volume.get(), layout.volume.width)` centered in the volume row, then numeric percent aligned to the gauge end. Use a stage footer containing selection/close/player hints but do not advertise `z`.
+Render centered `Agent Planets · n active`. Render current ICY title, otherwise station name, otherwise `no station playing`; use the same truncation/centering approach as Signal View. Extract `signal_view_volume_line` as `pub(super)` without altering Signal View output, then append that exact `volume n%` / accent `─` / muted `·` line as the lowest title-block line, directly below the station/ICY title—exactly the placement it has in Signal View. Do not call `volume_gauge_line`, render a dedicated volume row, or append a separate numeric suffix. Use a stage footer containing selection/close/player hints but do not advertise `z`.
 
-- [ ] **Step 4: Replace calculated planets and shadows with discrete masks.**
+- [x] **Step 4: Replace calculated planets and shadows with discrete masks.**
 
 Delete full-tile shadow rendering from `render_canvas`; keep `phase_layers` persistence. Replace `pocket_rect`, `ellipse_of`, `body_cells`, and computed `ring_cells` with explicit row masks:
 
@@ -152,13 +150,13 @@ const SMALL_DISC: [&str; 3] = [" █ ", "███", " █ "];
 
 Choose the largest mask whose width/height fit the agent slot without crowding its tag reservation. Convert only non-space mask characters to body cells. Define an equally explicit, non-cross-like ring-arc cell list around each mask; Working selects a short segment using the existing phase signature; Blocked removes a stable segment. Surface cells must be a subset of body mask cells. `PlanetGeometry::hit_cells` remains body plus drawn ring cells only.
 
-- [ ] **Step 5: Layout and render permanent two-line side tags.**
+- [x] **Step 5: Layout and render permanent two-line side tags.**
 
 Replace the selected-only callout with `PlanetTag { agent_index, rect, name, status, selected }`. For every explicit name, choose a two-row candidate at right/left/below/above the disc. Reject candidates colliding with prior disc cells, ring cells, or tag cells; reserve the chosen tag cells before placing the next unit. If all candidates collide, use the in-bounds right fallback and draw it last. Truncate name with an ellipsis to the chosen width; keep status line untruncated where the stage field permits. Tags use muted theme text; selected tag uses `theme.selection_style()` and renders after discs/tags.
 
 Keep BandedGas/IceCap/CrateredRock colors inside the disc body and status color on ring/satellite only. Re-run stale/low-power tests with stage field/tag coordinates: captured geometry includes disc/ring/tag placement; fresh status snapshots may change ring treatment but do not move tag positions.
 
-- [ ] **Step 6: Verify UI behavior and commit stage rendering.**
+- [x] **Step 6: Verify UI behavior and commit stage rendering.**
 
 Run:
 
@@ -177,6 +175,78 @@ Expected: every command exits 0.
 but commit agent-pulse-ringed-planets -m "feat: stage Agent Planets"
 ```
 
+### Task 1B: Align Agent Planets heading and volume exactly with Single View
+
+**Files:**
+
+- Modify: `src/ui.rs:259-420, 2205-2331`
+- Modify: `src/ui/agent_pulse.rs:854-1008, 2463-2618`
+
+**Interfaces:**
+
+- Consumes: existing private `signal_view_volume_line`, current station/ICY title, stage layout, and theme.
+- Produces: Title Case `Agent Planets · n active` heading and a stage title block whose volume line is byte-for-byte the Single View line.
+- Preserves: Single View output, phase field, disc/tag geometry, footer, selection, and every player control.
+
+- [ ] **Step 1: Add failing parity tests.**
+
+```rust
+#[test]
+fn agent_planets_heading_uses_single_view_title_case() {
+    let mut app = app_with_agents(named_agents(2));
+    app.apply(Action::ToggleAgentOverlay);
+    let text = buffer_text(&render_buffer(&app, 120, 36));
+    assert!(text.contains("Agent Planets · 2 active"));
+    assert!(!text.contains("AGENT PLANETS"));
+}
+
+#[test]
+fn agent_planets_reuses_the_exact_single_view_volume_line_in_its_title_block() {
+    let mut app = app_with_agents(named_agents(2));
+    play_first(&mut app);
+    app.apply(Action::ToggleAgentOverlay);
+    let stage = buffer_text(&render_buffer(&app, 120, 36));
+    let signal_line = signal_view_volume_line(&app, &Theme::Minimal, 120).to_string();
+    assert!(stage.contains(&signal_line));
+    assert!(stage.contains("volume 64%"));
+    assert!(!stage.contains("Vol "));
+}
+```
+
+- [ ] **Step 2: Run parity tests and verify failure.**
+
+Run:
+
+```bash
+cargo test ui::tests::agent_planets_heading_uses
+cargo test ui::tests::agent_planets_reuses
+```
+
+Expected: FAIL because the stage has uppercase heading and its own `volume_gauge_line`/dedicated volume row.
+
+- [ ] **Step 3: Extract and reuse the Single View line without changing Single View.**
+
+Change `signal_view_volume_line` visibility to `pub(super)`; do not change its bytes, prefix, styles, or Signal View call site. Replace `AgentStageLayout::{now_playing, volume}` with `title_block`, and partition the stage as heading → multi-line title block → field → footer. Render Title Case `Agent Planets · n active`. Append `super::signal_view_volume_line(app, theme, layout.title_block.width)` directly below the centered station/ICY title as the lowest title metadata line. Remove stage calls to `volume_gauge_line`, `Vol`, dedicated volume row, and numeric suffix.
+
+- [ ] **Step 4: Run UI/full verification and commit the repair.**
+
+Run:
+
+```bash
+cargo fmt --check
+cargo test ui::tests::agent_planets
+cargo test ui::tests::signal_view
+cargo test
+cargo check
+cargo clippy --all-targets -- -D warnings
+```
+
+Expected: every command exits 0; Signal View snapshots remain unchanged.
+
+```bash
+but commit agent-pulse-ringed-planets -m "fix: align Agent Planets volume with Single View"
+```
+
 ### Task 2: Add normal footer hint and suppress z inside Agent Planets
 
 **Files:**
@@ -190,7 +260,7 @@ but commit agent-pulse-ringed-planets -m "feat: stage Agent Planets"
 - Produces: normal-layout `a Agent Planets` footer hint only when integration is eligible; canvas-local `z` consume behavior.
 - Preserves: standalone/disabled byte-identical UI, `z` Signal View behavior outside canvas, and documented player shortcuts in canvas.
 
-- [ ] **Step 1: Add failing footer and key-routing tests.**
+- [x] **Step 1: Add failing footer and key-routing tests.**
 
 ```rust
 #[test]
@@ -220,7 +290,7 @@ fn z_is_consumed_in_agent_planets_but_toggles_signal_view_elsewhere() {
 }
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure.**
+- [x] **Step 2: Run focused tests and verify failure.**
 
 Run:
 
@@ -231,13 +301,13 @@ cargo test cli::tests::z_is_consumed_in_agent_planets
 
 Expected: FAIL because normal footer has no `a` hint and `handle_collage_key` falls `ToggleSignalView` through to normal routing.
 
-- [ ] **Step 3: Render the conditional normal footer hint and consume z locally.**
+- [x] **Step 3: Render the conditional normal footer hint and consume z locally.**
 
 In `render_footer`, build the hint vector dynamically. Append `("a", "Agent Planets")` only when the normal layout has an eligible visible Agent Pulse surface; do not reserve a placeholder span otherwise. Keep Compact suppression if the existing summary surface is absent unless the agreed normal-footer width can accommodate the hint.
 
 In `handle_collage_key`, add `KeyOutcome::ToggleSignalView => Some(Flow::Continue)` to the consumed canvas-local arm. Do not add `ToggleSignalView` to any other canvas behavior; outside the overlay, `handle_key` continues applying `Action::ToggleSignalView` exactly as today.
 
-- [ ] **Step 4: Run controller/UI regression suite and commit.**
+- [x] **Step 4: Run controller/UI regression suite and commit.**
 
 Run:
 
@@ -274,24 +344,24 @@ but commit agent-pulse-ringed-planets -m "fix: keep Single View out of Agent Pla
 - Consumes: completed Agent Planets Stage behavior and its approved spec.
 - Produces: current user docs; Pocket Planets records preserved as historical presentation context; manual checklist remains unchecked.
 
-- [ ] **Step 1: Update current behavior copy.**
+- [x] **Step 1: Update current behavior copy.**
 
 Document all of these facts:
 
 ```text
 The user-facing canvas is Agent Planets and opens with a.
 Eligible normal footers show a Agent Planets; standalone, disabled, and ineligible runs do not.
-Agent Planets centers the current station/ICY title and a volume bar around the unchanged Lissajous scope.
+Agent Planets centers the current station/ICY title and the exact Single View `signal_view_volume_line` directly beneath it around the unchanged Lissajous scope.
 Every named disc-mask planet has name and status Side Tags; z is ignored while Agent Planets is open and still opens Single View outside it.
 ```
 
 State that disc masks replace rectangle shadows and calculated planet silhouettes. Preserve all privacy, no-cross, mono/stereo, stale, and low-power claims.
 
-- [ ] **Step 2: Mark Pocket Planets presentation historical.**
+- [x] **Step 2: Mark Pocket Planets presentation historical.**
 
 At the top of `2026-07-19-agent-pulse-pocket-planets-design.md`, add a dated note saying its scope/privacy/theme-surface contracts remain context but its shadowed layout, selected-only callout, and old planet geometry are superseded by Agent Planets Stage. Preserve the original body and keep all prior design history links valid.
 
-- [ ] **Step 3: Record manual checks and run final gate.**
+- [x] **Step 3: Record manual checks and run final gate.**
 
 In `docs/SPEC.md`, leave live checks unchecked: mono/stereo streams, six themes, disc/tag stage resize+dense readability, keyboard/mouse selection, `z` inside/outside Agent Planets, reconnect, low power, standalone, disabled launch, and detach/reattach. Then run:
 

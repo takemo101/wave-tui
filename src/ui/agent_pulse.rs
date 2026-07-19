@@ -20,34 +20,35 @@
 //! (banded gas, ice cap, or cratered rock) painted with two theme spectrum
 //! colors inside the mask; the surface is identity language only and never
 //! encodes status.
-//! Status is atmosphere language: a thin glow on an explicit offset cycle
-//! outside the disc, gapped one cell off the body, in the status color —
-//! Working alone carries one bright accent cell whose position advances
-//! only with new played-audio phase data; Idle, Blocked, Done, and Unknown
-//! atmospheres stay completely still, with Blocked on the error color and
-//! never any cross-like glyph. Around every non-dense planet an
-//! equal-count, equally spaced group of decorative orbit particles rotates
-//! on its own offset cycle from the played phase frame plus the identity
-//! seed; particle count and spacing never encode status, and cells that
-//! would leave the tile or crowd the body gap are dropped rather than
-//! bent. The selected planet alone gains four corner focus brackets
-//! bounded to its tile — decoration, never a hit target. Nothing moves
-//! from a timer: identical frames render identical cells. A frame at or
+//! Status is atmosphere language, and the thin atmosphere is the only
+//! planet decoration: a glow on an explicit offset cycle outside the disc,
+//! gapped one cell off the body, in the status color; cells that would
+//! leave the tile or crowd the body gap are dropped rather than bent. The
+//! atmosphere's animation state derives only from the played phase frame
+//! plus the identity seed, never wall-clock — Working carries a bright
+//! accent segment traveling around the ring, Blocked a short, weakly
+//! irregular pulsing segment on the error color, Idle a slow regular
+//! breathing brightness, Done a slow dim afterglow pulse, and Unknown
+//! stays near-static neutral — and never any cross-like glyph. The
+//! selected planet alone gains four corner focus brackets bounded to its
+//! tile — decoration, never a hit target. Nothing moves from a timer:
+//! identical frames render identical cells. A frame at or
 //! below the silence threshold draws no trace or persistence at all —
 //! analyzer silence carries non-empty all-zero traces that would otherwise
 //! pile a point cluster at the field center — so silence stays calm, dim,
 //! and still. Stale renders the reducer-captured final composition dimmed;
 //! `--low-power` renders the App-captured first frame so trace, disc,
-//! ring-arc, and tag geometry stay frozen while state colors keep
+//! atmosphere, and bracket geometry stay frozen while state colors keep
 //! refreshing.
 //!
 //! Mouse input flows through [`hit_test`], which shares [`collage_layout`]
 //! and [`planet_geometry`] with rendering so a click resolves against
-//! exactly the planet body/ring cells that were drawn (scope, vignette,
-//! tags, and empty cells resolve nothing), and returns only the read-only
-//! selection [`Action`]; the CLI event loop owns applying it.
+//! exactly the disc body cells that were drawn (scope, vignette,
+//! atmosphere, brackets, and empty cells resolve nothing), and
+//! returns only the read-only selection [`Action`]; the CLI event loop
+//! owns applying it.
 //!
-//! Privacy: side tags show the explicit Herdr agent `name` only. No pane
+//! Privacy: the stage shows the explicit Herdr agent `name` only. No pane
 //! id, workspace id, cwd, or agent type is ever rendered. All colors come
 //! from the active [`Theme`]; no palette values are added.
 

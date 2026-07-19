@@ -4,7 +4,7 @@
 
 **Goal:** Turn the `a` canvas into a centered Agent Planets stage with true round disc-mask planets, per-planet name/state side tags, station title and volume context, a normal footer hint, and `z` suppression while the stage is open.
 
-**Architecture:** Keep the existing Dual Phase Scope and App/Herdr state intact. Replace `ui::agent_pulse`'s calculated ellipse/ring/shadow presentation with discrete disc/ring masks and stage partitions; layout each named planet with a two-line side tag. Reuse the exact Single View `signal_view_volume_line` helper inside the Agent Planets title block; add only the normal UI footer eligibility hint and a CLI canvas-local `z` consume rule, without persisting new state.
+**Architecture:** Keep the existing Dual Phase Scope and App/Herdr state intact. Replace `ui::agent_pulse`'s calculated ellipse/ring/shadow presentation with discrete disc/ring masks and stage partitions; layout each displayable planet with a two-line side tag. The Herdr boundary may use only explicit `name` or, when absent, the `agent.list` `agent` runtime label as that tag's identity; reuse the exact Single View `signal_view_volume_line` helper inside the Agent Planets title block; add only the normal UI footer eligibility hint and a CLI canvas-local `z` consume rule, without persisting new state.
 
 **Tech Stack:** Rust 2018, Ratatui `Buffer`/`Layout`, existing `App`/Theme/volume helpers, pure UI and CLI tests, GitButler `but`.
 
@@ -17,7 +17,7 @@
 - Remove every full-tile/rectangle planet shadow. Scope phosphor persistence may remain behind discs.
 - Render the exact existing Single View `signal_view_volume_line` directly beneath the centered station/ICY title in the Agent Planets title block; do not use the Now Playing `volume_gauge_line`, `Vol` label, dedicated bottom volume row, or a separate numeric suffix.
 - Planet bodies use only 7×5, 5×3, 3×3, or one-cell discrete masks; no calculated rectangle/ellipse body or ring can create a cross-like silhouette.
-- Each named planet always has a two-line adjacent tag: explicit name then normalized status. Tags never reveal pane/workspace/cwd/type/fallback names; unnamed planets have no tag.
+- Each displayable planet always has a two-line adjacent tag: explicit Herdr name, otherwise only the non-empty `agent.list` `agent` runtime label, then normalized status. Tags never reveal pane/workspace/cwd/terminal title/raw status or any other fallback identity; a planet missing both allowed labels has no tag.
 - Tags prefer right, then left, below, above; non-overlap checks cover other discs and tags. Long names truncate, status remains. Selected tag is bright and draws last.
 - Keep state ring vocabulary: Working audio-driven arc, Idle muted ring, Blocked broken error arc without cross glyph, Done satellite, Unknown muted.
 - Preserve planet-only selection; tags/scope/persistence/empty cells are not hit targets.
@@ -153,7 +153,7 @@ Choose the largest mask whose width/height fit the agent slot without crowding i
 
 - [x] **Step 5: Layout and render permanent two-line side tags.**
 
-Replace the selected-only callout with `PlanetTag { agent_index, rect, name, status, selected }`. For every explicit name, choose a two-row candidate at right/left/below/above the disc. Reject candidates colliding with prior disc cells, ring cells, or tag cells; reserve the chosen tag cells before placing the next unit. If all candidates collide, use the in-bounds right fallback and draw it last. Truncate name with an ellipsis to the chosen width; keep status line untruncated where the stage field permits. Tags use muted theme text; selected tag uses `theme.selection_style()` and renders after discs/tags.
+Replace the selected-only callout with `PlanetTag { agent_index, rect, name, status, selected }`. For every allowed display label—explicit Herdr name first, otherwise only the non-empty `agent.list` `agent` runtime label—choose a two-row candidate at right/left/below/above the disc. Reject candidates colliding with prior disc cells, ring cells, or tag cells; reserve the chosen tag cells before placing the next unit. If all candidates collide, use the in-bounds right fallback and draw it last. Truncate name with an ellipsis to the chosen width; keep status line untruncated where the stage field permits. Tags use muted theme text; selected tag uses `theme.selection_style()` and renders after discs/tags.
 
 Keep BandedGas/IceCap/CrateredRock colors inside the disc body and status color on ring/satellite only. Re-run stale/low-power tests with stage field/tag coordinates: captured geometry includes disc/ring/tag placement; fresh status snapshots may change ring treatment but do not move tag positions.
 
@@ -189,7 +189,7 @@ but commit agent-pulse-ringed-planets -m "feat: stage Agent Planets"
 - Produces: Title Case `Agent Planets · n active` heading and a stage title block whose volume line is byte-for-byte the Single View line.
 - Preserves: Single View output, phase field, disc/tag geometry, footer, selection, and every player control.
 
-- [ ] **Step 1: Add failing parity tests.**
+- [x] **Step 1: Add failing parity tests.**
 
 ```rust
 #[test]
@@ -214,7 +214,7 @@ fn agent_planets_reuses_the_exact_single_view_volume_line_in_its_title_block() {
 }
 ```
 
-- [ ] **Step 2: Run parity tests and verify failure.**
+- [x] **Step 2: Run parity tests and verify failure.**
 
 Run:
 
@@ -225,11 +225,11 @@ cargo test ui::tests::agent_planets_reuses
 
 Expected: FAIL because the stage has uppercase heading and its own `volume_gauge_line`/dedicated volume row.
 
-- [ ] **Step 3: Extract and reuse the Single View line without changing Single View.**
+- [x] **Step 3: Extract and reuse the Single View line without changing Single View.**
 
 Change `signal_view_volume_line` visibility to `pub(super)`; do not change its bytes, prefix, styles, or Signal View call site. Replace `AgentStageLayout::{now_playing, volume}` with `title_block`, and partition the stage as heading → multi-line title block → field → footer. Render Title Case `Agent Planets · n active`. Append `super::signal_view_volume_line(app, theme, layout.title_block.width)` directly below the centered station/ICY title as the lowest title metadata line. Remove stage calls to `volume_gauge_line`, `Vol`, dedicated volume row, and numeric suffix.
 
-- [ ] **Step 4: Run UI/full verification and commit the repair.**
+- [x] **Step 4: Run UI/full verification and commit the repair.**
 
 Run:
 
@@ -261,7 +261,7 @@ but commit agent-pulse-ringed-planets -m "fix: align Agent Planets volume with S
 - Produces: cyclic selection over sorted live agents while the Agent Planets overlay is interactive.
 - Preserves: no-selection starts (next→first, previous→last), stale/unavailable inertness, direct click selection, and normal-layout navigation.
 
-- [ ] **Step 1: Change focused reducer tests to require wraparound.**
+- [x] **Step 1: Change focused reducer tests to require wraparound.**
 
 ```rust
 #[test]
@@ -285,7 +285,7 @@ fn agent_selection_previous_wraps_first_to_last() {
 
 Keep/assert tests that stale and unavailable selection stays inert. If the CLI suite does not already establish key routing, add a canvas-only test for `Tab`, Down, `Shift+Tab`, and Up reaching the corresponding cyclic actions.
 
-- [ ] **Step 2: Run reducer/key tests and verify failure.**
+- [x] **Step 2: Run reducer/key tests and verify failure.**
 
 Run:
 
@@ -296,11 +296,11 @@ cargo test cli::tests::collage
 
 Expected: the end-boundary assertions fail because selection currently clamps.
 
-- [ ] **Step 3: Implement overlay-local cyclic reducers.**
+- [x] **Step 3: Implement overlay-local cyclic reducers.**
 
 In `select_next_agent`, after the existing `agent_selection_interactive` guard and empty-list guard, choose `(current + 1) % len` or first on no selection. In `select_previous_agent`, choose `len - 1` from first or no selection, otherwise `current - 1`. Do not alter `handle_key` or navigation outside Agent Planets; existing canvas mapping supplies `Tab`/Down as next and `Shift+Tab`/Up as previous.
 
-- [ ] **Step 4: Run verification and commit the behavior repair.**
+- [x] **Step 4: Run verification and commit the behavior repair.**
 
 Run:
 
@@ -317,6 +317,69 @@ Expected: every command exits 0 and stale/unavailable tests remain unchanged.
 
 ```bash
 but commit agent-pulse-ringed-planets -m "feat: cycle Agent Planets selection"
+```
+
+### Task 1D: Display the allowed Herdr runtime label when explicit name is absent
+
+**Files:**
+
+- Modify: `src/herdr.rs:61-145, 300-380`
+- Modify: `src/ui/agent_pulse.rs:2463-2618` only for a focused display-label fixture if existing tag coverage cannot exercise a parsed fallback
+
+**Interfaces:**
+
+- Consumes: only `RawAgent.name` and `RawAgent.agent` from the current-socket `agent.list` JSON.
+- Produces: the existing `AgentSnapshot.name` display-label field as non-empty explicit name first, otherwise non-empty runtime label (`pi`, `claude`, etc.).
+- Preserves: opaque `AgentId`, same-socket monitor, every non-identity JSON field remaining private, and no label when both permitted fields are absent/blank.
+
+- [ ] **Step 1: Add failing Herdr boundary tests.**
+
+```rust
+#[test]
+fn parser_uses_agent_runtime_label_when_explicit_name_is_missing() {
+    let parsed = parse_agent_list(r#"{"jsonrpc":"2.0","id":1,"result":{"agents":[{"pane_id":"p1","workspace_id":"w","agent":"pi","agent_status":"working"}]}}"#).unwrap();
+    assert_eq!(parsed[0].name.as_deref(), Some("pi"));
+}
+
+#[test]
+fn parser_prefers_explicit_name_and_rejects_blank_allowed_labels() {
+    // `name: "research"` + `agent: "claude"` yields research;
+    // blank/missing name and agent yields None, never terminal/pane/cwd fallback.
+}
+```
+
+- [ ] **Step 2: Run the focused boundary tests and verify failure.**
+
+Run:
+
+```bash
+cargo test herdr::tests::parser_uses_agent_runtime_label
+cargo test herdr::tests::parser_prefers_explicit_name
+```
+
+Expected: FAIL because `RawAgent` currently ignores the `agent` JSON property.
+
+- [ ] **Step 3: Normalize only the two permitted label fields.**
+
+Add optional `agent` to `RawAgent`. At the Herdr boundary, trim/ignore blank explicit names, then select explicit name or the non-empty `agent` label; do not deserialize or inspect terminal title, pane id beyond opaque identity, workspace id beyond opaque identity, cwd, session, or agent status for display. Keep tag layout unchanged: its existing named-agent path receives the selected display label.
+
+- [ ] **Step 4: Run verification and commit the label support.**
+
+Run:
+
+```bash
+cargo fmt --check
+cargo test herdr::tests
+cargo test ui::agent_pulse::tests::named_planets_render_two_line
+cargo test
+cargo check
+cargo clippy --all-targets -- -D warnings
+```
+
+Expected: all commands exit 0; parsed `pi`/`claude` labels appear as first tag lines when explicit names are absent.
+
+```bash
+but commit agent-pulse-ringed-planets -m "feat: label Agent Planets from Herdr agent"
 ```
 
 ### Task 2: Add normal footer hint and suppress z inside Agent Planets

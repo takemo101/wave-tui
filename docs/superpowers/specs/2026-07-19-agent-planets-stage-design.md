@@ -35,9 +35,11 @@ silhouette.
   player shortcuts, or the Dual Phase Scope's data/timing/persistence.
 - Do not draw planet shadow rectangles or any other full-tile shadow. Scope
   phosphor persistence remains allowed behind planets.
-- Keep every agent visible and named agents tagged at dense counts; never
-  reveal pane IDs, workspace IDs, cwd, agent type, raw status, or fallback
-  names.
+- Keep every agent visible and displayable agents tagged at dense counts. Use
+  the explicit Herdr `name` when present; otherwise use only the current
+  `agent.list` `agent` runtime label (for example `pi` or `claude`). Never
+  reveal pane IDs, workspace IDs, cwd, terminal title, raw status, or any
+  other fallback identity.
 
 ## Experience
 
@@ -94,7 +96,8 @@ aria
 working
 ```
 
-The first line is the explicit Herdr name; the second is the normalized state.
+The first line is the explicit Herdr name when available, otherwise the
+current `agent.list` `agent` runtime label; the second is the normalized state.
 Tags are always part of the planet layout unit. The default position is right of
 the disc; collision resolution tries left, below, then above. A selected
 planet's tag becomes bright and draws last; it replaces the old separate
@@ -104,8 +107,8 @@ Tags never overlap another planet, another tag, the center heading/title, the
 volume region, or the footer when a non-overlapping candidate exists. Long
 names truncate safely to the tag width, while the state line remains visible.
 At extreme density, shrink the disc before shrinking tag width; names may
-truncate but named-agent tags are never silently removed. Unnamed planets have
-no tag.
+truncate but displayable-agent tags are never silently removed. A planet with
+neither an explicit name nor a non-empty `agent` runtime label has no tag.
 
 ### Recovery and input
 

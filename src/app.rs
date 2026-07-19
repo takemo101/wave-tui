@@ -1035,30 +1035,41 @@ impl App {
         self.agent_pulse.overlay = AgentOverlay::Closed;
     }
 
-    /// Move the overlay selection down one row, never past the last agent;
-    /// with no selection it starts at the first sorted agent.
+    /// Move the overlay selection to the next sorted agent, wrapping from
+    /// the last back to the first; with no selection it starts at the first
+    /// sorted agent.
     fn select_next_agent(&mut self) {
         if !self.agent_selection_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
+        if pulse.active.is_empty() {
+            pulse.selected = None;
+            return;
+        }
         let index = match pulse.selected_index() {
-            Some(index) => (index + 1).min(pulse.active.len().saturating_sub(1)),
+            Some(index) => (index + 1) % pulse.active.len(),
             None => 0,
         };
         pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
     }
 
-    /// Move the overlay selection up one row, never above the first agent;
-    /// with no selection it starts at the last sorted agent.
+    /// Move the overlay selection to the previous sorted agent, wrapping from
+    /// the first back to the last; with no selection it starts at the last
+    /// sorted agent.
     fn select_previous_agent(&mut self) {
         if !self.agent_selection_interactive() {
             return;
         }
         let pulse = &mut self.agent_pulse;
+        if pulse.active.is_empty() {
+            pulse.selected = None;
+            return;
+        }
+        let last = pulse.active.len() - 1;
         let index = match pulse.selected_index() {
-            Some(index) => index.saturating_sub(1),
-            None => pulse.active.len().saturating_sub(1),
+            Some(0) | None => last,
+            Some(index) => index - 1,
         };
         pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
     }
@@ -3011,7 +3022,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_selection_moves_and_clamps_within_the_sorted_active_list() {
+    fn overlay_selection_cycles_within_the_sorted_active_list() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
             vec![
@@ -3032,9 +3043,6 @@ mod tests {
         assert_eq!(selected_name(&app).as_deref(), Some("beta"));
         app.apply(Action::SelectNextAgent);
         assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
-        // Down at the end stays put.
-        app.apply(Action::SelectNextAgent);
-        assert_eq!(selected_name(&app).as_deref(), Some("gamma"));
 
         // Selecting an unknown identity changes nothing.
         app.apply(Action::SelectAgent(agent_id("ws", "missing")));
@@ -3044,13 +3052,40 @@ mod tests {
         assert_eq!(selected_name(&app).as_deref(), Some("beta"));
         app.apply(Action::SelectPreviousAgent);
         assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
-        // Up at the top stays put.
-        app.apply(Action::SelectPreviousAgent);
-        assert_eq!(selected_name(&app).as_deref(), Some("alpha"));
 
         // Direct selection by identity (mouse path).
         app.apply(Action::SelectAgent(agent_id("ws", "p3")));
         assert_eq!(selected_name(&app).as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn agent_selection_next_wraps_last_to_first() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            agent("ws", "p3", Some("gamma"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("ws", "p3")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("gamma"));
+
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn agent_selection_previous_wraps_first_to_last() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+            agent("ws", "p3", Some("gamma"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("alpha"));
+
+        app.apply(Action::SelectPreviousAgent);
+        assert_eq!(app.selected_agent().unwrap().name.as_deref(), Some("gamma"));
     }
 
     #[test]

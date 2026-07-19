@@ -1165,7 +1165,7 @@ fn render_agent_details_modal(
     let mut lines = Vec::with_capacity(rows.len());
     for (label, value) in rows {
         lines.push(Line::from(vec![
-            Span::styled(format!("{label:<8}"), Style::default().fg(theme.muted)),
+            Span::styled(format!("{label}: "), Style::default().fg(theme.muted)),
             Span::styled(value.to_string(), Style::default().fg(theme.foreground)),
         ]));
     }
@@ -2840,10 +2840,10 @@ mod tests {
         app.apply(Action::OpenAgentDetails);
         let modal = buffer_text(&render_collage_for(&app, false, Instant::now()));
         assert!(modal.contains("Agent details"));
-        assert!(modal.contains("research"));
-        assert!(modal.contains("pi"));
-        assert!(modal.contains("working"));
-        assert!(modal.contains("Review the modal"));
+        assert!(modal.contains("name: research"));
+        assert!(modal.contains("agent: pi"));
+        assert!(modal.contains("status: working"));
+        assert!(modal.contains("activity: Review the modal"));
         assert!(!modal.contains("workspace-private"));
         assert!(!modal.contains("pane-private"));
     }

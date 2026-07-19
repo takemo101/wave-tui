@@ -1112,16 +1112,22 @@ fn handle_signal_view_key(
 ///
 /// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the tile
 /// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
-/// Station selection (`Enter`), list jumps, and search entry are consumed so
-/// canvas input can never play a station, move station selection, or enter
-/// the search strip. `z` is also consumed as a no-op: Single View never opens
-/// over Agent Planets, while `z` outside the canvas keeps its documented
-/// Signal View toggle. Every other outcome — playback, volume, theme,
-/// favorite, visualizer — is deliberately not handled here: the caller runs
-/// the existing non-canvas branch exactly once, so the documented global
-/// player controls keep their normal semantics and side effects without
-/// recursive dispatch.
+/// `Enter` opens details for a selected planet without playing a station;
+/// `z` stays a canvas-local no-op. While details are open, every non-quit
+/// key is modal-local: Enter/Esc close details and `a` closes the whole stage.
+/// Outside the modal, the documented player shortcuts retain their existing
+/// canvas behavior.
 fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
+    if app.is_agent_details_open() {
+        match outcome {
+            KeyOutcome::Quit => return Some(Flow::Quit),
+            KeyOutcome::ToggleAgentPulse => app.apply(Action::CloseAgentOverlay),
+            KeyOutcome::ExitOrBack | KeyOutcome::Play => app.apply(Action::CloseAgentDetails),
+            _ => {}
+        }
+        return Some(Flow::Continue);
+    }
+
     match outcome {
         KeyOutcome::Quit => Some(Flow::Quit),
         KeyOutcome::ToggleAgentPulse | KeyOutcome::ExitOrBack => {
@@ -1144,8 +1150,11 @@ fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
         | KeyOutcome::ClearSearch
         | KeyOutcome::SelectFirst
         | KeyOutcome::SelectLast
-        | KeyOutcome::Play
         | KeyOutcome::ToggleSignalView => Some(Flow::Continue),
+        KeyOutcome::Play => {
+            app.apply(Action::OpenAgentDetails);
+            Some(Flow::Continue)
+        }
         _ => None,
     }
 }
@@ -2373,6 +2382,48 @@ mod tests {
 
         assert_global_shortcuts_work(&mut app);
         assert_search_and_station_navigation_are_inert(&mut app);
+    }
+
+    #[test]
+    fn enter_opens_details_only_for_selected_planet_and_modal_consumes_controls() {
+        let (mut app, mut debounce, mut persistence) = controller();
+        let (audio, command_rx) = fake_audio();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        let playback = app.playback().clone();
+
+        assert_eq!(
+            handle_key(
+                key(KeyCode::Enter),
+                &mut app,
+                &audio,
+                &mut debounce,
+                &mut persistence,
+            ),
+            Flow::Continue
+        );
+        assert!(app.is_agent_details_open());
+        assert_eq!(app.playback(), &playback);
+        assert!(command_rx.try_recv().is_err());
+
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Char(' '),
+            KeyCode::Char('+'),
+            KeyCode::Char('z'),
+        ] {
+            handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+            assert!(app.is_agent_details_open(), "{code:?} is modal-local");
+        }
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(!app.is_agent_details_open());
     }
 
     #[test]

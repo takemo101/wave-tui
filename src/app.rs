@@ -1377,7 +1377,10 @@ impl App {
     /// Total Working seconds behind an agent's solar-orbit phase at `now`:
     /// the time banked by completed Working stretches plus the live current
     /// stretch. A frozen (non-Working) agent ignores `now` entirely, so its
-    /// planet holds the captured angle; an unknown identity is zero.
+    /// planet holds the captured angle; an unknown identity is zero. This is
+    /// the single orbit-phase source for every render mode — low power
+    /// included, so a frozen layout still shows the current effective angle
+    /// of an active Working stretch instead of snapping back to banked time.
     pub(crate) fn agent_orbit_secs(&self, id: &AgentId, now: Instant) -> f32 {
         let Some(orbit) = self.agent_pulse.orbits.get(id) else {
             return 0.0;
@@ -1386,16 +1389,6 @@ impl App {
             .working_since
             .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
         (orbit.banked + live).as_secs_f32()
-    }
-
-    /// The frozen share of [`Self::agent_orbit_secs`]: banked Working time
-    /// with any live stretch ignored — the clock-free phase source for
-    /// low-power rendering, where the whole solar layout must hold still.
-    pub(crate) fn agent_orbit_frozen_secs(&self, id: &AgentId) -> f32 {
-        self.agent_pulse
-            .orbits
-            .get(id)
-            .map_or(0.0, |orbit| orbit.banked.as_secs_f32())
     }
 
     /// The visualizer display captured when the connection dimmed to
@@ -2966,20 +2959,17 @@ mod tests {
             app.agent_orbit_secs(&id, t1 + Duration::from_secs(100)),
             10.0
         );
-        assert_eq!(app.agent_orbit_frozen_secs(&id), 10.0);
 
-        // A later Working transition resumes from the captured phase.
+        // A later Working transition resumes from the captured phase, and
+        // the live stretch counts toward the current effective angle
+        // immediately — there is no separate banked-only phase source.
         let t2 = t1 + Duration::from_secs(50);
         app.apply(agent_snapshot(
             vec![agent("ws", "p1", None, AgentStatus::Working)],
             t2,
         ));
+        assert_eq!(app.agent_orbit_secs(&id, t2), 10.0);
         assert_eq!(app.agent_orbit_secs(&id, t2 + Duration::from_secs(5)), 15.0);
-        assert_eq!(
-            app.agent_orbit_frozen_secs(&id),
-            10.0,
-            "the frozen share stays at the last capture while Working"
-        );
     }
 
     #[test]
@@ -3027,7 +3017,6 @@ mod tests {
             app.agent_orbit_secs(&id, t0 + Duration::from_secs(100)),
             8.0
         );
-        assert_eq!(app.agent_orbit_frozen_secs(&id), 8.0);
 
         // A recovery snapshot resumes the Working stretch from the frozen
         // phase.

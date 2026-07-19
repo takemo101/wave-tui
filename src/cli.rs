@@ -2538,7 +2538,7 @@ mod tests {
     }
 
     #[test]
-    fn collage_low_power_mouse_path_uses_frozen_tile_geometry() {
+    fn collage_low_power_mouse_path_tracks_the_current_orbit_angle() {
         let mut app = connected_collage_app();
         app.configure_low_power_visuals(true);
         app.apply(Action::ToggleAgentOverlay);
@@ -2553,24 +2553,24 @@ mod tests {
         )));
         let area = canvas_area();
 
-        // Enough elapsed Working time moves live orbit positions while low
-        // power keeps drawing the frozen phase. A discriminating cell:
-        // covered by a live orbit-advanced planet body, but empty in the
-        // frozen low-power layout.
-        let later = Instant::now() + Duration::from_secs(40);
+        // Elapsed Working time moves orbit positions for low power and live
+        // alike. A discriminating cell: covered by an orbit-advanced planet
+        // body at `later`, but empty at the earlier rest position — a
+        // banked-time snap-back would miss it.
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(40);
         let moved_only = (0..area.height)
             .flat_map(|row| (0..area.width).map(move |column| (column, row)))
             .find(|&(column, row)| {
                 crate::ui::agent_pulse_hit_test(area, column, row, false, later, &app).is_some()
-                    && crate::ui::agent_pulse_hit_test(area, column, row, true, later, &app)
-                        .is_none()
+                    && crate::ui::agent_pulse_hit_test(area, column, row, false, t0, &app).is_none()
             });
-        let (x, y) = moved_only.expect("elapsed Working time moves some live planet cell");
+        let (x, y) = moved_only.expect("elapsed Working time moves some planet cell");
 
         handle_mouse(left_click(x, y), area, true, later, &mut app);
         assert!(
-            app.selected_agent().is_none(),
-            "a low-power click resolves only the frozen drawn tiles"
+            app.selected_agent().is_some(),
+            "a low-power click resolves the current effective orbit angle"
         );
     }
 

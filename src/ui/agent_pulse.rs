@@ -1179,7 +1179,14 @@ fn render_agent_details_modal(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(title)
-                .title(Span::styled(" Agent details ", title)),
+                .title(Span::styled(
+                    if stale {
+                        " Agent details · reconnecting "
+                    } else {
+                        " Agent details "
+                    },
+                    title,
+                )),
         )
         .style(if stale {
             Style::default()
@@ -1189,15 +1196,6 @@ fn render_agent_details_modal(
             Style::default().fg(theme.foreground)
         })
         .render(area, buf);
-    if stale && area.height >= 2 {
-        buf.set_stringn(
-            area.x + 1,
-            area.y + area.height - 2,
-            "reconnecting",
-            area.width.saturating_sub(2) as usize,
-            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
-        );
-    }
 }
 
 /// Draw one agent planet in order: disc-mask body fill, stable crater

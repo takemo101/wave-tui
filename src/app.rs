@@ -1116,7 +1116,7 @@ impl App {
 
     /// Select an active agent by its identity; unknown agents change nothing.
     fn select_agent(&mut self, id: AgentId) {
-        if !self.agent_selection_interactive() {
+        if !self.agent_selection_interactive() || self.is_agent_details_open() {
             return;
         }
         let pulse = &mut self.agent_pulse;
@@ -1315,13 +1315,11 @@ impl App {
     }
 
     /// Whether Agent Planets is currently showing details for its selection.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_agent_details_open(&self) -> bool {
         matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
     }
 
     /// Approved details for the identity whose modal is open.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn selected_agent_details(&self) -> Option<&AgentDetails> {
         let AgentDetailsOverlay::Open(id) = &self.agent_pulse.details else {
             return None;
@@ -3097,6 +3095,29 @@ mod tests {
         app.apply(Action::CloseAgentDetails);
         assert!(!app.is_agent_details_open());
         assert_eq!(app.playback(), &playback);
+    }
+
+    #[test]
+    fn details_modal_ignores_mouse_style_selection_changes() {
+        let mut app = app_with_agents(vec![
+            agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+            agent("ws", "p2", Some("beta"), AgentStatus::Working),
+        ]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectAgent(agent_id("ws", "p1")));
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::SelectAgent(agent_id("ws", "p2")));
+
+        assert!(app.is_agent_details_open());
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
+            Some("alpha")
+        );
+        assert_eq!(
+            app.selected_agent_details()
+                .and_then(|detail| detail.name.as_deref()),
+            Some("alpha")
+        );
     }
 
     #[test]

@@ -2417,13 +2417,32 @@ mod tests {
             assert!(app.is_agent_details_open(), "{code:?} is modal-local");
         }
         handle_key(
-            key(KeyCode::Enter),
+            key(KeyCode::Esc),
             &mut app,
             &audio,
             &mut debounce,
             &mut persistence,
         );
         assert!(!app.is_agent_details_open());
+        assert!(app.is_agent_overlay_open(), "Esc closes only details");
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_agent_details_open());
+        handle_key(
+            key(KeyCode::Char('a')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(!app.is_agent_details_open());
+        assert!(!app.is_agent_overlay_open(), "a closes the whole stage");
     }
 
     #[test]

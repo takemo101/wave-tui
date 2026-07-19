@@ -1886,7 +1886,7 @@ mod tests {
     // --- Agent Pulse: flag, key routing, monitor events, and mouse --------
 
     use crate::app::AgentPulseConnection;
-    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, MonitorEvent};
+    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus, MonitorEvent};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
@@ -1894,7 +1894,11 @@ mod tests {
         AgentSnapshot {
             id: AgentId::new("ws", pane),
             // Distinct names keep the reducer's name sort stable.
-            name: Some(pane.to_string()),
+            details: AgentDetails {
+                name: Some(pane.to_string()),
+                agent: None,
+                activity: None,
+            },
             status: AgentStatus::Working,
         }
     }

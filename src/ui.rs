@@ -2410,7 +2410,7 @@ mod tests {
 
     // --- Agent Pulse: quiet count + full-screen Kinetic Collage -----------
 
-    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
+    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
     use std::time::Duration;
 
     fn pulse_agent(
@@ -2421,7 +2421,11 @@ mod tests {
     ) -> AgentSnapshot {
         AgentSnapshot {
             id: AgentId::new(workspace, pane),
-            name: name.map(str::to_string),
+            details: AgentDetails {
+                name: name.map(str::to_string),
+                agent: None,
+                activity: None,
+            },
             status,
         }
     }

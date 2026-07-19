@@ -1497,7 +1497,7 @@ mod tests {
     use crate::app::Action;
     use crate::audio::AudioEvent;
     use crate::catalog::Catalog;
-    use crate::herdr::{AgentId, AgentSnapshot};
+    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot};
     use crate::model::PhaseTrace;
     use crate::settings::Settings;
     use crate::theme::ThemeName;
@@ -1529,6 +1529,7 @@ mod tests {
     fn view(workspace: &str, pane: &str, status: AgentStatus) -> AgentView {
         AgentView {
             id: AgentId::new(workspace, pane),
+            details: AgentDetails::default(),
             name: None,
             status,
             observed_at: Instant::now(),
@@ -1537,6 +1538,11 @@ mod tests {
 
     fn named_view(workspace: &str, pane: &str, name: &str, status: AgentStatus) -> AgentView {
         AgentView {
+            details: AgentDetails {
+                name: Some(name.to_string()),
+                agent: None,
+                activity: None,
+            },
             name: Some(name.to_string()),
             ..view(workspace, pane, status)
         }
@@ -1592,7 +1598,11 @@ mod tests {
     fn snap(workspace: &str, pane: &str, name: Option<&str>, status: AgentStatus) -> AgentSnapshot {
         AgentSnapshot {
             id: AgentId::new(workspace, pane),
-            name: name.map(str::to_string),
+            details: AgentDetails {
+                name: name.map(str::to_string),
+                agent: None,
+                activity: None,
+            },
             status,
         }
     }

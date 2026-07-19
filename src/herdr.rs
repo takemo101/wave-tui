@@ -54,13 +54,20 @@ impl AgentId {
     }
 }
 
-/// One normalized agent from the current control socket. Only the explicit
-/// Herdr name may ever be displayed; everything else about the source pane
-/// stays behind the private [`AgentId`].
+/// The only agent-list fields that may reach the read-only details modal.
+/// Identity/location/session fields stay behind the private [`AgentId`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentDetails {
+    pub(crate) name: Option<String>,
+    pub(crate) agent: Option<String>,
+    pub(crate) activity: Option<String>,
+}
+
+/// One normalized agent from the current control socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSnapshot {
     pub(crate) id: AgentId,
-    pub name: Option<String>,
+    pub(crate) details: AgentDetails,
     pub status: AgentStatus,
 }
 
@@ -120,7 +127,18 @@ struct RawAgent {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    terminal_title: Option<String>,
+    #[serde(default)]
     agent_status: Option<String>,
+}
+
+fn nonblank(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 /// Parses one `agent.list` response line, normalizing every agent the
@@ -136,7 +154,11 @@ fn parse_agent_list(line: &str) -> Option<Vec<AgentSnapshot>> {
             .filter_map(|value| serde_json::from_value::<RawAgent>(value).ok())
             .map(|raw| AgentSnapshot {
                 id: AgentId::new(raw.workspace_id, raw.pane_id),
-                name: raw.name,
+                details: AgentDetails {
+                    name: nonblank(raw.name),
+                    agent: nonblank(raw.agent),
+                    activity: nonblank(raw.terminal_title),
+                },
                 status: normalize_status(raw.agent_status.as_deref()),
             })
             .collect(),
@@ -363,21 +385,47 @@ mod tests {
             vec![
                 AgentSnapshot {
                     id: AgentId::new("ws-1", "p1"),
-                    name: Some("impl".to_string()),
+                    details: AgentDetails {
+                        name: Some("impl".to_string()),
+                        agent: Some("claude".to_string()),
+                        activity: None,
+                    },
                     status: AgentStatus::Working,
                 },
                 AgentSnapshot {
                     id: AgentId::new("ws-2", "p2"),
-                    name: None,
+                    details: AgentDetails::default(),
                     status: AgentStatus::Idle,
                 },
                 AgentSnapshot {
                     id: AgentId::new("ws-1", "p3"),
-                    name: None,
+                    details: AgentDetails::default(),
                     status: AgentStatus::Blocked,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parser_keeps_allowed_detail_fields_and_ignores_location_metadata() {
+        let parsed = parse_agent_list(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"agents":[{"pane_id":"pane-private","workspace_id":"workspace-private","name":"  research  ","agent":"  claude  ","terminal_title":"  Review the modal  ","agent_status":"working","cwd":"/private","tab_id":"tab-private","terminal_id":"term-private"}]}}"#,
+        )
+        .expect("valid payload");
+        let detail = &parsed[0].details;
+        assert_eq!(detail.name.as_deref(), Some("research"));
+        assert_eq!(detail.agent.as_deref(), Some("claude"));
+        assert_eq!(detail.activity.as_deref(), Some("Review the modal"));
+        assert_eq!(parsed[0].status, AgentStatus::Working);
+    }
+
+    #[test]
+    fn parser_omits_blank_allowed_detail_fields_without_private_fallbacks() {
+        let parsed = parse_agent_list(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"agents":[{"pane_id":"pi","workspace_id":"claude","name":" ","agent":"\t","terminal_title":" ","cwd":"/private","agent_status":"idle"}]}}"#,
+        )
+        .expect("valid payload");
+        assert_eq!(parsed[0].details, AgentDetails::default());
     }
 
     #[test]

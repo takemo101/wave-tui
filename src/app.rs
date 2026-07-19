@@ -18,7 +18,7 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::herdr::{self, AgentId, AgentSnapshot, AgentStatus};
+use crate::herdr::{self, AgentDetails, AgentId, AgentSnapshot, AgentStatus};
 use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
@@ -121,13 +121,13 @@ pub(crate) enum AgentPulseConnection {
 ///
 /// `observed_at` is when this app first saw the agent in its current status —
 /// a locally derived estimate, not an assertion about the agent's true
-/// process start time. The view deliberately carries no pane id, cwd, or
-/// agent type: the explicit `name` is the only displayable label, and the
+/// process start time. The view carries only the approved modal details; the
 /// private [`AgentId`] exists solely for identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentView {
     pub(crate) id: AgentId,
-    /// Explicit Herdr agent name; the only label the UI may ever show.
+    pub(crate) details: AgentDetails,
+    /// Transitional mirror for the legacy Side Tag renderer; Task 3 removes it.
     pub(crate) name: Option<String>,
     pub(crate) status: AgentStatus,
     pub(crate) observed_at: Instant,
@@ -215,16 +215,17 @@ impl AgentPulse {
     }
 }
 
-/// Sort active agents by state (working, blocked, idle, done, unknown), then
-/// by explicit name (named agents before unnamed ones), with the stable
-/// identity as the final tiebreaker so equal entries keep a deterministic
-/// order across snapshots.
+/// Sort active agents by state (working, blocked, idle, done, then unknown), then
+/// by the first available approved label, with the stable identity as the final
+/// tiebreaker so equal entries keep a deterministic order across snapshots.
 fn sort_active_agents(agents: &mut [AgentView]) {
     agents.sort_by(|a, b| {
+        let a_label = a.details.name.as_ref().or(a.details.agent.as_ref());
+        let b_label = b.details.name.as_ref().or(b.details.agent.as_ref());
         a.status_rank()
             .cmp(&b.status_rank())
-            .then_with(|| match (&a.name, &b.name) {
-                (Some(a_name), Some(b_name)) => a_name.cmp(b_name),
+            .then_with(|| match (a_label, b_label) {
+                (Some(a_label), Some(b_label)) => a_label.cmp(b_label),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
@@ -933,7 +934,8 @@ impl App {
                 AgentView {
                     observed_at: carried.map_or(now, |view| view.observed_at),
                     id: snapshot.id,
-                    name: snapshot.name,
+                    name: snapshot.details.name.clone(),
+                    details: snapshot.details,
                     status: snapshot.status,
                 }
             })
@@ -2443,7 +2445,11 @@ mod tests {
     ) -> AgentSnapshot {
         AgentSnapshot {
             id: AgentId::new(workspace, pane),
-            name: name.map(str::to_string),
+            details: AgentDetails {
+                name: name.map(str::to_string),
+                agent: None,
+                activity: None,
+            },
             status,
         }
     }
@@ -2648,6 +2654,29 @@ mod tests {
                 Some("unknown"),
             ]
         );
+    }
+
+    #[test]
+    fn agent_snapshot_preserves_allowed_details_without_private_identity() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(agent_snapshot(
+            vec![AgentSnapshot {
+                id: AgentId::new("workspace-private", "pane-private"),
+                details: AgentDetails {
+                    name: Some("research".to_string()),
+                    agent: Some("pi".to_string()),
+                    activity: Some("Review the modal".to_string()),
+                },
+                status: AgentStatus::Working,
+            }],
+            Instant::now(),
+        ));
+
+        let view = app.active_agents().first().expect("one active agent");
+        assert_eq!(view.details.name.as_deref(), Some("research"));
+        assert_eq!(view.details.agent.as_deref(), Some("pi"));
+        assert_eq!(view.details.activity.as_deref(), Some("Review the modal"));
+        assert_ne!(view.id, AgentId::new("different", "identity"));
     }
 
     #[test]

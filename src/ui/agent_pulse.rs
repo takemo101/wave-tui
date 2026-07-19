@@ -54,7 +54,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Widget},
+    widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
@@ -631,12 +631,8 @@ struct PlanetGeometry {
     working_arc: Vec<(u16, u16)>,
     satellite: Option<(u16, u16)>,
     /// Body plus drawn ring cells only: the planet-only selection targets
-    /// shared by [`hit_test`] and the tag collision layout.
+    /// shared by [`hit_test`] and rendering.
     hit_cells: Vec<(u16, u16)>,
-    /// Status-independent bound of the body plus the complete orbit. Tag
-    /// placement anchors here so Blocked's removed gap — which may clip an
-    /// extreme drawn-ring cell — can never shift a tag between statuses.
-    tag_bound: Rect,
 }
 
 /// The three Banded Worlds surface families. A family is stable private
@@ -784,7 +780,6 @@ fn planet_geometry(
     } else {
         None
     };
-    let tag_bound = cell_bounds(body.iter().chain(&full_ring).copied());
     let ring = if status == AgentStatus::Blocked {
         broken_ring(&full_ring, tile.seed)
     } else {
@@ -800,7 +795,6 @@ fn planet_geometry(
         working_arc,
         satellite,
         hit_cells,
-        tag_bound,
     }
 }
 
@@ -1043,16 +1037,7 @@ fn render_agent_planets_stage(
         }
     }
 
-    // Permanent side tags draw over every disc; the bright selected tag
-    // comes last so it stays readable even on the collision fallback.
-    let silent = frame.rms <= SILENCE_ENERGY;
-    let tags = planet_tag_placements(agents, &layout.tiles, &geometries, selected_index, field);
-    for tag in tags.iter().filter(|tag| !tag.selected) {
-        render_tag(buf, tag, theme, stale, silent);
-    }
-    if let Some(tag) = tags.iter().find(|tag| tag.selected) {
-        render_tag(buf, tag, theme, stale, silent);
-    }
+    render_agent_details_modal(app, theme, stale, field, buf);
 }
 
 /// Centered stage heading: `Agent Planets · n active` in the same Title
@@ -1133,10 +1118,86 @@ fn render_stage_footer(theme: &Theme, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    Paragraph::new("Tab/↑↓/click select · Space play · +/- volume · a/Esc close")
+    Paragraph::new("Tab/↑↓/click select · Enter details · Space play · a/Esc close")
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.muted))
         .render(area, buf);
+}
+
+/// Render the selected planet's compact, read-only details record.
+fn render_agent_details_modal(
+    app: &App,
+    theme: &Theme,
+    stale: bool,
+    field: Rect,
+    buf: &mut Buffer,
+) {
+    let Some(details) = app.selected_agent_details() else {
+        return;
+    };
+    if field.width < 12 || field.height < 5 {
+        return;
+    }
+    let status = app
+        .selected_agent()
+        .map(|agent| status_label(agent.status))
+        .unwrap_or("unknown");
+    let mut rows = Vec::new();
+    if let Some(name) = &details.name {
+        rows.push(("name", name.as_str()));
+    }
+    if let Some(agent) = &details.agent {
+        rows.push(("agent", agent.as_str()));
+    }
+    rows.push(("status", status));
+    if let Some(activity) = &details.activity {
+        rows.push(("activity", activity.as_str()));
+    }
+
+    let width = field.width.clamp(12, 48);
+    let height = ((rows.len() + 3) as u16).min(field.height).max(5);
+    let area = Rect::new(
+        field.x + field.width.saturating_sub(width) / 2,
+        field.y + field.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let mut lines = Vec::with_capacity(rows.len());
+    for (label, value) in rows {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{label:<8}"), Style::default().fg(theme.muted)),
+            Span::styled(value.to_string(), Style::default().fg(theme.foreground)),
+        ]));
+    }
+    let mut title = Style::default().fg(theme.accent);
+    if stale {
+        title = title.add_modifier(Modifier::DIM);
+    }
+    Clear.render(area, buf);
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(title)
+                .title(Span::styled(" Agent details ", title)),
+        )
+        .style(if stale {
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::DIM)
+        } else {
+            Style::default().fg(theme.foreground)
+        })
+        .render(area, buf);
+    if stale && area.height >= 2 {
+        buf.set_stringn(
+            area.x + 1,
+            area.y + area.height - 2,
+            "reconnecting",
+            area.width.saturating_sub(2) as usize,
+            Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
+        );
+    }
 }
 
 /// Draw one agent planet in order: disc-mask body fill, stable crater
@@ -1250,189 +1311,6 @@ fn own_emphasis(style: Style) -> Style {
     style.remove_modifier((Modifier::DIM | Modifier::BOLD).difference(style.add_modifier))
 }
 
-/// Axis-aligned bounding rectangle of a cell set. Every laid-out planet
-/// keeps at least its center body cell, so the empty fallback never fires
-/// for real tiles.
-fn cell_bounds(cells: impl IntoIterator<Item = (u16, u16)>) -> Rect {
-    let mut cells = cells.into_iter();
-    let Some((first_x, first_y)) = cells.next() else {
-        return Rect::default();
-    };
-    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first_x, first_x, first_y, first_y);
-    for (x, y) in cells {
-        min_x = min_x.min(x);
-        max_x = max_x.max(x);
-        min_y = min_y.min(y);
-        max_y = max_y.max(y);
-    }
-    Rect::new(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
-}
-
-/// Widest name column a side tag reserves before truncating with an
-/// ellipsis.
-const TAG_NAME_MAX: usize = 12;
-/// The longest normalized status label (`working`/`blocked`/`unknown`), so
-/// a tag's width — and therefore its placement — never shifts when only its
-/// status changes.
-const TAG_STATUS_MAX: usize = 7;
-
-/// One named planet's permanent two-line side tag: the explicit Herdr name
-/// over the normalized status, plus its placed rectangle and selection
-/// emphasis. Unnamed planets never produce one.
-struct PlanetTag {
-    /// The index into `App::active_agents()` this tag annotates.
-    #[cfg_attr(not(test), allow(dead_code))]
-    agent_index: usize,
-    rect: Rect,
-    name: String,
-    status: AgentStatus,
-    selected: bool,
-}
-
-/// Ellipsis-truncate an explicit name to the tag name column.
-fn tag_name(name: &str) -> String {
-    if name.chars().count() <= TAG_NAME_MAX {
-        name.to_string()
-    } else {
-        let mut out: String = name.chars().take(TAG_NAME_MAX - 1).collect();
-        out.push('…');
-        out
-    }
-}
-
-/// Whether any cell of `rect` is already reserved.
-fn tag_rect_collides(rect: Rect, occupied: &HashSet<(u16, u16)>) -> bool {
-    (rect.y..rect.y + rect.height)
-        .any(|y| (rect.x..rect.x + rect.width).any(|x| occupied.contains(&(x, y))))
-}
-
-/// The in-priority-order tag candidates beside `bound`: right, left, below,
-/// above — each fully inside `field`.
-fn tag_candidate_rects(bound: Rect, width: u16, height: u16, field: Rect) -> Vec<Rect> {
-    let mut candidates = Vec::new();
-    let field_right = field.x + field.width;
-    let field_bottom = field.y + field.height;
-    let side_y = (bound.y + bound.height / 2)
-        .min(field_bottom.saturating_sub(height))
-        .max(field.y);
-    let clamp_x = |x: u16| x.min(field_right.saturating_sub(width)).max(field.x);
-    if (bound.x + bound.width) as u32 + width as u32 <= field_right as u32 {
-        candidates.push(Rect::new(bound.x + bound.width, side_y, width, height));
-    }
-    if bound.x >= field.x + width {
-        candidates.push(Rect::new(bound.x - width, side_y, width, height));
-    }
-    let below = bound.y + bound.height;
-    if below as u32 + height as u32 <= field_bottom as u32 {
-        candidates.push(Rect::new(clamp_x(bound.x), below, width, height));
-    }
-    if bound.y >= field.y + height {
-        candidates.push(Rect::new(clamp_x(bound.x), bound.y - height, width, height));
-    }
-    candidates
-}
-
-/// The clamped right-side fallback used when every candidate collides; the
-/// renderer draws colliding tags after every disc so even this stays
-/// readable.
-fn tag_fallback_rect(bound: Rect, width: u16, height: u16, field: Rect) -> Rect {
-    let x = (bound.x + bound.width)
-        .min((field.x + field.width).saturating_sub(width))
-        .max(field.x);
-    let y = (bound.y + bound.height / 2)
-        .min((field.y + field.height).saturating_sub(height))
-        .max(field.y);
-    Rect::new(x, y, width, height)
-}
-
-/// Layout every named planet's permanent two-line side tag.
-///
-/// Placement walks the stable tile order and is selection-independent —
-/// selecting a planet only brightens its tag, it never reflows the stage.
-/// Each tag tries right, left, below, then above its disc bound, rejecting
-/// candidates that collide with any planet's body/ring cells or an
-/// already-reserved tag; the chosen cells are reserved before the next
-/// planet places. When every candidate collides the clamped right fallback
-/// wins. Unnamed agents contribute nothing — never a pane id, workspace id,
-/// cwd, or agent-type fallback.
-fn planet_tag_placements(
-    agents: &[AgentView],
-    tiles: &[CollageTile],
-    geometries: &[PlanetGeometry],
-    selected_index: Option<usize>,
-    field: Rect,
-) -> Vec<PlanetTag> {
-    if field.width == 0 || field.height == 0 {
-        return Vec::new();
-    }
-    let mut occupied: HashSet<(u16, u16)> = geometries
-        .iter()
-        .flat_map(|geometry| geometry.hit_cells.iter().copied())
-        .collect();
-    let mut tags = Vec::new();
-    for (tile, geometry) in tiles.iter().zip(geometries) {
-        let Some(view) = agents.get(tile.index) else {
-            continue;
-        };
-        let Some(name) = &view.name else {
-            continue;
-        };
-        let name = tag_name(name);
-        let width = (name.chars().count().max(TAG_STATUS_MAX) as u16).min(field.width);
-        let height = 2.min(field.height);
-        let bound = geometry.tag_bound;
-        let rect = tag_candidate_rects(bound, width, height, field)
-            .into_iter()
-            .find(|rect| !tag_rect_collides(*rect, &occupied))
-            .unwrap_or_else(|| tag_fallback_rect(bound, width, height, field));
-        for y in rect.y..rect.y + rect.height {
-            for x in rect.x..rect.x + rect.width {
-                occupied.insert((x, y));
-            }
-        }
-        tags.push(PlanetTag {
-            agent_index: tile.index,
-            rect,
-            name,
-            status: view.status,
-            selected: selected_index == Some(tile.index),
-        });
-    }
-    tags
-}
-
-/// Draw one two-line side tag: the explicit name over the normalized
-/// status. Tags stay muted so the planets keep the stage; the selected tag
-/// takes the theme selection emphasis, and silence/stale dim tags with the
-/// rest of the field.
-fn render_tag(buf: &mut Buffer, tag: &PlanetTag, theme: &Theme, stale: bool, silent: bool) {
-    let mut style = if tag.selected {
-        theme.selection_style()
-    } else {
-        Style::default().fg(theme.muted)
-    };
-    if silent {
-        style = style.add_modifier(Modifier::DIM);
-    }
-    let style = own_emphasis(with_stale(style, stale));
-    buf.set_stringn(
-        tag.rect.x,
-        tag.rect.y,
-        &tag.name,
-        tag.rect.width as usize,
-        style,
-    );
-    if tag.rect.height >= 2 {
-        buf.set_stringn(
-            tag.rect.x,
-            tag.rect.y + 1,
-            status_label(tag.status),
-            tag.rect.width as usize,
-            style,
-        );
-    }
-}
-
 /// Draw the breathing theme-phosphor vignette ring for a normalized radius.
 fn render_vignette(buf: &mut Buffer, area: Rect, radius: f32, theme: &Theme, stale: bool) {
     if area.width == 0 || area.height == 0 {
@@ -1536,18 +1414,6 @@ mod tests {
         }
     }
 
-    fn named_view(workspace: &str, pane: &str, name: &str, status: AgentStatus) -> AgentView {
-        AgentView {
-            details: AgentDetails {
-                name: Some(name.to_string()),
-                agent: None,
-                activity: None,
-            },
-            name: Some(name.to_string()),
-            ..view(workspace, pane, status)
-        }
-    }
-
     fn agents(count: usize) -> Vec<AgentView> {
         (0..count)
             .map(|i| view("ws", &format!("p{i}"), AgentStatus::Working))
@@ -1615,25 +1481,6 @@ mod tests {
             now: Instant::now(),
         });
         app.apply(Action::ToggleAgentOverlay);
-        app
-    }
-
-    /// One named and one unnamed agent whose raw ids would be recognizable if
-    /// they ever leaked into the buffer.
-    fn app_with_named_and_unnamed_agents() -> App {
-        let mut app = App::new(Settings::default(), Catalog::curated());
-        app.apply(Action::AgentSnapshot {
-            agents: vec![
-                snap(
-                    "workspace-1",
-                    "pane-1",
-                    Some("research"),
-                    AgentStatus::Working,
-                ),
-                snap("workspace-1", "claude", None, AgentStatus::Working),
-            ],
-            now: Instant::now(),
-        });
         app
     }
 
@@ -2285,9 +2132,7 @@ mod tests {
             "an oversized bound caps at the largest fixed mask"
         );
         assert!(!geometry.body.is_empty());
-        let bound = geometry.tag_bound;
-        assert!(bound.width <= 7 + 2, "body plus ring overhang stays capped");
-        assert!(bound.height <= 5 + 2);
+        assert!(geometry.body.len() <= 7 * 5, "the fixed disc stays capped");
         assert_eq!(dense_planet_body_count(80, Rect::new(0, 0, 50, 15)), 80);
     }
 
@@ -2374,181 +2219,6 @@ mod tests {
             hit_test(CANVAS, x, y, false, &app).is_none(),
             "an oversized-rect-only cell resolves nothing"
         );
-    }
-
-    // --- side-tag candidate branches ----------------------------------------
-
-    /// Which `planet_tag_placements` candidate a synthetic fixture forces.
-    #[derive(Clone, Copy)]
-    enum PlacementCase {
-        Right,
-        Left,
-        Below,
-        Above,
-        AllCollide,
-    }
-
-    const TAG_FIELD: Rect = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 10,
-    };
-
-    /// A synthetic planet whose selectable cells are exactly `cells`.
-    fn synthetic_planet(cells: &[(u16, u16)]) -> PlanetGeometry {
-        PlanetGeometry {
-            base_body: Vec::new(),
-            mask: DiscMask::Dot,
-            body: cells.to_vec(),
-            craters: Vec::new(),
-            ring: Vec::new(),
-            working_arc: Vec::new(),
-            satellite: None,
-            hit_cells: cells.to_vec(),
-            tag_bound: cell_bounds(cells.iter().copied()),
-        }
-    }
-
-    /// A hand-built tile carrying only its agent index; the synthetic
-    /// geometry supplies every cell.
-    fn synthetic_tile(index: usize) -> CollageTile {
-        CollageTile {
-            index,
-            seed: index as u64,
-            base_rect: Rect::new(0, 0, 1, 1),
-            rect: Rect::new(0, 0, 1, 1),
-            energy: 0.0,
-        }
-    }
-
-    /// The named fixture: a 3×3 block bounded by x 15..=17, y 4..=6. With a
-    /// one-char name the tag is 7×2, so inside `TAG_FIELD` every candidate —
-    /// right (18, 5), left (8, 5), below (15, 7), above (15, 2) — stays in
-    /// bounds and only deliberate blockers knock one out.
-    fn synthetic_named() -> PlanetGeometry {
-        let cells: Vec<(u16, u16)> = (15..18).flat_map(|x| (4..7).map(move |y| (x, y))).collect();
-        synthetic_planet(&cells)
-    }
-
-    /// Run `planet_tag_placements` against blockers occupying every
-    /// candidate preceding the one `case` forces, and return the named
-    /// planet's tag.
-    fn forced_tag(case: PlacementCase) -> PlanetTag {
-        let blockers: Vec<(u16, u16)> = match case {
-            PlacementCase::Right => Vec::new(),
-            PlacementCase::Left => vec![(20, 5)],
-            PlacementCase::Below => vec![(20, 5), (9, 6)],
-            PlacementCase::Above => vec![(20, 5), (9, 6), (16, 7)],
-            PlacementCase::AllCollide => vec![(20, 5), (9, 6), (16, 7), (16, 3)],
-        };
-        let agents = vec![
-            named_view("ws", "p0", "n", AgentStatus::Working),
-            view("ws", "p1", AgentStatus::Working),
-        ];
-        let tiles = [synthetic_tile(0), synthetic_tile(1)];
-        let geometries = [synthetic_named(), synthetic_planet(&blockers)];
-        let mut tags = planet_tag_placements(&agents, &tiles, &geometries, None, TAG_FIELD);
-        assert_eq!(tags.len(), 1, "only the named planet places a tag");
-        tags.remove(0)
-    }
-
-    #[test]
-    fn tag_placement_exercises_right_left_below_above_and_fallback() {
-        assert_eq!(
-            forced_tag(PlacementCase::Right).rect,
-            Rect::new(18, 5, 7, 2)
-        );
-        assert_eq!(forced_tag(PlacementCase::Left).rect, Rect::new(8, 5, 7, 2));
-        assert_eq!(
-            forced_tag(PlacementCase::Below).rect,
-            Rect::new(15, 7, 7, 2)
-        );
-        assert_eq!(
-            forced_tag(PlacementCase::Above).rect,
-            Rect::new(15, 2, 7, 2)
-        );
-        assert_eq!(
-            forced_tag(PlacementCase::AllCollide).rect,
-            Rect::new(18, 5, 7, 2),
-            "when every candidate collides the clamped right fallback wins"
-        );
-    }
-
-    #[test]
-    fn working_and_blocked_place_identical_tag_rects_even_in_low_power() {
-        // Tag placement must be status-independent: Blocked's removed gap
-        // may clip an extreme ring cell, and a shrunken drawn-ring bound
-        // must never shift the tag. Several identity seeds vary which ring
-        // cells the gap removes.
-        let field = stage_field();
-        let place = |pane: &str, status: AgentStatus| {
-            let agents = vec![named_view("ws", pane, "one", status)];
-            let layout = collage_layout(&agents, &phase_frame(), &[], field);
-            let geometries: Vec<PlanetGeometry> = layout
-                .tiles
-                .iter()
-                .map(|tile| planet_geometry(tile, field, status, &phase_frame()))
-                .collect();
-            planet_tag_placements(&agents, &layout.tiles, &geometries, None, field)
-                .remove(0)
-                .rect
-        };
-        for pane in ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"] {
-            assert_eq!(
-                place(pane, AgentStatus::Working),
-                place(pane, AgentStatus::Blocked),
-                "status must not move the tag for pane {pane}"
-            );
-        }
-
-        // Low power: geometry comes from the captured frame; a fresh
-        // Blocked snapshot may retreat the orbit but not the frozen tag.
-        let mut app = collage_app(vec![snap("ws", "p1", Some("one"), AgentStatus::Working)]);
-        app.configure_low_power_visuals(true);
-        push_frame(&mut app, phase_frame_with_offset(0.3));
-        let captured_tags = |app: &App| {
-            let (captured, _) = app.low_power_viz().expect("policy captured a frame");
-            let agents = app.active_agents();
-            let layout = collage_layout(agents, captured, &[], field);
-            let geometries: Vec<PlanetGeometry> = layout
-                .tiles
-                .iter()
-                .map(|tile| planet_geometry(tile, field, agents[tile.index].status, captured))
-                .collect();
-            planet_tag_placements(agents, &layout.tiles, &geometries, None, field)
-        };
-        let working_rect = captured_tags(&app)[0].rect;
-        app.apply(Action::AgentSnapshot {
-            agents: vec![snap("ws", "p1", Some("one"), AgentStatus::Blocked)],
-            now: Instant::now(),
-        });
-        assert_eq!(
-            captured_tags(&app)[0].rect,
-            working_rect,
-            "a fresh blocked snapshot never moves the frozen tag"
-        );
-    }
-
-    #[test]
-    fn long_tag_names_truncate_with_ellipsis_and_keep_status() {
-        let long = "supercalifragilistic";
-        let name = tag_name(long);
-        assert_eq!(name.chars().count(), TAG_NAME_MAX);
-        assert!(name.ends_with('…'));
-
-        let mut app = collage_app(vec![snap("ws", "p1", Some(long), AgentStatus::Working)]);
-        push_frame(&mut app, phase_frame());
-        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
-        assert!(
-            text.contains("supercalifr…"),
-            "the truncated name renders: {text}"
-        );
-        assert!(
-            !text.contains("supercalifra"),
-            "the untruncated name never renders"
-        );
-        assert!(text.contains("working"), "the status line stays visible");
     }
 
     // --- music reactivity -------------------------------------------------
@@ -2739,39 +2409,6 @@ mod tests {
     }
 
     #[test]
-    fn selected_named_planet_tag_shows_only_name_and_status_at_its_placement() {
-        let mut app = app_with_named_and_unnamed_agents();
-        app.apply(Action::ToggleAgentOverlay);
-        app.apply(Action::SelectNextAgent);
-        let buf = render_collage_for(&app, false, Instant::now());
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains("research"),
-            "selected explicit-name tag missing: {text}"
-        );
-        assert!(!text.contains("workspace-1"), "workspace ids never render");
-        assert!(!text.contains("pane-1"), "pane ids never render");
-        assert!(!text.contains("claude"), "raw pane details never render");
-
-        // The tag sits exactly at its collision-aware placement beside the
-        // selected planet, name row over status row, with the selection
-        // emphasis instead of the muted tag color.
-        let tag = stage_tags(&app)
-            .into_iter()
-            .find(|tag| tag.selected)
-            .expect("the named selection keeps its tag");
-        assert_eq!(tag.name, "research");
-        assert_eq!(cell_text(&buf, tag.rect.x, tag.rect.y), "r");
-        assert_eq!(cell_text(&buf, tag.rect.x, tag.rect.y + 1), "w");
-        let theme = Theme::for_name(ThemeName::Minimal);
-        assert_eq!(
-            buf.cell((tag.rect.x, tag.rect.y)).unwrap().style().fg,
-            theme.selection_style().fg,
-            "the selected tag takes the selection emphasis"
-        );
-    }
-
-    #[test]
     fn unnamed_planet_has_no_tag_and_no_private_fallback() {
         let mut app = app_with_only_unnamed_agent();
         app.apply(Action::ToggleAgentOverlay);
@@ -2784,24 +2421,6 @@ mod tests {
             !text.contains("working"),
             "an unnamed selection leaks no status tag"
         );
-    }
-
-    #[test]
-    fn named_planet_tag_renders_before_any_selection() {
-        let app = collage_app(vec![snap(
-            "alpha",
-            "p1",
-            Some("research"),
-            AgentStatus::Working,
-        )]);
-        assert!(app.selected_agent().is_none(), "sanity: nothing selected");
-        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
-        assert!(
-            text.contains("research"),
-            "the permanent tag renders without selection: {text}"
-        );
-        assert!(!text.contains("alpha"), "workspace ids never render");
-        assert!(!text.contains("p1"), "pane ids never render");
     }
 
     #[test]
@@ -3000,28 +2619,9 @@ mod tests {
             "a scope-only cell never selects"
         );
 
-        let tags = stage_tags(&app);
-        let tag = tags.first().expect("named planets keep tags");
-        let (x, y) = (tag.rect.y..tag.rect.y + tag.rect.height)
-            .flat_map(|y| (tag.rect.x..tag.rect.x + tag.rect.width).map(move |x| (x, y)))
-            .find(|cell| !planet_cells.contains(cell))
-            .expect("the tag keeps cells off every planet");
-        assert!(
-            hit_test(CANVAS, x, y, false, &app).is_none(),
-            "a tag-only cell never selects"
-        );
-
-        let tag_cells: HashSet<(u16, u16)> = tags
-            .iter()
-            .flat_map(|tag| {
-                (tag.rect.y..tag.rect.y + tag.rect.height).flat_map(move |y| {
-                    (tag.rect.x..tag.rect.x + tag.rect.width).map(move |x| (x, y))
-                })
-            })
-            .collect();
         let (x, y) = (canvas.y..canvas.y + canvas.height)
             .flat_map(|y| (canvas.x..canvas.x + canvas.width).map(move |x| (x, y)))
-            .find(|cell| !planet_cells.contains(cell) && !tag_cells.contains(cell))
+            .find(|cell| !planet_cells.contains(cell))
             .expect("the canvas keeps empty cells");
         assert!(
             hit_test(CANVAS, x, y, false, &app).is_none(),
@@ -3164,24 +2764,6 @@ mod tests {
 
     // --- agent planets stage ------------------------------------------------
 
-    /// The tag placements the stage renderer computes for `app` on the
-    /// standard test canvas — the same geometry/selection inputs
-    /// `render_canvas` uses.
-    fn stage_tags(app: &App) -> Vec<PlanetTag> {
-        let field = agent_stage_layout(CANVAS).field;
-        let agents = app.active_agents();
-        let layout = collage_layout(agents, app.viz(), &[], field);
-        let geometries: Vec<PlanetGeometry> = layout
-            .tiles
-            .iter()
-            .map(|tile| planet_geometry(tile, field, agents[tile.index].status, app.viz()))
-            .collect();
-        let selected = app
-            .selected_agent()
-            .and_then(|view| agents.iter().position(|other| other.id == view.id));
-        planet_tag_placements(agents, &layout.tiles, &geometries, selected, field)
-    }
-
     #[test]
     fn planet_disc_masks_are_round_and_never_draw_rectangle_shadows() {
         let mut app = collage_app(
@@ -3238,100 +2820,32 @@ mod tests {
     }
 
     #[test]
-    fn named_planets_render_two_line_side_tags_and_unnamed_planets_do_not() {
-        let mut app = app_with_named_and_unnamed_agents();
-        app.apply(Action::ToggleAgentOverlay);
+    fn stage_hides_details_until_the_selected_agent_opens_the_modal() {
+        let mut app = collage_app(vec![AgentSnapshot {
+            id: AgentId::new("workspace-private", "pane-private"),
+            details: AgentDetails {
+                name: Some("research".to_string()),
+                agent: Some("pi".to_string()),
+                activity: Some("Review the modal".to_string()),
+            },
+            status: AgentStatus::Working,
+        }]);
         push_frame(&mut app, phase_frame());
-        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
-        assert!(
-            text.contains("research"),
-            "a named planet keeps its permanent tag without selection: {text}"
-        );
-        assert!(
-            text.contains("working"),
-            "the tag's second line carries the status: {text}"
-        );
-        assert!(!text.contains("workspace-1"), "workspace ids never render");
-        assert!(!text.contains("pane-1"), "pane ids never render");
-        assert!(!text.contains("claude"), "raw pane details never render");
-        let name_row = text
-            .lines()
-            .position(|line| line.contains("research"))
-            .unwrap();
-        assert!(
-            text.lines().nth(name_row + 1).unwrap().contains("working"),
-            "the status renders directly under the name"
-        );
+        let stage = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(!stage.contains("research"));
+        assert!(!stage.contains("working"));
+        assert!(!stage.contains("pi"));
 
-        let tags = stage_tags(&app);
-        assert_eq!(tags.len(), 1, "only the named planet owns a tag");
-        assert_eq!(
-            app.active_agents()[tags[0].agent_index].name.as_deref(),
-            Some("research"),
-            "the tag annotates exactly the named agent"
-        );
-    }
-
-    #[test]
-    fn selected_tag_draws_last_and_tag_layout_avoids_discs_and_tags() {
-        let mut app = collage_app(
-            (0..8)
-                .map(|i| {
-                    snap(
-                        "ws",
-                        &format!("p{i}"),
-                        Some(&format!("agent-{i}")),
-                        AgentStatus::Working,
-                    )
-                })
-                .collect(),
-        );
-        push_frame(&mut app, phase_frame());
         app.apply(Action::SelectNextAgent);
-        let buf = render_collage_for(&app, false, Instant::now());
-        let tags = stage_tags(&app);
-        assert_eq!(tags.len(), 8, "every named planet keeps a tag");
-
-        let tag = tags
-            .iter()
-            .find(|tag| tag.selected)
-            .expect("the selection owns a tag");
-        assert_eq!(
-            cell_text(&buf, tag.rect.x, tag.rect.y),
-            tag.name.chars().next().unwrap().to_string(),
-            "the selected tag draws on top at its placement"
-        );
-
-        // Non-fallback tags overlap no disc and no other tag.
-        let field = agent_stage_layout(CANVAS).field;
-        let layout = collage_layout(app.active_agents(), app.viz(), &[], field);
-        let disc_cells: HashSet<(u16, u16)> = layout
-            .tiles
-            .iter()
-            .flat_map(|tile| {
-                planet_geometry(tile, field, AgentStatus::Working, app.viz()).hit_cells
-            })
-            .collect();
-        let tag_cells = |tag: &PlanetTag| -> Vec<(u16, u16)> {
-            (tag.rect.y..tag.rect.y + tag.rect.height)
-                .flat_map(|y| (tag.rect.x..tag.rect.x + tag.rect.width).map(move |x| (x, y)))
-                .collect()
-        };
-        let mut seen: HashSet<(u16, u16)> = HashSet::new();
-        for tag in &tags {
-            for cell in tag_cells(tag) {
-                assert!(
-                    !disc_cells.contains(&cell),
-                    "tag cell {cell:?} of {} must avoid every disc",
-                    tag.name
-                );
-                assert!(
-                    seen.insert(cell),
-                    "tag cell {cell:?} of {} must avoid every other tag",
-                    tag.name
-                );
-            }
-        }
+        app.apply(Action::OpenAgentDetails);
+        let modal = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(modal.contains("Agent details"));
+        assert!(modal.contains("research"));
+        assert!(modal.contains("pi"));
+        assert!(modal.contains("working"));
+        assert!(modal.contains("Review the modal"));
+        assert!(!modal.contains("workspace-private"));
+        assert!(!modal.contains("pane-private"));
     }
 
     #[test]

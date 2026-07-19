@@ -2577,7 +2577,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_planets_canvas_keeps_permanent_named_tags() {
+    fn agent_planets_canvas_shows_details_only_after_selection_opens_modal() {
         let mut app = app_with_agents(vec![pulse_agent(
             "alpha",
             "p1",
@@ -2586,25 +2586,16 @@ mod tests {
         )]);
         app.apply(Action::ToggleAgentOverlay);
         let unselected = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(
-            unselected.contains("research"),
-            "the named tag renders before selection: {unselected}"
-        );
-        assert!(
-            unselected.contains("working"),
-            "the tag status renders before selection: {unselected}"
-        );
-        assert!(
-            !unselected.contains("alpha") && !unselected.contains("p1"),
-            "private ids never render: {unselected}"
-        );
+        assert!(!unselected.contains("research"));
+        assert!(!unselected.contains("working"));
 
         app.apply(Action::SelectNextAgent);
-        let selected = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(
-            selected.contains("research"),
-            "the selected tag stays visible: {selected}"
-        );
+        app.apply(Action::OpenAgentDetails);
+        let modal = buffer_text(&render_buffer(&app, 120, 36));
+        assert!(modal.contains("Agent details"));
+        assert!(modal.contains("research"));
+        assert!(modal.contains("working"));
+        assert!(!modal.contains("alpha") && !modal.contains("p1"));
     }
 
     #[test]

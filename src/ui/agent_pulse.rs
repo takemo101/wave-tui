@@ -1060,10 +1060,11 @@ fn render_agent_planets_stage(
     let stage = agent_stage_layout(area);
     render_stage_heading(theme, agents.len(), stale, stage.heading, buf);
     render_stage_title_block(app, theme, stale, stage.title_block, buf);
-    render_stage_footer(theme, stage.footer, buf);
+    render_stage_footer(theme, app.is_agent_details_open(), stage.footer, buf);
 
     if connection == AgentPulseConnection::Unavailable {
         center_copy(buf, stage.field, "agents · unavailable · retrying", muted);
+        render_agent_focus_notice(app, theme, stage.field, now, buf);
         return;
     }
 
@@ -1105,6 +1106,7 @@ fn render_agent_planets_stage(
 
     if agents.is_empty() {
         center_copy(buf, field, "agents · none active", muted);
+        render_agent_focus_notice(app, theme, field, now, buf);
         return;
     }
 
@@ -1175,7 +1177,7 @@ fn render_agent_planets_stage(
         }
     }
 
-    render_agent_details_modal(app, theme, stale, field, buf);
+    render_agent_details_modal(app, theme, stale, field, now, buf);
 }
 
 /// Centered stage heading: `Agent Planets · n active` in the same Title
@@ -1251,12 +1253,19 @@ fn render_stage_title_block(app: &App, theme: &Theme, stale: bool, area: Rect, b
 }
 
 /// Centered restrained footer: selection, player, and close hints. `z` is
-/// deliberately not advertised — Single View is not a stage action.
-fn render_stage_footer(theme: &Theme, area: Rect, buf: &mut Buffer) {
+/// deliberately not advertised — Single View is not a stage action. Pane
+/// focus belongs to the details modal while it is open, so its `O` hint never
+/// competes with the modal-local control.
+fn render_stage_footer(theme: &Theme, details_open: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    Paragraph::new("Tab/↑↓/click select · Enter details · Space play · a/Esc close")
+    let hint = if details_open {
+        "Tab/↑↓ select · Enter/Esc close · a close"
+    } else {
+        "Tab/↑↓/click select · Enter details · O open pane · Space play · a/Esc close"
+    };
+    Paragraph::new(hint)
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.muted))
         .render(area, buf);
@@ -1268,9 +1277,11 @@ fn render_agent_details_modal(
     theme: &Theme,
     stale: bool,
     field: Rect,
+    now: Instant,
     buf: &mut Buffer,
 ) {
     let Some(details) = app.selected_agent_details() else {
+        render_agent_focus_notice(app, theme, field, now, buf);
         return;
     };
     if field.width < 12 || field.height < 5 {
@@ -1292,8 +1303,11 @@ fn render_agent_details_modal(
         rows.push(("activity", activity.as_str()));
     }
 
+    let notice = app.agent_focus_notice(now);
     let width = field.width.clamp(12, 48);
-    let height = ((rows.len() + 3) as u16).min(field.height).max(5);
+    let height = ((rows.len() + 4 + usize::from(notice.is_some())) as u16)
+        .min(field.height)
+        .max(5);
     let area = Rect::new(
         field.x + field.width.saturating_sub(width) / 2,
         field.y + field.height.saturating_sub(height) / 2,
@@ -1336,6 +1350,11 @@ fn render_agent_details_modal(
             ]));
         }
     }
+    lines.push(Line::from(Span::styled(
+        notice.unwrap_or("O open pane · Enter/Esc close"),
+        Style::default().fg(theme.muted),
+    )));
+
     let mut title = Style::default().fg(theme.accent);
     if stale {
         title = title.add_modifier(Modifier::DIM);
@@ -1362,6 +1381,44 @@ fn render_agent_details_modal(
         } else {
             Style::default().fg(theme.foreground)
         })
+        .render(area, buf);
+}
+
+/// A temporary centered focus result when the details modal is not open.
+/// It has no agent metadata or identifiers and never changes selection.
+fn render_agent_focus_notice(
+    app: &App,
+    theme: &Theme,
+    field: Rect,
+    now: Instant,
+    buf: &mut Buffer,
+) {
+    let Some(notice) = app.agent_focus_notice(now) else {
+        return;
+    };
+    if field.width < 18 || field.height < 3 {
+        return;
+    }
+    let width = field.width.min(42);
+    let area = Rect::new(
+        field.x + field.width.saturating_sub(width) / 2,
+        field.y + field.height.saturating_sub(3) / 2,
+        width,
+        3,
+    );
+    Clear.render(area, buf);
+    Paragraph::new(notice)
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.error))
+                .title(Span::styled(
+                    " Agent Planets ",
+                    Style::default().fg(theme.accent),
+                )),
+        )
+        .style(Style::default().fg(theme.foreground))
         .render(area, buf);
 }
 
@@ -1707,6 +1764,15 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    fn stage_footer_text(buf: &Buffer) -> String {
+        let footer = agent_stage_layout(CANVAS).footer;
+        (footer.y..footer.y + footer.height)
+            .flat_map(|y| {
+                (footer.x..footer.x + footer.width).map(move |x| buf.cell((x, y)).unwrap().symbol())
+            })
+            .collect()
     }
 
     fn count_primary_phase_cells(buf: &Buffer) -> usize {
@@ -3970,15 +4036,23 @@ mod tests {
             status: AgentStatus::Working,
         }]);
         push_frame(&mut app, phase_frame());
-        let stage = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        let stage_buffer = render_collage_for(&app, false, Instant::now());
+        let stage = buffer_text(&stage_buffer);
         assert!(!stage.contains("research"));
         assert!(!stage.contains("working"));
         assert!(!stage.contains("pi"));
+        assert!(stage_footer_text(&stage_buffer).contains("O open pane"));
 
         app.apply(Action::SelectNextAgent);
         app.apply(Action::OpenAgentDetails);
-        let modal = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        let modal_buffer = render_collage_for(&app, false, Instant::now());
+        let modal = buffer_text(&modal_buffer);
         assert!(modal.contains("Agent details"));
+        assert!(modal.contains("O open pane"), "modal owns the focus hint");
+        assert!(
+            !stage_footer_text(&modal_buffer).contains("O open pane"),
+            "stage footer must not repeat the modal-local focus hint"
+        );
         assert!(modal.contains("name: research"));
         assert!(modal.contains("agent: pi"));
         assert!(modal.contains("status: working"));

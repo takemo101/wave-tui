@@ -53,9 +53,10 @@ Stay inside the MVP unless the user explicitly expands scope:
   surface status, static sun with Working-only invisible orbits, and
   selection focus brackets — as recorded in `docs/ui-design-decisions.md`
   and `docs/SPEC.md`).
-  It only observes approved agent details via `agent.list` on the plugin's local Herdr
-  socket (across that session's workspaces); it is not a daemon, remote
-  control, or an internal plugin system.
+  It observes approved agent details via `agent.list` on the plugin's local Herdr
+  socket (across that session's workspaces) and may explicitly focus the selected
+  live agent pane via `agent.focus`; it is not a daemon, remote control service,
+  or an internal plugin system.
 
 Do not add these in MVP without an explicit design update:
 
@@ -88,8 +89,9 @@ Expected responsibility boundaries:
 - `catalog`: curated stations, station ranking, validation state.
 - `search`: Radio Browser client, normalization, query cache.
 - `audio`: native playback facade, decoder/output/analyzer/ICY events.
-- `herdr`: Herdr plugin environment eligibility, Unix socket protocol, and the
-  read-only `agent.list` monitor thread; the only module that sees Herdr JSON.
+- `herdr`: Herdr plugin environment eligibility, Unix socket protocol, the
+  `agent.list` monitor thread, and the explicit `agent.focus` request; the only
+  module that sees Herdr JSON or opaque pane ids.
 - `theme`: theme names and palette definitions.
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.

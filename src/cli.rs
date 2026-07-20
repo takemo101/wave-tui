@@ -35,7 +35,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use crate::app::{Action, App, FocusPane, SearchStatus};
+use crate::app::{Action, AgentPulseConnection, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioEvent, AudioHandle, AudioRuntime, AudioRuntimeConfig};
 use crate::catalog::Catalog;
 use crate::herdr::{self, HerdrMonitor, MonitorEvent};
@@ -220,6 +220,8 @@ pub enum KeyOutcome {
     /// `a`: toggle the Agent Pulse overlay. The reducer keeps it a no-op
     /// while the integration is hidden or Signal View is active.
     ToggleAgentPulse,
+    /// `o`/`O`: focus the selected live Agent Planets pane.
+    FocusAgentPane,
     FocusNext,
     FocusPrevious,
     SelectNext,
@@ -293,6 +295,7 @@ pub fn map_key(key: KeyEvent, searching: bool) -> KeyOutcome {
             KeyCode::Esc => KeyOutcome::ExitOrBack,
             KeyCode::Char('z') => KeyOutcome::ToggleSignalView,
             KeyCode::Char('a') => KeyOutcome::ToggleAgentPulse,
+            KeyCode::Char('o') | KeyCode::Char('O') => KeyOutcome::FocusAgentPane,
             KeyCode::Char('j') => KeyOutcome::SelectNext,
             KeyCode::Char('k') => KeyOutcome::SelectPrevious,
             KeyCode::Char('g') => KeyOutcome::SelectFirst,
@@ -811,7 +814,14 @@ fn event_loop(
         if event::poll(poll_interval)? {
             match event::read()? {
                 Event::Key(key)
-                    if handle_key(key, app, runtime.audio, debounce, persistence) == Flow::Quit =>
+                    if handle_key_with_monitor(
+                        key,
+                        app,
+                        runtime.audio,
+                        debounce,
+                        persistence,
+                        runtime.monitor,
+                    ) == Flow::Quit =>
                 {
                     return Ok(());
                 }
@@ -840,6 +850,9 @@ fn event_loop(
         if let Some(monitor) = runtime.monitor {
             while let Ok(event) = monitor.events().try_recv() {
                 apply_monitor_event(app, event, Instant::now());
+            }
+            while let Ok(result) = monitor.focus_events().try_recv() {
+                apply_agent_focus_result(app, result, Instant::now());
             }
             // Stale/unavailable thresholds advance every loop, so the
             // 15-second unavailable state occurs even when no monitor event
@@ -878,12 +891,27 @@ fn nav_target(app: &App) -> NavTarget {
 }
 
 /// Translate a key event into app actions and audio/search side effects.
+///
+/// Unit tests use this no-monitor entrypoint; the live event loop supplies the
+/// eligible Herdr monitor through [`handle_key_with_monitor`].
+#[cfg(test)]
 fn handle_key(
     key: KeyEvent,
     app: &mut App,
     audio: &AudioHandle,
     debounce: &mut SearchDebounce,
     persistence: &mut Persistence,
+) -> Flow {
+    handle_key_with_monitor(key, app, audio, debounce, persistence, None)
+}
+
+fn handle_key_with_monitor(
+    key: KeyEvent,
+    app: &mut App,
+    audio: &AudioHandle,
+    debounce: &mut SearchDebounce,
+    persistence: &mut Persistence,
+    monitor: Option<&HerdrMonitor>,
 ) -> Flow {
     // Signal View gates input to a small allowed subset. Route it first, before
     // the normal focus-aware handling, so discovery/navigation keys are ignored
@@ -907,7 +935,7 @@ fn handle_key(
     let searching = !collage_open && app.focus() == FocusPane::Search;
     let outcome = map_key(key, searching);
     if collage_open {
-        if let Some(flow) = handle_collage_key(outcome.clone(), app) {
+        if let Some(flow) = handle_collage_key(outcome.clone(), app, monitor) {
             return flow;
         }
     }
@@ -920,7 +948,8 @@ fn handle_key(
         // The reducer keeps this a no-op for standalone/ineligible launches,
         // so `a` stays harmless when no monitor was ever created.
         KeyOutcome::ToggleAgentPulse => app.apply(Action::ToggleAgentOverlay),
-        KeyOutcome::Ignore => {}
+        // `o`/`O` are stage-local. Outside Agent Planets they are inert.
+        KeyOutcome::FocusAgentPane | KeyOutcome::Ignore => {}
         KeyOutcome::FocusNext => app.apply(Action::FocusNext),
         KeyOutcome::FocusPrevious => app.apply(Action::FocusPrevious),
         // List-navigation keys act only on the focused navigable list: the Browse
@@ -1089,6 +1118,7 @@ fn handle_signal_view_key(
         // Signal View is active.
         KeyOutcome::Ignore
         | KeyOutcome::ToggleAgentPulse
+        | KeyOutcome::FocusAgentPane
         | KeyOutcome::FocusNext
         | KeyOutcome::FocusPrevious
         | KeyOutcome::SelectNext
@@ -1119,11 +1149,16 @@ fn handle_signal_view_key(
 /// and `Tab`/arrows (with their `j`/`k` synonyms) cycle the planet selection
 /// with the modal following. Outside the modal, the documented player
 /// shortcuts retain their existing canvas behavior.
-fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
+fn handle_collage_key(
+    outcome: KeyOutcome,
+    app: &mut App,
+    monitor: Option<&HerdrMonitor>,
+) -> Option<Flow> {
     if app.is_agent_details_open() {
         match outcome {
             KeyOutcome::Quit => return Some(Flow::Quit),
             KeyOutcome::ToggleAgentPulse => app.apply(Action::CloseAgentOverlay),
+            KeyOutcome::FocusAgentPane => focus_selected_agent(app, monitor),
             KeyOutcome::ExitOrBack | KeyOutcome::Play => app.apply(Action::CloseAgentDetails),
             KeyOutcome::FocusNext | KeyOutcome::SelectNext => {
                 app.apply(Action::SelectNextAgent);
@@ -1138,6 +1173,10 @@ fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
 
     match outcome {
         KeyOutcome::Quit => Some(Flow::Quit),
+        KeyOutcome::FocusAgentPane => {
+            focus_selected_agent(app, monitor);
+            Some(Flow::Continue)
+        }
         KeyOutcome::ToggleAgentPulse | KeyOutcome::ExitOrBack => {
             app.apply(Action::CloseAgentOverlay);
             Some(Flow::Continue)
@@ -1165,6 +1204,30 @@ fn handle_collage_key(outcome: KeyOutcome, app: &mut App) -> Option<Flow> {
         }
         _ => None,
     }
+}
+
+/// Explicitly focus the selected pane through the already-eligible monitor.
+/// The App issues an opaque target only for the open Connected stage, so stale
+/// and unavailable snapshots cannot produce a socket call. Socket I/O runs in
+/// a one-shot monitor worker; its typed result returns through `focus_events`
+/// and never blocks input or rendering. Immediate local failures remain
+/// recoverable, modal-local feedback and never change stage/modal selection.
+fn focus_selected_agent(app: &mut App, monitor: Option<&HerdrMonitor>) {
+    match app.agent_focus_target() {
+        Some(id) => match monitor {
+            Some(monitor) => monitor.focus_agent(id),
+            None => apply_agent_focus_result(app, herdr::FocusResult::Unavailable, Instant::now()),
+        },
+        None if app.agent_pulse_connection() == AgentPulseConnection::Connected => {
+            apply_agent_focus_result(app, herdr::FocusResult::NoSelection, Instant::now());
+        }
+        None => apply_agent_focus_result(app, herdr::FocusResult::Unavailable, Instant::now()),
+    }
+}
+
+/// Apply the typed result from a background explicit pane-focus request.
+fn apply_agent_focus_result(app: &mut App, result: herdr::FocusResult, now: Instant) {
+    app.apply(Action::AgentFocusResult { result, now });
 }
 
 /// Fold a typed Herdr monitor event into app state at the current time.
@@ -1907,6 +1970,8 @@ mod tests {
     use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus, MonitorEvent};
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
 
     fn pulse_agent(pane: &str) -> AgentSnapshot {
         AgentSnapshot {
@@ -1928,6 +1993,83 @@ mod tests {
             agents: panes.iter().map(|pane| pulse_agent(pane)).collect(),
             now: Instant::now(),
         });
+    }
+
+    #[test]
+    fn agent_focus_key_dispatches_socket_io_off_the_event_loop() {
+        let socket_path = std::env::temp_dir().join(format!(
+            "wave-tui-focus-key-{}-{}.sock",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let listener = UnixListener::bind(&socket_path).expect("bind focus test socket");
+        let (focus_started_tx, focus_started_rx) = mpsc::channel();
+        let (poll_replied_tx, poll_replied_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.expect("accept focus test socket");
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().expect("clone stream"))
+                    .read_line(&mut request)
+                    .expect("read request");
+                if request.contains("agent.focus") {
+                    focus_started_tx.send(()).expect("signal focus request");
+                    thread::sleep(Duration::from_millis(250));
+                    stream
+                        .write_all(
+                            b"{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"error\":{\"code\":-32000}}\n",
+                        )
+                        .expect("reply to focus request");
+                    break;
+                }
+                stream
+                    .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"agents\":[]}}\n")
+                    .expect("reply to poll request");
+                poll_replied_tx.send(()).expect("signal poll reply");
+            }
+        });
+        let monitor = herdr::spawn_monitor(herdr::HerdrContext {
+            socket_path: socket_path.clone(),
+        });
+        poll_replied_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("initial monitor poll completes before focus request");
+        let (audio, _commands) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+
+        let started = Instant::now();
+        handle_key_with_monitor(
+            key(KeyCode::Char('O')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+            Some(&monitor),
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "the key handler must dispatch focus I/O instead of waiting for the socket"
+        );
+        focus_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("background focus request started");
+        let result = monitor
+            .focus_events()
+            .recv_timeout(Duration::from_secs(1))
+            .expect("typed focus result returns to the event loop");
+        assert_eq!(result, herdr::FocusResult::Missing);
+        apply_agent_focus_result(&mut app, result, Instant::now());
+        assert_eq!(
+            app.agent_focus_notice(Instant::now()),
+            Some("pane is no longer available")
+        );
+
+        monitor.stop();
+        server.join().expect("focus test server exits");
+        std::fs::remove_file(socket_path).expect("remove focus test socket");
     }
 
     fn left_click(column: u16, row: u16) -> MouseEvent {
@@ -1981,6 +2123,41 @@ mod tests {
         assert_eq!(
             map_key(key(KeyCode::Char('a')), true),
             KeyOutcome::SearchChar('a')
+        );
+    }
+
+    #[test]
+    fn o_is_stage_local_and_a_missing_monitor_keeps_details_open_with_feedback() {
+        assert_eq!(
+            map_key(key(KeyCode::Char('o')), false),
+            KeyOutcome::FocusAgentPane
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Char('O')), false),
+            KeyOutcome::FocusAgentPane
+        );
+
+        let (audio, _command_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        let selected = app.selected_agent().map(|agent| agent.id.clone());
+
+        handle_key(
+            key(KeyCode::Char('O')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_agent_overlay_open());
+        assert!(app.is_agent_details_open());
+        assert_eq!(app.selected_agent().map(|agent| agent.id.clone()), selected);
+        assert_eq!(
+            app.agent_focus_notice(Instant::now()),
+            Some("pane focus unavailable · retrying")
         );
     }
 

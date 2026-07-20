@@ -8,7 +8,8 @@ use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -347,13 +348,87 @@ fn request_agent_rename(context: &HerdrContext, id: &AgentId, name: Option<&str>
         Ok(_) => parse_agent_rename(line.trim_end()),
     }
 }
+/// The blocking socket round-trip a focus request performs. Behind an
+/// indirection so tests can substitute a deterministic blocked transport
+/// without a real socket; production always uses [`request_agent_focus`].
+type FocusTransport = Arc<dyn Fn(&HerdrContext, &AgentId) -> FocusResult + Send + Sync>;
+
+/// Releases the in-flight slot on every exit path, including a panicking
+/// worker, so one bad request cannot disable focus for the rest of the session.
+struct InFlightGuard(Arc<AtomicBool>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Bounds explicit focus requests to at most one in-flight socket worker.
+///
+/// Focus is a user-visible "go look at that pane now" action, so a repeat
+/// while a request is still running is ignored rather than queued: replaying a
+/// backlog of stale jumps after a stalled socket recovers would be worse than
+/// dropping them. The slot is released before the result is published, so the
+/// next press after a completed request always dispatches.
+struct FocusDispatcher {
+    context: HerdrContext,
+    results: mpsc::Sender<FocusResult>,
+    in_flight: Arc<AtomicBool>,
+    transport: FocusTransport,
+}
+
+impl FocusDispatcher {
+    fn new(context: HerdrContext, results: mpsc::Sender<FocusResult>) -> Self {
+        Self {
+            context,
+            results,
+            in_flight: Arc::new(AtomicBool::new(false)),
+            transport: Arc::new(request_agent_focus),
+        }
+    }
+
+    fn dispatch(&self, id: AgentId) {
+        if self
+            .in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let guard = InFlightGuard(Arc::clone(&self.in_flight));
+        let context = self.context.clone();
+        let results = self.results.clone();
+        let transport = Arc::clone(&self.transport);
+        let worker = thread::Builder::new()
+            .name("herdr-focus".to_string())
+            .spawn(move || {
+                // Scoped so the slot reopens before the result is published.
+                let result = {
+                    let _guard = guard;
+                    transport(&context, &id)
+                };
+                let _ = results.send(result);
+            });
+        if worker.is_err() {
+            // The guard moved into the failed closure and was dropped with it,
+            // so the slot is already free; report a recoverable failure.
+            let _ = self.results.send(FocusResult::Unavailable);
+        }
+    }
+
+    #[cfg(test)]
+    fn is_in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
 /// Handle for the background polling thread. Dropping it (or calling
 /// [`HerdrMonitor::stop`]) wakes the thread and joins it.
 pub(crate) struct HerdrMonitor {
     context: HerdrContext,
     events: mpsc::Receiver<MonitorEvent>,
     focus_events: mpsc::Receiver<FocusResult>,
-    focus_event_tx: mpsc::Sender<FocusResult>,
+    focus: FocusDispatcher,
     rename_events: mpsc::Receiver<RenameResult>,
     rename_event_tx: mpsc::Sender<RenameResult>,
     stop: Option<mpsc::Sender<()>>,
@@ -379,15 +454,12 @@ impl HerdrMonitor {
     }
 
     /// Dispatch a focus request through the local socket without blocking the
-    /// UI event loop. The one-shot worker keeps the same bounded I/O and
-    /// recoverable result semantics as polling, then returns only a typed
-    /// result to the controller.
+    /// UI event loop. At most one request is in flight at a time, so holding
+    /// `o`/`O` against a stalled socket cannot spawn unbounded detached
+    /// workers; extra presses are ignored and only a typed result crosses back
+    /// to the controller.
     pub(crate) fn focus_agent(&self, id: AgentId) {
-        let context = self.context.clone();
-        let result_tx = self.focus_event_tx.clone();
-        thread::spawn(move || {
-            let _ = result_tx.send(request_agent_focus(&context, &id));
-        });
+        self.focus.dispatch(id);
     }
 
     /// Dispatch an explicit name edit without blocking rendering or keyboard
@@ -440,10 +512,10 @@ pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
         }
     });
     HerdrMonitor {
+        focus: FocusDispatcher::new(monitor_context.clone(), focus_event_tx),
         context: monitor_context,
         events: event_rx,
         focus_events,
-        focus_event_tx,
         rename_events,
         rename_event_tx,
         stop: Some(stop_tx),
@@ -455,6 +527,8 @@ pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Condvar, Mutex};
     use std::time::Duration;
 
     const WORKSPACE: &str = "ws-1";
@@ -749,6 +823,197 @@ mod tests {
             serde_json::from_str(agent_rename_request(10, &id, None).trim_end())
                 .expect("clear rename request must be JSON");
         assert_eq!(cleared["params"]["name"], serde_json::Value::Null);
+    }
+
+    /// A deterministic stand-in for the local socket: every call blocks until
+    /// the test releases it, so "one request is still in flight" is a state the
+    /// test controls rather than a timing guess.
+    struct BlockedTransport {
+        entered: mpsc::Sender<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        calls: Arc<AtomicUsize>,
+        result: FocusResult,
+    }
+
+    impl BlockedTransport {
+        fn install(dispatcher: &mut FocusDispatcher, result: FocusResult) -> BlockedHandle {
+            let (entered_tx, entered) = mpsc::channel();
+            let release = Arc::new((Mutex::new(false), Condvar::new()));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let transport = BlockedTransport {
+                entered: entered_tx,
+                release: Arc::clone(&release),
+                calls: Arc::clone(&calls),
+                result,
+            };
+            dispatcher.transport = Arc::new(move |_context: &HerdrContext, _id: &AgentId| {
+                transport.calls.fetch_add(1, Ordering::SeqCst);
+                let _ = transport.entered.send(());
+                let (lock, cvar) = &*transport.release;
+                let mut released = lock.lock().expect("release lock");
+                while !*released {
+                    released = cvar.wait(released).expect("release wait");
+                }
+                transport.result
+            });
+            BlockedHandle {
+                entered,
+                release,
+                calls,
+            }
+        }
+    }
+
+    struct BlockedHandle {
+        entered: mpsc::Receiver<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl BlockedHandle {
+        /// Blocks until a worker has actually entered the transport, so later
+        /// assertions never race the spawned thread.
+        fn await_entry(&self) {
+            self.entered
+                .recv_timeout(Duration::from_secs(2))
+                .expect("a focus worker must reach the transport");
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        fn release(&self) {
+            let (lock, cvar) = &*self.release;
+            *lock.lock().expect("release lock") = true;
+            cvar.notify_all();
+        }
+    }
+
+    fn test_dispatcher() -> (FocusDispatcher, mpsc::Receiver<FocusResult>) {
+        let (results_tx, results) = mpsc::channel();
+        let context = HerdrContext {
+            socket_path: PathBuf::from("/nonexistent/herdr-focus-test.sock"),
+        };
+        (FocusDispatcher::new(context, results_tx), results)
+    }
+
+    #[test]
+    fn repeated_focus_input_keeps_at_most_one_request_in_flight() {
+        let (mut dispatcher, results) = test_dispatcher();
+        let blocked = BlockedTransport::install(&mut dispatcher, FocusResult::Focused);
+        let id = AgentId::new("ws-1", "pane-1");
+
+        for _ in 0..8 {
+            dispatcher.dispatch(id.clone());
+        }
+        blocked.await_entry();
+
+        assert_eq!(
+            blocked.calls(),
+            1,
+            "repeated focus input must not reach the transport more than once"
+        );
+        assert_eq!(
+            results.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "no result may arrive while the transport is still blocked"
+        );
+
+        blocked.release();
+        assert_eq!(
+            results.recv_timeout(Duration::from_secs(2)),
+            Ok(FocusResult::Focused)
+        );
+        assert_eq!(
+            results.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "ignored repeats must not queue extra results"
+        );
+        assert_eq!(blocked.calls(), 1);
+    }
+
+    #[test]
+    fn focus_is_dispatchable_again_after_the_previous_request_completes() {
+        let (mut dispatcher, results) = test_dispatcher();
+        let blocked = BlockedTransport::install(&mut dispatcher, FocusResult::Focused);
+        let id = AgentId::new("ws-1", "pane-1");
+
+        dispatcher.dispatch(id.clone());
+        blocked.await_entry();
+        dispatcher.dispatch(id.clone());
+        assert_eq!(blocked.calls(), 1, "the second press must be ignored");
+
+        blocked.release();
+        assert_eq!(
+            results.recv_timeout(Duration::from_secs(2)),
+            Ok(FocusResult::Focused)
+        );
+
+        // The in-flight slot is released before the result is published, so a
+        // retry observed after the result is deterministic, not a race.
+        dispatcher.dispatch(id);
+        blocked.await_entry();
+        assert_eq!(
+            blocked.calls(),
+            2,
+            "focus must be retryable once the previous request completes"
+        );
+        assert_eq!(
+            results.recv_timeout(Duration::from_secs(2)),
+            Ok(FocusResult::Focused)
+        );
+    }
+
+    #[test]
+    fn the_guard_preserves_every_focus_result_unchanged() {
+        for result in [
+            FocusResult::Focused,
+            FocusResult::Unsupported,
+            FocusResult::Missing,
+            FocusResult::Unavailable,
+        ] {
+            let (mut dispatcher, results) = test_dispatcher();
+            let blocked = BlockedTransport::install(&mut dispatcher, result);
+            dispatcher.dispatch(AgentId::new("ws-1", "pane-1"));
+            blocked.await_entry();
+            blocked.release();
+            assert_eq!(results.recv_timeout(Duration::from_secs(2)), Ok(result));
+        }
+    }
+
+    #[test]
+    fn a_panicking_focus_worker_does_not_strand_the_in_flight_slot() {
+        let (mut dispatcher, _results) = test_dispatcher();
+        dispatcher.transport = Arc::new(|_context: &HerdrContext, _id: &AgentId| {
+            panic!("focus transport panicked");
+        });
+        let id = AgentId::new("ws-1", "pane-1");
+
+        dispatcher.dispatch(id.clone());
+        // Wait for the slot to be released rather than for the thread itself;
+        // the panicking worker is detached.
+        let deadline = 200;
+        for _ in 0..deadline {
+            if !dispatcher.is_in_flight() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !dispatcher.is_in_flight(),
+            "a panicking worker must release the in-flight slot"
+        );
+
+        let blocked = BlockedTransport::install(&mut dispatcher, FocusResult::Focused);
+        dispatcher.dispatch(id);
+        blocked.await_entry();
+        assert_eq!(
+            blocked.calls(),
+            1,
+            "focus must recover after a worker panic"
+        );
+        blocked.release();
     }
 
     #[test]

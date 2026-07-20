@@ -62,7 +62,7 @@ fn render_spectrum(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let columns = spectrum_columns(&app.viz().bands, area.width as usize);
+    let columns = spectrum_columns(app.viz().bands(), area.width as usize);
     let top = DUST_GLYPHS.len() - 1;
     for (i, (magnitude, position)) in columns.into_iter().enumerate() {
         // The column height is the real spectrum shape (the analyzer silhouette).
@@ -117,7 +117,7 @@ fn render_peak_dots(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
             .get(age)
             .copied()
             .unwrap_or(*PEAK_DOT_TRAIL_GLYPHS.last().unwrap());
-        let columns = spectrum_columns(&frame.bands, area.width as usize);
+        let columns = spectrum_columns(frame.bands(), area.width as usize);
         for (i, (magnitude, position)) in columns.into_iter().enumerate() {
             let filled = (magnitude * area.height as f32).round() as u16;
             if filled == 0 {
@@ -154,7 +154,7 @@ fn render_skyline_peaks(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) 
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let columns = spectrum_columns(&app.viz().bands, area.width as usize);
+    let columns = spectrum_columns(app.viz().bands(), area.width as usize);
     for (i, (magnitude, position)) in columns.into_iter().enumerate() {
         let filled = (magnitude * area.height as f32).round() as u16;
         if filled == 0 {
@@ -217,7 +217,7 @@ fn render_wave_scope(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let columns = waveform_columns(&app.viz().waveform, area.width as usize);
+    let columns = waveform_columns(app.viz().waveform(), area.width as usize);
     let center = (area.height - 1) / 2;
     let half = (area.height - 1) as f32 / 2.0;
     let top = area.y;
@@ -246,7 +246,7 @@ fn render_mirror_wave(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let columns = waveform_columns(&app.viz().waveform, area.width as usize);
+    let columns = waveform_columns(app.viz().waveform(), area.width as usize);
     let center = area.y + (area.height - 1) / 2;
     let reach_max = (area.height - 1) / 2;
     let bottom = area.y + area.height - 1;
@@ -285,10 +285,10 @@ fn render_ambient_pulse(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) 
         return;
     }
     let frame = app.viz();
-    let rms = frame.rms;
+    let rms = frame.rms();
     // Prefer the band shape for the per-column glow; with no bands the RMS still
     // pulses the whole pane so the mode reflects real playback level.
-    let columns = if frame.bands.is_empty() {
+    let columns = if frame.bands().is_empty() {
         let last_col = area.width.saturating_sub(1) as usize;
         (0..area.width as usize)
             .map(|col| {
@@ -301,7 +301,7 @@ fn render_ambient_pulse(theme: &Theme, app: &App, area: Rect, buf: &mut Buffer) 
             })
             .collect::<Vec<_>>()
     } else {
-        spectrum_columns(&frame.bands, area.width as usize)
+        spectrum_columns(frame.bands(), area.width as usize)
     };
 
     for (i, (magnitude, position)) in columns.into_iter().enumerate() {

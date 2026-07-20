@@ -339,18 +339,18 @@ mod tests {
     fn analyze_preserves_stereo_primary_phase_and_derives_a_second_trace() {
         let samples = stereo_sine_frames(440.0, 660.0, 44_100, 1_024);
         let frame = analyze(&samples, 44_100, 1_024, 16);
-        assert!(!frame.primary_phase.x.is_empty());
-        assert_ne!(frame.primary_phase.x, frame.primary_phase.y);
-        assert_ne!(frame.primary_phase, frame.secondary_phase);
+        assert!(!frame.primary_phase().is_empty());
+        assert!(frame.primary_phase().pairs().any(|(x, y)| x != y));
+        assert_ne!(frame.primary_phase(), frame.secondary_phase());
     }
 
     #[test]
     fn analyze_uses_distinct_lags_for_mono_phase_traces() {
         let samples = mono_sine_frames(440.0, 44_100, 1_024);
         let frame = analyze(&samples, 44_100, 1_024, 16);
-        assert!(!frame.primary_phase.x.is_empty());
-        assert_ne!(frame.primary_phase.x, frame.primary_phase.y);
-        assert_ne!(frame.primary_phase, frame.secondary_phase);
+        assert!(!frame.primary_phase().is_empty());
+        assert!(frame.primary_phase().pairs().any(|(x, y)| x != y));
+        assert_ne!(frame.primary_phase(), frame.secondary_phase());
     }
 
     #[test]
@@ -385,28 +385,28 @@ mod tests {
         let samples = mono_sine_frames(440.0, 44_100, n_fft * 2);
         let frame = analyze(&samples, 44_100, n_fft, band_count);
 
-        assert_eq!(frame.bands.len(), band_count);
-        for band in &frame.bands {
+        assert_eq!(frame.bands().len(), band_count);
+        for band in frame.bands() {
             assert!((0.0..=1.0).contains(band), "band out of range: {band}");
         }
         assert!(
-            (0.0..=1.0).contains(&frame.rms),
+            (0.0..=1.0).contains(&frame.rms()),
             "rms out of range: {}",
-            frame.rms
+            frame.rms()
         );
         // A loud tone should light up at least one band.
-        assert!(frame.bands.iter().any(|b| *b > 0.0));
+        assert!(frame.bands().iter().any(|b| *b > 0.0));
     }
 
     #[test]
     fn analyze_returns_silent_frame_without_enough_samples() {
         let samples = mono_sine_frames(440.0, 44_100, 3);
         let frame = analyze(&samples, 44_100, 1024, 16);
-        assert_eq!(frame.bands, vec![0.0; 16]);
-        assert_eq!(frame.rms, 0.0);
-        assert!(frame.waveform.is_empty());
-        assert!(frame.primary_phase.x.is_empty());
-        assert!(frame.secondary_phase.x.is_empty());
+        assert_eq!(frame.bands(), &[0.0; 16]);
+        assert_eq!(frame.rms(), 0.0);
+        assert!(frame.waveform().is_empty());
+        assert!(frame.primary_phase().is_empty());
+        assert!(frame.secondary_phase().is_empty());
     }
 
     #[test]
@@ -415,13 +415,15 @@ mod tests {
         let samples: Vec<PlayedSample> =
             vec![PlayedSample::from_source_frame(&[0.0]).unwrap(); n_fft];
         let frame = analyze(&samples, 44_100, n_fft, 8);
-        assert_eq!(frame.bands, vec![0.0; 8]);
-        assert_eq!(frame.rms, 0.0);
+        assert_eq!(frame.bands(), &[0.0; 8]);
+        assert_eq!(frame.rms(), 0.0);
         // Silent audio yields a flat, zeroed waveform — stable silence.
-        assert_eq!(frame.waveform, vec![0.0; WAVEFORM_POINTS]);
+        assert_eq!(frame.waveform(), &[0.0; WAVEFORM_POINTS]);
         // Phase traces of silence are still: every pair sits at the center.
-        assert!(frame.primary_phase.x.iter().all(|value| *value == 0.0));
-        assert!(frame.primary_phase.y.iter().all(|value| *value == 0.0));
+        assert!(frame
+            .primary_phase()
+            .pairs()
+            .all(|(x, y)| x == 0.0 && y == 0.0));
     }
 
     #[test]
@@ -454,11 +456,11 @@ mod tests {
         let n_fft = 1024;
         let samples = mono_sine_frames(440.0, 44_100, n_fft * 2);
         let frame = analyze(&samples, 44_100, n_fft, 16);
-        assert_eq!(frame.waveform.len(), WAVEFORM_POINTS);
-        for p in &frame.waveform {
+        assert_eq!(frame.waveform().len(), WAVEFORM_POINTS);
+        for p in frame.waveform() {
             assert!((-1.0..=1.0).contains(p), "waveform point out of range: {p}");
         }
-        assert!(frame.waveform.iter().any(|p| *p != 0.0));
+        assert!(frame.waveform().iter().any(|p| *p != 0.0));
     }
 
     #[test]
@@ -488,8 +490,8 @@ mod tests {
         );
 
         assert!(!frames.is_empty(), "expected at least one visualizer frame");
-        assert_eq!(frames[0].bands.len(), band_count);
-        assert!(frames[0].bands.iter().any(|b| *b > 0.0));
+        assert_eq!(frames[0].bands().len(), band_count);
+        assert!(frames[0].bands().iter().any(|b| *b > 0.0));
     }
 
     #[test]

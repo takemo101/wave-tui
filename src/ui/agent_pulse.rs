@@ -181,7 +181,7 @@ fn status_label(status: AgentStatus) -> &'static str {
 /// Deterministic quantization of the primary-phase coordinates: identical
 /// frames yield identical signatures, and elapsed time never contributes.
 fn phase_signature(trace: &PhaseTrace) -> u64 {
-    trace.x.iter().zip(&trace.y).fold(0u64, |acc, (&x, &y)| {
+    trace.pairs().fold(0u64, |acc, (x, y)| {
         let qx = ((x + 1.0) * 127.0).round() as u64;
         let qy = ((y + 1.0) * 127.0).round() as u64;
         acc.rotate_left(7) ^ qx.wrapping_mul(0x9E37_79B9).wrapping_add(qy)
@@ -308,10 +308,8 @@ fn phase_y(area: Rect, value: f32) -> u16 {
 /// exists here, so the result can never scroll.
 fn phase_cells(trace: &PhaseTrace, area: Rect) -> Vec<PhaseCell> {
     trace
-        .x
-        .iter()
-        .zip(&trace.y)
-        .map(|(&x, &y)| PhaseCell {
+        .pairs()
+        .map(|(x, y)| PhaseCell {
             x: phase_x(area, x),
             y: phase_y(area, y),
         })
@@ -330,27 +328,27 @@ fn phase_cells(trace: &PhaseTrace, area: Rect) -> Vec<PhaseCell> {
 fn phase_layers(frame: &VizFrame, history: &[VizFrame], area: Rect) -> Vec<PhaseLayer> {
     let mut layers = Vec::new();
     for old in history.iter().take(PERSISTENCE_LAYERS).rev() {
-        if old.rms <= SILENCE_ENERGY {
+        if old.rms() <= SILENCE_ENERGY {
             continue;
         }
         layers.push(PhaseLayer {
-            cells: phase_cells(&old.primary_phase, area),
+            cells: phase_cells(old.primary_phase(), area),
             glyph: PERSISTENCE_GLYPH,
             color_position: PRIMARY_TRACE_POSITION,
             dim: true,
         });
     }
-    if frame.rms > SILENCE_ENERGY {
+    if frame.rms() > SILENCE_ENERGY {
         // RMS gently brightens the live traces; it never adds motion.
-        let dim = frame.rms <= BRIGHT_ENERGY;
+        let dim = frame.rms() <= BRIGHT_ENERGY;
         layers.push(PhaseLayer {
-            cells: phase_cells(&frame.secondary_phase, area),
+            cells: phase_cells(frame.secondary_phase(), area),
             glyph: SECONDARY_TRACE_GLYPH,
             color_position: SECONDARY_TRACE_POSITION,
             dim,
         });
         layers.push(PhaseLayer {
-            cells: phase_cells(&frame.primary_phase, area),
+            cells: phase_cells(frame.primary_phase(), area),
             glyph: PRIMARY_TRACE_GLYPH,
             color_position: PRIMARY_TRACE_POSITION,
             dim,
@@ -394,7 +392,7 @@ fn collage_layout(
 
     let background = CollageBackground {
         layers: phase_layers(frame, history, area),
-        vignette: VIGNETTE_BASE + frame.rms.clamp(0.0, 1.0) * VIGNETTE_SWING,
+        vignette: VIGNETTE_BASE + frame.rms().clamp(0.0, 1.0) * VIGNETTE_SWING,
     };
     let sun = (area.x + area.width / 2, area.y + area.height / 2);
     // The largest orbit half-extents the field allows around the sun cell.
@@ -475,8 +473,8 @@ fn collage_layout(
                 area,
             );
 
-            let band = band_of(seed, &frame.bands);
-            let energy = (frame.rms * 0.55 + band * 0.45).clamp(0.0, 1.0);
+            let band = band_of(seed, frame.bands());
+            let energy = (frame.rms() * 0.55 + band * 0.45).clamp(0.0, 1.0);
 
             Some(CollageTile {
                 index,
@@ -787,7 +785,7 @@ fn surface_status(
         };
     }
     let len = body.len() as u64;
-    let phase = phase_signature(&frame.primary_phase).wrapping_add(tile.seed);
+    let phase = phase_signature(frame.primary_phase()).wrapping_add(tile.seed);
     let band = if status == AgentStatus::Working {
         let start = (phase % len) as usize;
         (0..WORKING_BAND.min(body.len() - 1))
@@ -1185,7 +1183,7 @@ fn render_agent_planets_stage(
         let mut sun_style = Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD);
-        if frame.rms <= SILENCE_ENERGY {
+        if frame.rms() <= SILENCE_ENERGY {
             sun_style = sun_style.add_modifier(Modifier::DIM);
         }
         buf.set_string(x, y, SUN_GLYPH, own_emphasis(with_stale(sun_style, stale)));
@@ -2270,7 +2268,7 @@ mod tests {
         let without = render_collage(2, phase_frame(), vec![], false);
         // The persistence layer plots the prior frame's primary phase pairs;
         // some of those cells must show the dot only when history exists.
-        let persistence = phase_cells(&older_phase_frame().primary_phase, stage_field());
+        let persistence = phase_cells(older_phase_frame().primary_phase(), stage_field());
         let grown = persistence.iter().any(|cell| {
             cell_text(&with, cell.x, cell.y) == PERSISTENCE_GLYPH
                 && cell_text(&without, cell.x, cell.y) != PERSISTENCE_GLYPH

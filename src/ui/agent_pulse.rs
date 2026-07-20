@@ -4752,4 +4752,269 @@ mod tests {
         });
         assert!(summary_line(&unavailable, &theme).is_none());
     }
+
+    // --- characterization digests ------------------------------------------
+    //
+    // Whole-buffer and whole-area hit-map fingerprints that pin the composed
+    // output of the stage: every glyph, both colors, and both modifier sets of
+    // every cell, plus the selection every cell resolves. The named tests
+    // above each guard one documented rule; these guard the composition as a
+    // whole, so a refactor that moves code between modules cannot shift a
+    // single cell, color, or hit target without failing here. They are
+    // deliberately opaque — a mismatch means "read the named tests that also
+    // broke", or, if only a digest moved, that a rule no test names yet
+    // changed.
+    //
+    // Reproducibility: every fixture pins one `Instant` across the snapshot
+    // action and the render/hit call, so live Working orbit phases rest at
+    // exactly zero rather than at a few microseconds of elapsed Working time.
+
+    fn fnv(hash: u64, bytes: &[u8]) -> u64 {
+        bytes.iter().fold(hash, |acc, byte| {
+            (acc ^ *byte as u64).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+    /// Fingerprint every cell's symbol, colors, and modifiers.
+    fn buffer_digest(buf: &Buffer) -> u64 {
+        let area = *buf.area();
+        let mut hash = FNV_OFFSET;
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                let cell = buf.cell((x, y)).unwrap();
+                let style = cell.style();
+                hash = fnv(hash, cell.symbol().as_bytes());
+                hash = fnv(
+                    hash,
+                    format!(
+                        "{:?}/{:?}/{:?}/{:?}",
+                        style.fg, style.bg, style.add_modifier, style.sub_modifier
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
+        hash
+    }
+
+    /// Sweep [`hit_test`] over every cell of `area`: the digest pins which
+    /// cell resolves which agent, and the count pins how many cells are
+    /// selectable at all — decoration, scope, sun, and brackets must keep
+    /// resolving nothing.
+    fn hit_map_digest(app: &App, area: Rect, low_power: bool, now: Instant) -> (u64, usize) {
+        let mut hash = FNV_OFFSET;
+        let mut hits = 0usize;
+        for row in area.y..area.y + area.height {
+            for column in area.x..area.x + area.width {
+                match hit_test(area, column, row, low_power, now, app) {
+                    Some(Action::SelectAgent(id)) => {
+                        hits += 1;
+                        hash = fnv(hash, format!("{column},{row}={id:?}").as_bytes());
+                    }
+                    Some(other) => {
+                        panic!("hit testing resolved a non-selection action: {other:?}")
+                    }
+                    None => hash = fnv(hash, b"."),
+                }
+            }
+        }
+        (hash, hits)
+    }
+
+    /// The hit-map digest of an `area` where every cell resolves nothing:
+    /// what a closed, stale, or unavailable stage must produce.
+    fn all_miss_digest(area: Rect) -> (u64, usize) {
+        let cells = area.width as usize * area.height as usize;
+        ((0..cells).fold(FNV_OFFSET, |hash, _| fnv(hash, b".")), 0)
+    }
+
+    /// A connected, overlay-open app whose snapshot instant is `now`, so a
+    /// render at the same `now` sees every Working orbit at phase zero.
+    fn pinned_app(agents: Vec<AgentSnapshot>, frames: Vec<VizFrame>, now: Instant) -> App {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.apply(Action::AgentSnapshot { agents, now });
+        app.apply(Action::ToggleAgentOverlay);
+        for frame in frames {
+            push_frame(&mut app, frame);
+        }
+        app
+    }
+
+    /// One named agent per status, with a real history frame behind the
+    /// current one, and the first planet selected: exercises every surface
+    /// treatment, the persistence layers, labels, and focus brackets at once.
+    fn characterization_statuses(now: Instant) -> App {
+        let mut app = pinned_app(
+            vec![
+                snap("ws", "w", Some("worker"), AgentStatus::Working),
+                snap("ws", "i", Some("idler"), AgentStatus::Idle),
+                snap("ws", "b", Some("blocked"), AgentStatus::Blocked),
+                snap("ws", "d", Some("doner"), AgentStatus::Done),
+                snap("ws", "u", Some("unknown"), AgentStatus::Unknown),
+            ],
+            vec![older_phase_frame(), phase_frame()],
+            now,
+        );
+        app.apply(Action::SelectNextAgent);
+        app
+    }
+
+    /// Twenty-four unnamed Working agents: the dense tier where disc masks
+    /// shrink and orbit radii scale to the field.
+    fn characterization_dense(now: Instant) -> App {
+        pinned_app(
+            (0..24)
+                .map(|i| snap("ws", &format!("p{i}"), None, AgentStatus::Working))
+                .collect(),
+            vec![phase_frame()],
+            now,
+        )
+    }
+
+    #[test]
+    fn characterization_wide_stage_pins_its_buffer_and_hit_map() {
+        let now = Instant::now();
+        let app = characterization_statuses(now);
+        let buf = render_collage_in(&app, false, now, CANVAS);
+
+        assert_eq!(
+            buffer_digest(&buf),
+            4_134_155_508_641_885_490,
+            "the composed wide stage changed: symbols, colors, or emphasis moved"
+        );
+        assert_eq!(
+            hit_map_digest(&app, CANVAS, false, now),
+            (5_223_541_943_661_906_365, 113),
+            "the wide stage hit map changed: a cell resolves a different agent"
+        );
+    }
+
+    #[test]
+    fn characterization_dense_field_pins_its_buffer_and_hit_map() {
+        let now = Instant::now();
+        let app = characterization_dense(now);
+        let buf = render_collage_in(&app, false, now, CANVAS);
+
+        assert_eq!(
+            buffer_digest(&buf),
+            4_995_872_266_946_714_365,
+            "the dense planet field changed: mask fallthrough or orbit radii moved"
+        );
+        assert_eq!(
+            hit_map_digest(&app, CANVAS, false, now),
+            (17_496_996_632_573_064_648, 220),
+            "the dense field hit map changed"
+        );
+    }
+
+    #[test]
+    fn characterization_pins_every_layout_tier() {
+        let now = Instant::now();
+        let app = characterization_statuses(now);
+        let digests: Vec<u64> = [
+            Rect::new(0, 0, 100, 30),
+            Rect::new(0, 0, 80, 24),
+            Rect::new(0, 0, 60, 20),
+            Rect::new(0, 0, 40, 14),
+            Rect::new(0, 0, 24, 8),
+        ]
+        .into_iter()
+        .map(|area| buffer_digest(&render_collage_in(&app, false, now, area)))
+        .collect();
+
+        assert_eq!(
+            digests,
+            vec![
+                4_134_155_508_641_885_490,
+                1_856_660_865_147_035_786,
+                16_766_417_207_939_638_788,
+                5_724_836_692_193_432_250,
+                3_410_854_746_564_216_135,
+            ],
+            "a layout tier's composed stage changed"
+        );
+    }
+
+    #[test]
+    fn characterization_pins_stale_and_low_power_visuals() {
+        let now = Instant::now();
+
+        let mut stale = characterization_statuses(now);
+        stale.apply(Action::AgentPollFailed { now });
+        push_frame(&mut stale, phase_frame_with_offset(1.7));
+        let stale_buf = render_collage_in(&stale, false, now, CANVAS);
+        assert_eq!(
+            buffer_digest(&stale_buf),
+            13_212_696_367_813_413_304,
+            "the frozen, dimmed stale composition changed"
+        );
+        assert_eq!(
+            hit_map_digest(&stale, CANVAS, false, now),
+            all_miss_digest(CANVAS),
+            "stale must resolve no selection anywhere"
+        );
+
+        // Non-Working agents only: their orbit phase is zero regardless of the
+        // wall clock the low-power capture reads internally, so the frozen
+        // low-power layout is reproducible.
+        let mut low_power = App::new(Settings::default(), Catalog::curated());
+        low_power.apply(Action::AgentSnapshot {
+            agents: vec![
+                snap("ws", "i", Some("idler"), AgentStatus::Idle),
+                snap("ws", "b", Some("blocked"), AgentStatus::Blocked),
+                snap("ws", "d", Some("doner"), AgentStatus::Done),
+            ],
+            now,
+        });
+        low_power.apply(Action::ToggleAgentOverlay);
+        low_power.configure_low_power_visuals(true);
+        push_frame(&mut low_power, phase_frame());
+        push_frame(&mut low_power, phase_frame_with_offset(2.3));
+        let low_power_buf = render_collage_in(&low_power, true, now, CANVAS);
+        assert_eq!(
+            buffer_digest(&low_power_buf),
+            3_224_760_117_707_571_664,
+            "the frozen low-power composition changed"
+        );
+        assert_eq!(
+            hit_map_digest(&low_power, CANVAS, true, now),
+            (1_171_295_634_309_455_529, 67),
+            "low-power hit testing no longer matches the frozen layout"
+        );
+    }
+
+    #[test]
+    fn characterization_pins_modal_and_unavailable_stages() {
+        let now = Instant::now();
+
+        let mut modal = characterization_statuses(now);
+        modal.apply(Action::OpenAgentDetails);
+        assert_eq!(
+            buffer_digest(&render_collage_in(&modal, false, now, CANVAS)),
+            7_094_265_579_201_153_038,
+            "the agent table modal composition changed"
+        );
+
+        let mut rename = characterization_statuses(now);
+        rename.apply(Action::OpenAgentDetails);
+        rename.apply(Action::OpenAgentRename);
+        rename.apply(Action::AppendAgentRename('n'));
+        assert_eq!(
+            buffer_digest(&render_collage_in(&rename, false, now, CANVAS)),
+            17_122_930_139_269_336_662,
+            "the inline rename footer composition changed"
+        );
+
+        let mut unavailable = characterization_statuses(now);
+        unavailable.apply(Action::AgentPollFailed {
+            now: now + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+        });
+        assert_eq!(
+            buffer_digest(&render_collage_in(&unavailable, false, now, CANVAS)),
+            4_148_401_627_383_118_481,
+            "the unavailable stage composition changed"
+        );
+    }
 }

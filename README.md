@@ -9,6 +9,12 @@ player. See [`docs/SPEC.md`](docs/SPEC.md) for the full scope and non-goals.
 
 Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tui/)
 
+<p align="center">
+  <img src="docs/images/signal-view.png" alt="Signal View: a real-audio spectrum visualizer in wave-tui" width="49%" />
+  <img src="docs/images/agent-planets.png" alt="Agent Planets: a Herdr companion view of active agents" width="49%" />
+</p>
+<p align="center"><em>Signal View · Agent Planets</em></p>
+
 ## Features
 
 - **Native Rust playback** — MP3/AAC-centered HTTP streams play through a

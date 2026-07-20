@@ -13,14 +13,14 @@
 //! audio commands, persist settings, and kick off searches. This keeps the
 //! reducer pure and testable without a terminal, audio device, or network.
 
+mod agent_pulse;
+
 use crate::audio::AudioEvent;
 use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::herdr::{
-    self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
-};
+use crate::herdr::{AgentId, AgentSnapshot, FocusResult, RenameResult};
 use crate::model::{
     PlaybackRequestId, PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent,
 };
@@ -29,7 +29,11 @@ use crate::settings::Settings;
 use crate::theme::ThemeName;
 
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+use agent_pulse::AgentPulse;
+
+pub(crate) use agent_pulse::{AgentPulseConnection, AgentView};
 
 /// Step applied to the volume for a single `VolumeUp`/`VolumeDown` action.
 const VOLUME_STEP: i32 = 5;
@@ -42,9 +46,6 @@ const VIZ_TRAIL_FRAMES: usize = 5;
 
 /// Current visualizer frame plus the trailing frames.
 const VIZ_HISTORY_FRAMES: usize = VIZ_TRAIL_FRAMES + 1;
-
-/// How long a recoverable pane-focus result remains visible in the stage.
-const AGENT_FOCUS_NOTICE_FOR: Duration = Duration::from_secs(4);
 
 /// A focusable region of the UI.
 ///
@@ -106,215 +107,6 @@ pub enum DisplayMode {
     Normal,
     /// Opt-in visual-player surface for the current station.
     SignalView,
-}
-
-/// Connection state of the optional Herdr Agent Pulse integration.
-///
-/// `Hidden` is the standalone/ineligible default: no Agent Pulse UI exists
-/// and every Agent Pulse action is a no-op, so pre-integration behavior is
-/// exactly unchanged. The other states follow the design's recovery ladder:
-/// `Connected` after a successful snapshot, `Stale` after the first failed
-/// poll, and `Unavailable` once [`herdr::STALE_AFTER`] passes without a
-/// success. A fresh snapshot always recovers to `Connected`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentPulseConnection {
-    Hidden,
-    Connected,
-    Stale,
-    Unavailable,
-}
-
-/// One live agent as Agent Pulse displays it.
-///
-/// `observed_at` is when this app first saw the agent in its current status —
-/// a locally derived estimate, not an assertion about the agent's true
-/// process start time. The view carries only the approved modal details; the
-/// private [`AgentId`] exists solely for identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentView {
-    pub(crate) id: AgentId,
-    pub(crate) details: AgentDetails,
-    /// Transitional mirror for the legacy Side Tag renderer; Task 3 removes it.
-    pub(crate) name: Option<String>,
-    pub(crate) status: AgentStatus,
-    pub(crate) observed_at: Instant,
-}
-
-impl AgentView {
-    /// Sort rank per the design: working, blocked, idle, done, then unknown.
-    fn status_rank(&self) -> u8 {
-        match self.status {
-            AgentStatus::Working => 0,
-            AgentStatus::Blocked => 1,
-            AgentStatus::Idle => 2,
-            AgentStatus::Done => 3,
-            AgentStatus::Unknown => 4,
-        }
-    }
-}
-
-/// Visibility of the temporary Agent Pulse overlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentOverlay {
-    Closed,
-    Open,
-}
-
-/// Ephemeral details modal for the selected Agent Planets identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum AgentDetailsOverlay {
-    Closed,
-    Open(AgentId),
-}
-
-/// A short, process-local feedback record for the explicit pane-focus action.
-/// It holds no pane, workspace, or server-error text.
-#[derive(Debug)]
-struct AgentFocusNotice {
-    result: FocusResult,
-    shown_at: Instant,
-}
-
-/// Ephemeral inline Name input owned by the App reducer. The private identity
-/// is held only long enough for the controller to return it to `herdr`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum AgentRenameOverlay {
-    Closed,
-    Editing {
-        id: AgentId,
-        input: String,
-        submitting: bool,
-    },
-}
-
-/// Short, modal-local feedback from an explicit rename request. Like focus,
-/// this retains no raw server text or private identifiers.
-#[derive(Debug)]
-struct AgentRenameNotice {
-    result: RenameResult,
-    shown_at: Instant,
-}
-/// The visualizer display frozen at the Connected→Stale edge: the
-/// then-current frame plus the prior frames behind it (most recent first),
-/// so the canvas can keep drawing the exact last live current and trails.
-#[derive(Debug)]
-struct StaleViz {
-    frame: VizFrame,
-    history: Vec<VizFrame>,
-}
-
-/// One agent's private solar-orbit phase source: the Working time banked by
-/// completed Working stretches plus the start of the still-running stretch.
-///
-/// The reducer captures a stretch into `banked` when the agent stops Working
-/// (or at the Connected→Stale freeze edge) and re-opens `working_since` when
-/// Working returns, so a planet resumes its orbit from the captured angle.
-/// Process-local presentation state — never persisted, never exposed beyond
-/// the derived elapsed-seconds accessors.
-#[derive(Debug, Default)]
-struct AgentOrbit {
-    /// Working time captured from completed Working stretches.
-    banked: Duration,
-    /// When the current Working stretch began; `None` while not Working.
-    working_since: Option<Instant>,
-}
-
-/// All Agent Pulse state owned by [`App`]: live agents only.
-///
-/// Process-local only: nothing here is persisted, no completed history is
-/// kept, and the reducer never touches the Herdr socket — typed snapshots
-/// and failures arrive as [`Action`]s from the controller over the existing
-/// event-loop boundary.
-#[derive(Debug)]
-struct AgentPulse {
-    connection: AgentPulseConnection,
-    /// Live agents across the current socket's workspaces, in display
-    /// (sorted) order.
-    active: Vec<AgentView>,
-    /// Identity of the selected active agent.
-    selected: Option<AgentId>,
-    overlay: AgentOverlay,
-    details: AgentDetailsOverlay,
-    rename: AgentRenameOverlay,
-    focus_notice: Option<AgentFocusNotice>,
-    rename_notice: Option<AgentRenameNotice>,
-    /// When the last successful snapshot arrived.
-    last_success: Option<Instant>,
-    /// When the current failure streak began; cleared by any success.
-    first_failure: Option<Instant>,
-    /// Display snapshot captured when the connection dims to `Stale`;
-    /// cleared by a fresh agent snapshot and by `Unavailable`.
-    stale_viz: Option<StaleViz>,
-    /// Per-agent solar-orbit phase sources, keyed by the private identity;
-    /// entries live exactly as long as their agent stays in a snapshot.
-    orbits: HashMap<AgentId, AgentOrbit>,
-}
-
-impl AgentPulse {
-    /// The standalone default: hidden and inert.
-    fn hidden() -> Self {
-        Self {
-            connection: AgentPulseConnection::Hidden,
-            active: Vec::new(),
-            selected: None,
-            overlay: AgentOverlay::Closed,
-            details: AgentDetailsOverlay::Closed,
-            rename: AgentRenameOverlay::Closed,
-            focus_notice: None,
-            rename_notice: None,
-            last_success: None,
-            first_failure: None,
-            stale_viz: None,
-            orbits: HashMap::new(),
-        }
-    }
-
-    /// Index of the selected agent in the sorted active list, when it is
-    /// still an active agent.
-    fn selected_index(&self) -> Option<usize> {
-        let selected = self.selected.as_ref()?;
-        self.active.iter().position(|view| &view.id == selected)
-    }
-
-    /// Drop the selection when its agent left the active list.
-    fn clamp_selection(&mut self) {
-        if self.selected_index().is_none() {
-            self.selected = None;
-            self.details = AgentDetailsOverlay::Closed;
-            self.rename = AgentRenameOverlay::Closed;
-        }
-    }
-
-    /// Re-point an open details modal at the current selection so keyboard
-    /// navigation cycles agents without a separate hidden selection; closes
-    /// the modal if the selection is gone. A closed modal stays closed.
-    fn follow_selection_with_details(&mut self) {
-        if matches!(self.details, AgentDetailsOverlay::Open(_)) {
-            self.details = match &self.selected {
-                Some(id) => AgentDetailsOverlay::Open(id.clone()),
-                None => AgentDetailsOverlay::Closed,
-            };
-        }
-    }
-}
-
-/// Sort active agents by state (working, blocked, idle, done, then unknown), then
-/// by the first available approved label, with the stable identity as the final
-/// tiebreaker so equal entries keep a deterministic order across snapshots.
-fn sort_active_agents(agents: &mut [AgentView]) {
-    agents.sort_by(|a, b| {
-        let a_label = a.details.name.as_ref().or(a.details.agent.as_ref());
-        let b_label = b.details.name.as_ref().or(b.details.agent.as_ref());
-        a.status_rank()
-            .cmp(&b.status_rank())
-            .then_with(|| match (a_label, b_label) {
-                (Some(a_label), Some(b_label)) => a_label.cmp(b_label),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            })
-            .then_with(|| a.id.cmp(&b.id))
-    });
 }
 
 /// Status of the online search, shown in the search strip.
@@ -664,25 +456,38 @@ impl App {
             Action::ToggleSignalView => self.toggle_signal_view(),
             Action::LeaveSignalView => self.display_mode = DisplayMode::Normal,
             Action::ToggleCurrentFavorite => self.toggle_current_favorite(),
-            Action::AgentSnapshot { agents, now } => self.apply_agent_snapshot(agents, now),
-            Action::AgentPollFailed { now } => self.mark_agent_poll_failed(now),
-            Action::AgentTick { now } => self.refresh_agent_staleness(now),
-            Action::AgentFocusResult { result, now } => self.record_agent_focus_result(result, now),
-            Action::ToggleAgentOverlay => self.toggle_agent_overlay(),
-            Action::CloseAgentOverlay => self.close_agent_overlay(),
-            Action::SelectNextAgent => self.select_next_agent(),
-            Action::SelectPreviousAgent => self.select_previous_agent(),
-            Action::OpenAgentDetails => self.open_agent_details(),
-            Action::CloseAgentDetails => self.close_agent_details(),
-            Action::OpenAgentRename => self.open_agent_rename(),
-            Action::AppendAgentRename(character) => self.append_agent_rename(character),
-            Action::BackspaceAgentRename => self.backspace_agent_rename(),
-            Action::SubmitAgentRename => self.submit_agent_rename(),
-            Action::CloseAgentRename => self.close_agent_rename(),
-            Action::AgentRenameResult { result, now } => {
-                self.record_agent_rename_result(result, now)
+            // Agent Pulse owns its own lifecycle, display, and interaction
+            // state: the core reducer only routes these actions and hands
+            // over the display mode that gates them. Nothing below can reach
+            // audio, search, settings, or station selection.
+            Action::AgentSnapshot { agents, now } => self.agent_pulse.apply_snapshot(agents, now),
+            Action::AgentPollFailed { now } => {
+                // Borrow the visualizer fields directly so the substate can
+                // freeze the live display at the Connected→Stale edge only.
+                let (viz, history) = (&self.viz, &self.viz_history);
+                self.agent_pulse.mark_poll_failed(now, || {
+                    (viz.clone(), history.iter().skip(1).cloned().collect())
+                })
             }
-            Action::SelectAgent(id) => self.select_agent(id),
+            Action::AgentTick { now } => self.agent_pulse.refresh_staleness(now),
+            Action::AgentFocusResult { result, now } => {
+                self.agent_pulse.record_focus_result(result, now)
+            }
+            Action::ToggleAgentOverlay => self.agent_pulse.toggle_overlay(self.display_mode),
+            Action::CloseAgentOverlay => self.agent_pulse.close_overlay(self.display_mode),
+            Action::SelectNextAgent => self.agent_pulse.select_next(self.display_mode),
+            Action::SelectPreviousAgent => self.agent_pulse.select_previous(self.display_mode),
+            Action::OpenAgentDetails => self.agent_pulse.open_details(self.display_mode),
+            Action::CloseAgentDetails => self.agent_pulse.close_details(),
+            Action::OpenAgentRename => self.agent_pulse.open_rename(self.display_mode),
+            Action::AppendAgentRename(character) => self.agent_pulse.append_rename(character),
+            Action::BackspaceAgentRename => self.agent_pulse.backspace_rename(),
+            Action::SubmitAgentRename => self.agent_pulse.submit_rename(),
+            Action::CloseAgentRename => self.agent_pulse.close_rename(),
+            Action::AgentRenameResult { result, now } => {
+                self.agent_pulse.record_rename_result(result, now)
+            }
+            Action::SelectAgent(id) => self.agent_pulse.select(id, self.display_mode),
         }
     }
 
@@ -913,8 +718,9 @@ impl App {
     fn toggle_signal_view(&mut self) {
         self.display_mode = match self.display_mode {
             DisplayMode::Normal => {
-                self.agent_pulse.details = AgentDetailsOverlay::Closed;
-                self.agent_pulse.rename = AgentRenameOverlay::Closed;
+                // Signal View takes over the screen, so the Agent Pulse
+                // modals go away with it; the stage itself is untouched.
+                self.agent_pulse.dismiss_modals();
                 DisplayMode::SignalView
             }
             DisplayMode::SignalView => DisplayMode::Normal,
@@ -1043,13 +849,7 @@ impl App {
         }
         if self.low_power_visuals && self.low_power_viz.is_none() && self.viz.is_audible() {
             let now = Instant::now();
-            self.low_power_orbit = Some(
-                self.agent_pulse
-                    .orbits
-                    .keys()
-                    .map(|id| (id.clone(), self.agent_orbit_secs(id, now)))
-                    .collect(),
-            );
+            self.low_power_orbit = Some(self.agent_pulse.orbit_secs_snapshot(now));
             self.low_power_viz = Some((
                 self.viz.clone(),
                 self.viz_history.iter().skip(1).cloned().collect(),
@@ -1124,349 +924,6 @@ impl App {
             self.source
         };
         self.show_source(source);
-    }
-
-    // --- agent pulse (Herdr integration) ---------------------------------
-
-    /// Fold a successful `agent.list` snapshot into Agent Pulse state.
-    ///
-    /// Live-only reconciliation: the snapshot fully replaces the active
-    /// view. Agents keep their `observed_at` while their identity and status
-    /// are unchanged and reset it on a status change. A `done` agent stays
-    /// in the active list (so the UI can dim it) until a later snapshot
-    /// omits it; nothing is recorded once an agent disappears. A success
-    /// always recovers the connection to `Connected`.
-    fn apply_agent_snapshot(&mut self, agents: Vec<AgentSnapshot>, now: Instant) {
-        let pulse = &mut self.agent_pulse;
-        let previous = std::mem::take(&mut pulse.active);
-        let mut previous_orbits = std::mem::take(&mut pulse.orbits);
-        let mut orbits = HashMap::new();
-        let mut active: Vec<AgentView> = agents
-            .into_iter()
-            .map(|snapshot| {
-                let carried = previous
-                    .iter()
-                    .find(|view| view.id == snapshot.id && view.status == snapshot.status);
-                // Orbit phase: a Working→non-Working transition banks the
-                // stretch (freezing the planet at its current angle); a
-                // non-Working→Working transition re-opens a stretch so the
-                // orbit resumes from the captured phase. Omitted agents are
-                // simply never carried over.
-                let mut orbit = previous_orbits.remove(&snapshot.id).unwrap_or_default();
-                match (orbit.working_since, snapshot.status == AgentStatus::Working) {
-                    (Some(since), false) => {
-                        orbit.banked += now.saturating_duration_since(since);
-                        orbit.working_since = None;
-                    }
-                    (None, true) => orbit.working_since = Some(now),
-                    _ => {}
-                }
-                orbits.insert(snapshot.id.clone(), orbit);
-                AgentView {
-                    observed_at: carried.map_or(now, |view| view.observed_at),
-                    id: snapshot.id,
-                    name: snapshot.details.name.clone(),
-                    details: snapshot.details,
-                    status: snapshot.status,
-                }
-            })
-            .collect();
-        sort_active_agents(&mut active);
-        pulse.active = active;
-        pulse.orbits = orbits;
-        pulse.clamp_selection();
-        pulse.connection = AgentPulseConnection::Connected;
-        pulse.last_success = Some(now);
-        pulse.first_failure = None;
-        pulse.stale_viz = None;
-    }
-
-    /// Record a failed poll: the first failure of a streak dims state to
-    /// `Stale`, and [`herdr::STALE_AFTER`] without a success makes the
-    /// integration `Unavailable`. Last-known agents are retained so the UI
-    /// can dim them while stale.
-    fn mark_agent_poll_failed(&mut self, now: Instant) {
-        // Capture the live display exactly once, at the Connected→Stale
-        // edge, so rendering can freeze the last current and trails.
-        if self.agent_pulse.connection == AgentPulseConnection::Connected {
-            self.agent_pulse.stale_viz = Some(StaleViz {
-                frame: self.viz.clone(),
-                history: self.viz_history.iter().skip(1).cloned().collect(),
-            });
-            // Freeze every Working orbit at the same edge so the solar layout
-            // holds its exact last live positions; a recovery snapshot
-            // re-opens Working stretches from the frozen phase.
-            for orbit in self.agent_pulse.orbits.values_mut() {
-                if let Some(since) = orbit.working_since.take() {
-                    orbit.banked += now.saturating_duration_since(since);
-                }
-            }
-        }
-        let pulse = &mut self.agent_pulse;
-        if pulse.first_failure.is_none() {
-            pulse.first_failure = Some(now);
-        }
-        pulse.connection = if Self::agent_response_overdue(pulse, now) {
-            AgentPulseConnection::Unavailable
-        } else {
-            AgentPulseConnection::Stale
-        };
-        if pulse.connection == AgentPulseConnection::Unavailable {
-            pulse.stale_viz = None;
-            pulse.details = AgentDetailsOverlay::Closed;
-            pulse.rename = AgentRenameOverlay::Closed;
-        }
-    }
-
-    /// Downgrade to `Unavailable` once [`herdr::STALE_AFTER`] has passed
-    /// without a successful snapshot. Called on a timer by the controller so
-    /// the threshold applies even when no further monitor event arrives; it
-    /// never upgrades state and never reveals a hidden integration.
-    fn record_agent_focus_result(&mut self, result: FocusResult, now: Instant) {
-        self.agent_pulse.focus_notice = match result {
-            FocusResult::Focused => None,
-            _ => Some(AgentFocusNotice {
-                result,
-                shown_at: now,
-            }),
-        };
-    }
-
-    fn refresh_agent_staleness(&mut self, now: Instant) {
-        let pulse = &mut self.agent_pulse;
-        if pulse.connection == AgentPulseConnection::Hidden {
-            return;
-        }
-        if Self::agent_response_overdue(pulse, now) {
-            pulse.connection = AgentPulseConnection::Unavailable;
-            pulse.stale_viz = None;
-            pulse.details = AgentDetailsOverlay::Closed;
-            pulse.rename = AgentRenameOverlay::Closed;
-        }
-    }
-
-    /// Whether the reference point (the last success, or else the start of
-    /// the current failure streak) is at least [`herdr::STALE_AFTER`] old.
-    fn agent_response_overdue(pulse: &AgentPulse, now: Instant) -> bool {
-        let Some(reference) = pulse.last_success.or(pulse.first_failure) else {
-            return false;
-        };
-        now.duration_since(reference) >= herdr::STALE_AFTER
-    }
-
-    /// Whether Agent Pulse actions may run at all: the integration must have
-    /// shown evidence of life (not `Hidden`), and Signal View must not be
-    /// active — Signal View keeps its restricted key contract and never
-    /// shows or opens Agent Pulse.
-    fn agent_pulse_interactive(&self) -> bool {
-        self.agent_pulse.connection != AgentPulseConnection::Hidden
-            && self.display_mode != DisplayMode::SignalView
-    }
-
-    /// Whether selection actions may run: the canvas must be open and the
-    /// connection `Connected`, matching the mouse hit-test gate — stale and
-    /// unavailable freeze the last composition, selection included, so no
-    /// input may act on data that may no longer be current. Close/toggle
-    /// stay on [`Self::agent_pulse_interactive`].
-    fn agent_selection_interactive(&self) -> bool {
-        self.agent_pulse_interactive()
-            && self.agent_pulse.overlay == AgentOverlay::Open
-            && self.agent_pulse.connection == AgentPulseConnection::Connected
-    }
-
-    fn toggle_agent_overlay(&mut self) {
-        if !self.agent_pulse_interactive() {
-            return;
-        }
-        self.agent_pulse.overlay = match self.agent_pulse.overlay {
-            AgentOverlay::Closed => AgentOverlay::Open,
-            AgentOverlay::Open => {
-                self.agent_pulse.details = AgentDetailsOverlay::Closed;
-                self.agent_pulse.rename = AgentRenameOverlay::Closed;
-                AgentOverlay::Closed
-            }
-        };
-    }
-
-    fn close_agent_overlay(&mut self) {
-        if !self.agent_pulse_interactive() {
-            return;
-        }
-        self.agent_pulse.overlay = AgentOverlay::Closed;
-        self.agent_pulse.details = AgentDetailsOverlay::Closed;
-        self.agent_pulse.rename = AgentRenameOverlay::Closed;
-    }
-
-    fn open_agent_details(&mut self) {
-        if !self.agent_selection_interactive() {
-            return;
-        }
-        if let Some(id) = self.agent_pulse.selected.clone() {
-            self.agent_pulse.details = AgentDetailsOverlay::Open(id);
-        }
-    }
-
-    fn close_agent_details(&mut self) {
-        self.agent_pulse.details = AgentDetailsOverlay::Closed;
-        self.agent_pulse.rename = AgentRenameOverlay::Closed;
-    }
-
-    fn open_agent_rename(&mut self) {
-        if !self.agent_selection_interactive()
-            || !matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
-        {
-            return;
-        }
-        let Some(agent) = self.selected_agent() else {
-            return;
-        };
-        self.agent_pulse.rename = AgentRenameOverlay::Editing {
-            id: agent.id.clone(),
-            input: agent.details.name.clone().unwrap_or_default(),
-            submitting: false,
-        };
-        self.agent_pulse.rename_notice = None;
-    }
-
-    fn append_agent_rename(&mut self, character: char) {
-        if self.agent_pulse.connection != AgentPulseConnection::Connected {
-            return;
-        }
-        if let AgentRenameOverlay::Editing {
-            input, submitting, ..
-        } = &mut self.agent_pulse.rename
-        {
-            if !*submitting {
-                input.push(character);
-                self.agent_pulse.rename_notice = None;
-            }
-        }
-    }
-
-    fn backspace_agent_rename(&mut self) {
-        if self.agent_pulse.connection != AgentPulseConnection::Connected {
-            return;
-        }
-        if let AgentRenameOverlay::Editing {
-            input, submitting, ..
-        } = &mut self.agent_pulse.rename
-        {
-            if !*submitting {
-                input.pop();
-                self.agent_pulse.rename_notice = None;
-            }
-        }
-    }
-
-    fn submit_agent_rename(&mut self) {
-        if self.agent_pulse.connection != AgentPulseConnection::Connected {
-            return;
-        }
-        if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.agent_pulse.rename {
-            if !*submitting {
-                *submitting = true;
-                self.agent_pulse.rename_notice = None;
-            }
-        }
-    }
-
-    fn close_agent_rename(&mut self) {
-        self.agent_pulse.rename = AgentRenameOverlay::Closed;
-        self.agent_pulse.rename_notice = None;
-    }
-
-    fn record_agent_rename_result(&mut self, result: RenameResult, now: Instant) {
-        if self.agent_pulse.connection != AgentPulseConnection::Connected {
-            if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.agent_pulse.rename {
-                *submitting = false;
-                self.agent_pulse.rename_notice = Some(AgentRenameNotice {
-                    result: RenameResult::Unavailable,
-                    shown_at: now,
-                });
-            }
-            return;
-        }
-        let AgentRenameOverlay::Editing {
-            id,
-            input,
-            submitting: _,
-        } = &self.agent_pulse.rename
-        else {
-            return;
-        };
-        if result == RenameResult::Renamed {
-            let name = (!input.trim().is_empty()).then(|| input.trim().to_owned());
-            if let Some(agent) = self
-                .agent_pulse
-                .active
-                .iter_mut()
-                .find(|agent| agent.id == *id)
-            {
-                agent.name = name.clone();
-                agent.details.name = name;
-            }
-            self.agent_pulse.rename = AgentRenameOverlay::Closed;
-            self.agent_pulse.rename_notice = None;
-        } else if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.agent_pulse.rename
-        {
-            *submitting = false;
-            self.agent_pulse.rename_notice = Some(AgentRenameNotice {
-                result,
-                shown_at: now,
-            });
-        }
-    }
-
-    /// Move the overlay selection to the next sorted agent, wrapping from
-    /// the last back to the first; with no selection it starts at the first
-    /// sorted agent. An open details modal follows the new selection.
-    fn select_next_agent(&mut self) {
-        if !self.agent_selection_interactive() {
-            return;
-        }
-        let pulse = &mut self.agent_pulse;
-        if pulse.active.is_empty() {
-            pulse.selected = None;
-            return;
-        }
-        let index = match pulse.selected_index() {
-            Some(index) => (index + 1) % pulse.active.len(),
-            None => 0,
-        };
-        pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
-        pulse.follow_selection_with_details();
-    }
-
-    /// Move the overlay selection to the previous sorted agent, wrapping from
-    /// the first back to the last; with no selection it starts at the last
-    /// sorted agent. An open details modal follows the new selection.
-    fn select_previous_agent(&mut self) {
-        if !self.agent_selection_interactive() {
-            return;
-        }
-        let pulse = &mut self.agent_pulse;
-        if pulse.active.is_empty() {
-            pulse.selected = None;
-            return;
-        }
-        let last = pulse.active.len() - 1;
-        let index = match pulse.selected_index() {
-            Some(0) | None => last,
-            Some(index) => index - 1,
-        };
-        pulse.selected = pulse.active.get(index).map(|view| view.id.clone());
-        pulse.follow_selection_with_details();
-    }
-
-    /// Select an active agent by its identity; unknown agents change nothing.
-    fn select_agent(&mut self, id: AgentId) {
-        if !self.agent_selection_interactive() || self.is_agent_details_open() {
-            return;
-        }
-        let pulse = &mut self.agent_pulse;
-        if pulse.active.iter().any(|view| view.id == id) {
-            pulse.selected = Some(id);
-        }
     }
 
     // --- queries (read-only, for UI/controller) -------------------------
@@ -1649,155 +1106,93 @@ impl App {
 impl App {
     /// The Agent Pulse connection state; `Hidden` for standalone launches.
     pub(crate) fn agent_pulse_connection(&self) -> AgentPulseConnection {
-        self.agent_pulse.connection
+        self.agent_pulse.connection()
     }
 
     /// Live agents across the current socket's workspaces, in display
     /// (sorted) order.
     pub(crate) fn active_agents(&self) -> &[AgentView] {
-        &self.agent_pulse.active
+        self.agent_pulse.active()
     }
 
     /// The selected active agent, if one is still active.
     pub(crate) fn selected_agent(&self) -> Option<&AgentView> {
-        let index = self.agent_pulse.selected_index()?;
-        self.agent_pulse.active.get(index)
+        self.agent_pulse.selected_agent()
     }
 
     /// The opaque selected-pane target only while the open stage has a fresh
     /// snapshot. The controller passes it straight back to the Herdr adapter;
     /// UI and persistence never receive a text representation.
     pub(crate) fn agent_focus_target(&self) -> Option<AgentId> {
-        self.agent_selection_interactive()
-            .then(|| self.selected_agent().map(|agent| agent.id.clone()))
-            .flatten()
+        self.agent_pulse.focus_target(self.display_mode)
     }
 
     /// Short modal-local feedback for an explicit pane-focus attempt.
     pub(crate) fn agent_focus_notice(&self, now: Instant) -> Option<&'static str> {
-        let notice = self.agent_pulse.focus_notice.as_ref()?;
-        if now.saturating_duration_since(notice.shown_at) >= AGENT_FOCUS_NOTICE_FOR {
-            return None;
-        }
-        match notice.result {
-            FocusResult::Focused => None,
-            FocusResult::Unsupported => Some("pane focus requires Herdr 0.7.0+"),
-            FocusResult::Missing => Some("pane is no longer available"),
-            FocusResult::Unavailable => Some("pane focus unavailable · retrying"),
-            FocusResult::NoSelection => Some("select a live planet first"),
-        }
+        self.agent_pulse.focus_notice(now)
     }
 
     /// Whether the Agent Pulse overlay is open.
     pub(crate) fn is_agent_overlay_open(&self) -> bool {
-        self.agent_pulse.overlay == AgentOverlay::Open
+        self.agent_pulse.is_overlay_open()
     }
 
     /// Whether Agent Planets is currently showing details for its selection.
     pub(crate) fn is_agent_details_open(&self) -> bool {
-        matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
+        self.agent_pulse.is_details_open()
     }
 
     /// Whether the Agent table's inline Name input is open.
     pub(crate) fn is_agent_rename_open(&self) -> bool {
-        matches!(self.agent_pulse.rename, AgentRenameOverlay::Editing { .. })
+        self.agent_pulse.is_rename_open()
     }
 
     /// Current inline Name input. The empty string is intentional: it maps to
     /// a JSON null clear request at the Herdr boundary.
     pub(crate) fn agent_rename_input(&self) -> Option<&str> {
-        let AgentRenameOverlay::Editing { input, .. } = &self.agent_pulse.rename else {
-            return None;
-        };
-        Some(input)
+        self.agent_pulse.rename_input()
     }
 
     /// Whether a submitted inline rename is awaiting its asynchronous typed
     /// outcome. The UI stays responsive but prevents duplicate submissions.
     pub(crate) fn agent_rename_is_submitting(&self) -> bool {
-        matches!(
-            self.agent_pulse.rename,
-            AgentRenameOverlay::Editing {
-                submitting: true,
-                ..
-            }
-        )
+        self.agent_pulse.rename_is_submitting()
     }
 
     /// Opaque target plus normalized request value for the controller. This
     /// never exposes the private id to UI or persistence, and stale snapshots
     /// intentionally return `None` without clearing the user's input.
     pub(crate) fn agent_rename_request(&self) -> Option<(AgentId, Option<String>)> {
-        if self.agent_pulse.connection != AgentPulseConnection::Connected {
-            return None;
-        }
-        let AgentRenameOverlay::Editing {
-            id,
-            input,
-            submitting: false,
-        } = &self.agent_pulse.rename
-        else {
-            return None;
-        };
-        Some((
-            id.clone(),
-            (!input.trim().is_empty()).then(|| input.trim().to_owned()),
-        ))
+        self.agent_pulse.rename_request()
     }
 
     /// Short inline-name failure copy. It deliberately omits server text and
     /// private identifiers, and only remains while the input is still open.
     pub(crate) fn agent_rename_notice(&self, now: Instant) -> Option<&'static str> {
-        if !self.is_agent_rename_open() {
-            return None;
-        }
-        let notice = self.agent_pulse.rename_notice.as_ref()?;
-        if now.saturating_duration_since(notice.shown_at) >= AGENT_FOCUS_NOTICE_FOR {
-            return None;
-        }
-        match notice.result {
-            RenameResult::Unsupported => Some("rename requires Herdr 0.7.0+"),
-            RenameResult::Missing => Some("agent is no longer available"),
-            RenameResult::Unavailable => Some("rename unavailable · retrying"),
-            RenameResult::Renamed => None,
-        }
+        self.agent_pulse.rename_notice(now)
     }
 
     /// Approved details for the selected identity while the table modal is open.
     /// Kept test-only because production presentation reads the complete live
     /// display-order table rather than a single selected record.
     #[cfg(test)]
-    pub(crate) fn selected_agent_details(&self) -> Option<&AgentDetails> {
-        let AgentDetailsOverlay::Open(id) = &self.agent_pulse.details else {
-            return None;
-        };
-        let selected = self.selected_agent()?;
-        (&selected.id == id).then_some(&selected.details)
+    pub(crate) fn selected_agent_details(&self) -> Option<&crate::herdr::AgentDetails> {
+        self.agent_pulse.selected_details()
     }
 
-    /// Total Working seconds behind an agent's solar-orbit phase at `now`:
-    /// the time banked by completed Working stretches plus the live current
-    /// stretch. A frozen (non-Working) agent ignores `now` entirely, so its
-    /// planet holds the captured angle; an unknown identity is zero. Live
-    /// and stale rendering read this directly; low-power rendering prefers
-    /// the frozen [`Self::low_power_orbit_secs`] capture once it exists, so
-    /// the captured solar layout never moves.
+    /// Total Working seconds behind an agent's solar-orbit phase at `now`.
+    /// Live and stale rendering read this directly; low-power rendering
+    /// prefers the frozen [`Self::low_power_orbit_secs`] capture once it
+    /// exists, so the captured solar layout never moves.
     pub(crate) fn agent_orbit_secs(&self, id: &AgentId, now: Instant) -> f32 {
-        let Some(orbit) = self.agent_pulse.orbits.get(id) else {
-            return 0.0;
-        };
-        let live = orbit
-            .working_since
-            .map_or(Duration::ZERO, |since| now.saturating_duration_since(since));
-        (orbit.banked + live).as_secs_f32()
+        self.agent_pulse.orbit_secs(id, now)
     }
 
     /// The visualizer display captured when the connection dimmed to
     /// `Stale`: the frozen current frame plus the prior trail frames.
     /// `None` while connected, unavailable, or hidden.
     pub(crate) fn stale_viz(&self) -> Option<(&VizFrame, &[VizFrame])> {
-        let stale = self.agent_pulse.stale_viz.as_ref()?;
-        Some((&stale.frame, stale.history.as_slice()))
+        self.agent_pulse.stale_viz()
     }
 
     /// Set the low-power visual policy. The controller calls this exactly
@@ -1841,7 +1236,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult};
+    use crate::herdr::{
+        self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
+    };
     use crate::model::{
         BitrateKbps, CodecKind, PhaseTrace, PlaybackRequestSeq, StationId, StationName,
         StationSource, StreamUrl, VisualizerMode, VolumePercent,
@@ -4509,5 +3906,121 @@ mod tests {
         app.apply(Action::SelectNextAgent);
         let selected = app.selected_agent().expect("unnamed agent is selectable");
         assert_eq!(selected.name, None);
+    }
+
+    /// Everything the core radio reducer owns, as observed through the public
+    /// query surface. Agent Pulse must never move any of it.
+    #[derive(Debug, PartialEq)]
+    struct RadioState {
+        focus: FocusPane,
+        visible: Vec<String>,
+        selected_index: usize,
+        source: ListSource,
+        browse_selected: usize,
+        playback: PlaybackState,
+        playback_request: Option<PlaybackRequestId>,
+        current_station: Option<String>,
+        now_playing_title: Option<String>,
+        viz: VizFrame,
+        offline: bool,
+        settings_save_failed: bool,
+        search_query: String,
+        search_status: SearchStatus,
+        settings: Settings,
+        display_mode: DisplayMode,
+    }
+
+    fn radio_state(app: &App) -> RadioState {
+        RadioState {
+            focus: app.focus(),
+            visible: visible_ids(app),
+            selected_index: app.selected_index(),
+            source: app.active_source(),
+            browse_selected: app.browse_selected(),
+            playback: app.playback().clone(),
+            playback_request: app.playback_request(),
+            current_station: app
+                .current_station()
+                .map(|station| station.id.as_str().to_string()),
+            now_playing_title: app.now_playing_title().map(str::to_string),
+            viz: app.viz().clone(),
+            offline: app.is_offline(),
+            settings_save_failed: app.settings_save_failed(),
+            search_query: app.search_query().to_string(),
+            search_status: app.search_status().clone(),
+            settings: app.settings().clone(),
+            display_mode: app.display_mode(),
+        }
+    }
+
+    #[test]
+    fn no_agent_pulse_action_can_mutate_radio_audio_search_or_settings_state() {
+        // The Agent Pulse substate is observational: Herdr snapshots, poll
+        // failures, staleness ticks, selection, details, rename, and focus
+        // notices share the reducer with radio state but must never write to
+        // it. This pins that boundary against every Agent Pulse action, from
+        // an app carrying live playback, search, and selection state.
+        let mut app = app_with(&["a", "b", "c"]);
+        app.apply(Action::SetSearchQuery("jazz".to_string()));
+        app.apply(Action::SetSearchStatus(SearchStatus::Loading));
+        app.apply(Action::SelectNext);
+        app.apply(Action::SetFocus(FocusPane::NowPlaying));
+        let request = start_playback(&mut app);
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request,
+            station: app.current_station().unwrap().id.clone(),
+        }));
+        app.apply(Action::ToggleFavorite);
+        app.apply(Action::VolumeUp);
+
+        let t0 = Instant::now();
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Blocked),
+            ],
+            t0,
+        ));
+        app.apply(Action::ToggleAgentOverlay);
+
+        let before = radio_state(&app);
+
+        // Every Agent Pulse action, including the interactive stage path.
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::SelectPreviousAgent);
+        app.apply(Action::SelectAgent(agent_id("ws", "p2")));
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('x'));
+        app.apply(Action::BackspaceAgentRename);
+        app.apply(Action::SubmitAgentRename);
+        app.apply(Action::AgentRenameResult {
+            result: RenameResult::Renamed,
+            now: t0 + Duration::from_secs(1),
+        });
+        app.apply(Action::CloseAgentRename);
+        app.apply(Action::CloseAgentDetails);
+        app.apply(Action::AgentFocusResult {
+            result: FocusResult::Missing,
+            now: t0 + Duration::from_secs(1),
+        });
+        app.apply(Action::AgentPollFailed {
+            now: t0 + Duration::from_secs(2),
+        });
+        app.apply(Action::AgentTick {
+            now: t0 + Duration::from_secs(600),
+        });
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p1", Some("alpha"), AgentStatus::Idle)],
+            t0 + Duration::from_secs(601),
+        ));
+        app.apply(Action::CloseAgentOverlay);
+        app.apply(Action::ToggleAgentOverlay);
+
+        assert_eq!(
+            radio_state(&app),
+            before,
+            "an Agent Pulse action moved core radio state"
+        );
     }
 }

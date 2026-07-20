@@ -88,7 +88,9 @@ Expected responsibility boundaries:
 - `settings`: settings load/save and persistence format boundary.
 - `catalog`: curated stations, station ranking, validation state.
 - `search`: Radio Browser client, normalization, query cache.
-- `audio`: native playback facade, decoder/output/analyzer/ICY events.
+- `audio`: native playback facade, decoder/output/analyzer/ICY events, and the
+  playback-session lifecycle (`audio::session`: the control loop, cancellation,
+  and worker reclamation, kept free of CPAL/Symphonia/HTTP details).
 - `herdr`: Herdr plugin environment eligibility, Unix socket protocol, the
   `agent.list` monitor thread, and explicit `agent.focus` / `agent.rename`
   requests; the only module that sees Herdr JSON or opaque pane ids.- `theme`: theme names and palette definitions.
@@ -132,6 +134,15 @@ Important caveats from [`docs/audio-spike.md`](docs/audio-spike.md):
 - ICY `StreamTitle` parsing and full `icy-metaint` demuxing are implemented in
   `src/audio/icy.rs` and wired through `src/audio/decoder.rs`; both are covered
   by pure tests with synthetic byte streams.
+
+Keep the audio control thread free of blocking network/decoder reads: connecting
+runs on a connect worker and torn-down sessions are reclaimed in the background,
+so Stop, station replacement, and Shutdown never wait on a stalled read. The
+control thread still owns the CPAL stream. Because connects cannot be cancelled,
+they are capped and coalesced to the newest request rather than queued, and a
+connect worker's panic must surface as a recoverable failure instead of
+stranding the request. See the control-thread, bounded cleanup, connect-cap, and
+worker-panic sections of [`docs/audio-spike.md`](docs/audio-spike.md).
 
 Broken remote stations, unsupported codecs, network timeouts, and unavailable
 audio devices are recoverable failures. Report them as `Result` values or audio

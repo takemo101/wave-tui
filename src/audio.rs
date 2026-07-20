@@ -20,7 +20,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
     Arc,
 };
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::Duration;
 
 use ringbuf::{
@@ -35,12 +35,14 @@ use crate::model::{
 use self::decoder::StreamDecoder;
 use self::output::SharedVolume;
 use self::played_sample::PlayedSample;
+use self::session::{PlaybackEngine, SessionWorkers};
 
 pub(crate) mod analyzer;
 mod decoder;
 pub(crate) mod icy;
 mod output;
 mod played_sample;
+mod session;
 
 /// FFT window size used by the streaming analyzer. Matches the spike.
 const FFT_SIZE: usize = 1024;
@@ -185,127 +187,80 @@ impl AudioRuntime {
     pub fn spawn(config: AudioRuntimeConfig) -> AudioHandle {
         let (command_tx, command_rx) = mpsc::channel::<AudioCommand>();
         let (event_tx, event_rx) = mpsc::channel::<AudioEvent>();
-        thread::spawn(move || run_control_loop(config, command_rx, event_tx));
+        thread::spawn(move || {
+            session::run_control_loop(CpalEngine { config }, command_rx, event_tx)
+        });
         AudioHandle::new(command_tx, event_rx)
     }
 }
 
-/// An active playback session: the CPAL stream plus its worker threads.
+/// The production [`PlaybackEngine`]: HTTP + Symphonia to connect, CPAL to play.
 ///
-/// Held only on the control thread, so the non-`Send` CPAL stream never crosses
-/// threads. Dropping it tears playback down: the stop flag is raised and both
-/// worker threads are joined (the analyzer wakes within its recv timeout; the
-/// decoder thread observes the flag and exits once the queue stops draining).
-struct Playback {
-    // `stream` is dropped after `Drop::drop` returns; declaration order keeps it
-    // alive while the worker threads are joined.
-    _stream: cpal::Stream,
-    stop: Arc<AtomicBool>,
-    decoder_thread: Option<JoinHandle<()>>,
-    analyzer_thread: Option<JoinHandle<()>>,
-}
-
-impl Drop for Playback {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.decoder_thread.take() {
-            let _ = handle.join();
-        }
-        if let Some(handle) = self.analyzer_thread.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-/// The control thread body: own current playback and the live volume, and
-/// translate commands into playback actions and events.
-fn run_control_loop(
+/// The two phases are split along the blocking boundary. Connecting performs the
+/// network work and runs on a connect worker; starting only touches the audio
+/// device and spawns the decode/analyze workers, so it is safe to run on the
+/// control thread where the non-`Send` CPAL stream must live.
+struct CpalEngine {
     config: AudioRuntimeConfig,
-    command_rx: Receiver<AudioCommand>,
-    event_tx: Sender<AudioEvent>,
-) {
-    // Volume persists across stations; `Play` overrides it with its own value.
-    let volume = SharedVolume::new(VolumePercent::clamped(100));
-    let mut current: Option<Playback> = None;
-
-    while let Ok(command) = command_rx.recv() {
-        match command {
-            AudioCommand::Play {
-                request,
-                station,
-                volume: v,
-            } => {
-                // Stop the previous stream before announcing the new one. The
-                // old session's workers may still emit events after this point;
-                // they carry the old request and the app drops them.
-                drop(current.take());
-                let station_id = station.id.clone();
-                let _ = event_tx.send(AudioEvent::Connecting {
-                    request,
-                    station: station_id.clone(),
-                });
-                volume.set(v);
-                match start_playback(request, &station, &config, &volume, &event_tx) {
-                    Ok(playback) => {
-                        current = Some(playback);
-                        let _ = event_tx.send(AudioEvent::Playing {
-                            request,
-                            station: station_id,
-                        });
-                    }
-                    Err(err) => {
-                        let _ = event_tx.send(AudioEvent::Failed {
-                            request,
-                            station: station_id,
-                            message: format!("{err:#}"),
-                        });
-                    }
-                }
-            }
-            AudioCommand::Stop => {
-                drop(current.take());
-                let _ = event_tx.send(AudioEvent::Stopped);
-            }
-            AudioCommand::SetVolume(v) => {
-                volume.set(v);
-                let _ = event_tx.send(AudioEvent::VolumeChanged(v));
-            }
-            AudioCommand::Shutdown => {
-                drop(current.take());
-                break;
-            }
-        }
-    }
-    // Dropping `current` on the way out tears down any active playback.
 }
 
-/// Start decoding, output, and analysis for `station`, returning a live
-/// [`Playback`]. Any failure (network, device, unsupported rate, decode) is
-/// returned as an error for the caller to surface as [`AudioEvent::Failed`].
+impl PlaybackEngine for CpalEngine {
+    type Connected = StreamDecoder;
+    type Stream = cpal::Stream;
+
+    /// Open the station's stream. Blocking, and bounded only by the decoder's
+    /// configured connect/read timeouts — which is exactly why it runs off the
+    /// control thread.
+    ///
+    /// The station URL is treated as a direct, authoritative stream URL; mount
+    /// resolution (`/stream` for curated bases) is a catalog concern applied
+    /// upstream, per the audio spike findings.
+    ///
+    /// ICY titles are demuxed inside the decoder and surfaced as events tagged
+    /// with this request, so the app can ignore titles from an attempt it has
+    /// since left — including an earlier attempt at this same station.
+    fn connect(
+        &self,
+        request: PlaybackRequestId,
+        station: Station,
+        events: Sender<AudioEvent>,
+    ) -> anyhow::Result<StreamDecoder> {
+        let icy_station = station.id.clone();
+        let on_title: Box<dyn FnMut(String) + Send + Sync> = Box::new(move |title| {
+            let _ = events.send(AudioEvent::IcyTitle {
+                request,
+                station: icy_station.clone(),
+                title,
+            });
+        });
+        StreamDecoder::new_http(station.url.as_str(), on_title)
+    }
+
+    fn start(
+        &self,
+        request: PlaybackRequestId,
+        station_id: StationId,
+        decoder: StreamDecoder,
+        volume: &SharedVolume,
+        event_tx: &Sender<AudioEvent>,
+    ) -> anyhow::Result<(cpal::Stream, SessionWorkers)> {
+        start_playback(request, station_id, decoder, &self.config, volume, event_tx)
+    }
+}
+
+/// Start output and analysis for an already-connected `decoder`.
+///
+/// Returns the live stream (control-thread-owned) and its workers (retirable).
+/// Any failure (device, unsupported rate) is returned as an error for the caller
+/// to surface as [`AudioEvent::Failed`].
 fn start_playback(
     request: PlaybackRequestId,
-    station: &Station,
+    station_id: StationId,
+    decoder: StreamDecoder,
     config: &AudioRuntimeConfig,
     volume: &SharedVolume,
     event_tx: &Sender<AudioEvent>,
-) -> anyhow::Result<Playback> {
-    // The station URL is treated as a direct, authoritative stream URL; mount
-    // resolution (`/stream` for curated bases) is a catalog concern applied
-    // upstream, per the audio spike findings.
-    //
-    // ICY titles are demuxed inside the decoder and surfaced as events tagged
-    // with this request, so the app can ignore titles from an attempt it has
-    // since left — including an earlier attempt at this same station.
-    let icy_event_tx = event_tx.clone();
-    let icy_station = station.id.clone();
-    let on_title: Box<dyn FnMut(String) + Send + Sync> = Box::new(move |title| {
-        let _ = icy_event_tx.send(AudioEvent::IcyTitle {
-            request,
-            station: icy_station.clone(),
-            title,
-        });
-    });
-    let decoder = StreamDecoder::new_http(station.url.as_str(), on_title)?;
+) -> anyhow::Result<(cpal::Stream, SessionWorkers)> {
     let sample_rate = decoder.sample_rate();
     let source_channels = decoder.channels();
 
@@ -322,7 +277,6 @@ fn start_playback(
     // Build the output stream (the last fallible step) *before* spawning any
     // worker threads, so an output-setup failure cannot leak threads. A CPAL
     // device error after this point is surfaced as a recoverable failure.
-    let station_id = station.id.clone();
     let output_err_tx = event_tx.clone();
     let output_err_station = station_id.clone();
     let stream = output::build_output_stream(
@@ -378,19 +332,19 @@ fn start_playback(
 
     use cpal::traits::StreamTrait;
     if let Err(err) = stream.play() {
-        // Tear the just-spawned workers down rather than leaking them.
+        // Tear the just-spawned workers down rather than leaking them. This is
+        // the one join left on the control thread, and it is safe: the workers
+        // were spawned microseconds ago and neither has entered a blocking read.
         stop.store(true, Ordering::Relaxed);
         let _ = decoder_thread.join();
         let _ = analyzer_thread.join();
         return Err(anyhow::anyhow!("failed to start output stream: {err}"));
     }
 
-    Ok(Playback {
-        _stream: stream,
-        stop,
-        decoder_thread: Some(decoder_thread),
-        analyzer_thread: Some(analyzer_thread),
-    })
+    Ok((
+        stream,
+        SessionWorkers::new(stop, vec![decoder_thread, analyzer_thread]),
+    ))
 }
 
 /// Drain the decoder into the output queue until the stream ends or `stop`.

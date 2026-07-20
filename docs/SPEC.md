@@ -136,6 +136,30 @@ handling.
   output volume, which persists across stations) and are emitted only from the
   audio control thread in command order, so they cannot overtake a newer
   request's events the way a worker thread's can.
+- Transport control stays responsive while I/O is blocked. Stop, station
+  replacement, and Shutdown must be acted on without waiting for a stalled
+  network or decoder read, so a wedged station cannot freeze the transport for
+  the configured read timeout. Connecting therefore runs off the audio control
+  thread, and a torn-down session's workers are cancelled and reclaimed in the
+  background instead of being joined inline. The control thread keeps owning the
+  CPAL output stream and releases it immediately on teardown, so the device is
+  freed even while a retired worker is still unwinding.
+- Cancellation is bounded, not instant. A read already inside `reqwest`/Symphonia
+  cannot be interrupted, so a cancelled worker exits only once that read returns
+  within its configured timeout. Until then it is already flagged as cancelled
+  and its late completion is rejected by playback request identity, so it cannot
+  restore stale playback state.
+- Reclamation is scoped to the run, not to shutdown. While the runtime is alive,
+  every retired worker is cancelled and joined in the background, so repeated
+  play/stop cycles cannot accumulate threads. At `Shutdown` the control thread
+  deliberately stops waiting: any worker still inside a bounded read is left
+  cancelled and unjoined, and the process exits without it. Shutdown promises
+  promptness, not a join.
+- Uncancellable work is capped rather than queued. Because a connect cannot be
+  cancelled, rapid station changes are bounded by a small ceiling of concurrent
+  connect attempts, and only the newest request waits for a slot — superseded
+  ones are dropped rather than connected. Every `Play` is still accepted and
+  reported as connecting; the cap throttles work, never command receipt.
 - The MVP should not depend on `mpv` for normal playback.
 
 #### Native Audio Spike Findings
@@ -921,6 +945,37 @@ tier, and built-in retry candidates stay visible
   entries apply their corresponding station filters. When a successful search
   result population exists, those section/category sources filter the current
   search results; otherwise they fall back to the curated catalog.
+
+#### Manual checklist — audio control responsiveness (MIK-066)
+
+Required before treating MIK-066 as verified end to end. The automated tests in
+`audio::session` cover the concurrency policy with a fake blocking engine; none
+of them touch a real device, socket, or station, so everything below is manual.
+
+Use a deliberately wedged endpoint for the "stalled" steps — a host that accepts
+the TCP connection and then sends nothing (for example a netcat listener that
+never writes) — so the decoder sits in its read timeout rather than failing fast.
+
+- [ ] Play a real station, then press Stop. Confirm audio stops immediately and
+      the UI leaves Playing at once, with no pause near the read timeout.
+- [ ] While a station is playing, play a different station. Confirm the switch is
+      immediate and the previous station's audio does not overlap the new one.
+- [ ] Point at a wedged endpoint and press Stop while it is still connecting.
+      Confirm Stop is honored immediately rather than after the read timeout.
+- [ ] While a wedged endpoint is connecting, play a good station instead.
+      Confirm it connects and plays without waiting for the wedged attempt.
+- [ ] While a wedged endpoint is connecting, quit. Confirm the app exits promptly
+      and leaves no `wave-tui` process behind.
+- [ ] Hold Enter / repeatedly trigger play on a wedged endpoint, then settle on a
+      good station. Confirm the UI stays responsive throughout, the good station
+      plays, and process thread/socket counts return to a steady state rather
+      than growing per keypress.
+- [ ] After a stop and a subsequent play, confirm the output device is released
+      and reacquired cleanly — no stuck device, no silent stream, and no audible
+      artifacts from the previous session.
+- [ ] Over a long session (many play/stop/switch cycles), confirm the process
+      thread count and memory return to a steady state, verifying background
+      worker reclamation on real streams.
 
 ### Herdr Agent Pulse — Verification Status
 

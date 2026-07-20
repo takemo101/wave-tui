@@ -1458,7 +1458,10 @@ impl App {
         matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
     }
 
-    /// Approved details for the identity whose modal is open.
+    /// Approved details for the selected identity while the table modal is open.
+    /// Kept test-only because production presentation reads the complete live
+    /// display-order table rather than a single selected record.
+    #[cfg(test)]
     pub(crate) fn selected_agent_details(&self) -> Option<&AgentDetails> {
         let AgentDetailsOverlay::Open(id) = &self.agent_pulse.details else {
             return None;

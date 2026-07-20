@@ -2580,7 +2580,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_planets_canvas_shows_details_only_after_selection_opens_modal() {
+    fn agent_planets_canvas_shows_table_only_after_selection_opens_modal() {
         let mut app = app_with_agents(vec![pulse_agent(
             "alpha",
             "p1",
@@ -2595,7 +2595,11 @@ mod tests {
         app.apply(Action::SelectNextAgent);
         app.apply(Action::OpenAgentDetails);
         let modal = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(modal.contains("Agent details"));
+        assert!(modal.contains("Agent table"));
+        for heading in ["Name", "Agent", "Status", "Activity"] {
+            assert!(modal.contains(heading), "missing {heading} header: {modal}");
+        }
+        assert!(!modal.contains('|'), "Agent table uses native cells");
         assert!(modal.contains("research"));
         assert!(modal.contains("working"));
         assert!(!modal.contains("alpha") && !modal.contains("p1"));

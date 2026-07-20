@@ -97,7 +97,13 @@ Expected responsibility boundaries:
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.
 - `ui`: Ratatui rendering only; do not put domain mutation logic here.
-- `cli`: CLI argument parsing and boundary parsing.
+- `cli`: CLI argument parsing, boundary parsing, and key mapping; it must not
+  depend on terminal or adapter lifecycle details.
+- `runtime`: the composition root for a run — terminal ownership, adapter
+  construction, splash, event-loop ownership, channel draining, and teardown
+  ordering — behind private child modules (`debounce`, `persistence`,
+  `search_worker`, `terminal`, `splash`, `input`, `event_loop`). It depends on
+  `cli`; `cli` never depends back on it.
 
 ## Domain and parsing rules
 

@@ -8,6 +8,7 @@ pub mod cli;
 pub mod herdr;
 pub mod layout;
 pub mod model;
+pub mod runtime;
 pub mod search;
 pub mod settings;
 pub mod theme;

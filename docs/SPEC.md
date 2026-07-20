@@ -914,13 +914,13 @@ or interactive resize and is exercised via the manual checklist below, not CI.
 
 | # | Criterion | Status | Evidence / notes |
 | - | --------- | ------ | ---------------- |
-| 1 | Resume previous station on launch | Automated (logic) + Manual (end-to-end) | `cli::startup_play_command` tests; full resume needs a real run. |
+| 1 | Resume previous station on launch | Automated (logic) + Manual (end-to-end) | `runtime::startup_play_command` tests; full resume needs a real run. |
 | 2 | First launch / failed previous starts silently with recommendations | Automated (logic) + Manual | `startup_is_silent_*` tests; catalog is the default visible list. |
 | 3 | MP3/AAC streams play via the native path | Manual | Verified by the `audio_spike` tool (`docs/audio-spike.md`); no automated audio. |
 | 4 | Visualizer reacts to real audio via FFT | Automated (helpers) + Manual | analyzer normalization tests; live reaction is manual. |
-| 5 | Online search updates while typing, debounced + cached | Automated | `cli::SearchDebounce` and `search::SearchCache` tests; latest-wins coalescing and worker shutdown covered by injected-transport worker tests in `cli`. |
+| 5 | Online search updates while typing, debounced + cached | Automated | `runtime::debounce::SearchDebounce` and `search::SearchCache` tests; latest-wins coalescing and worker shutdown covered by injected-transport worker tests in `runtime::search_worker`. |
 | 6 | Results ranked toward playable/popular | Automated | `catalog::station_score` / `search` ranking tests. |
-| 7 | Favorites, previous station, volume, theme persist | Automated | `settings` roundtrip + `cli::Persistence` policy tests. |
+| 7 | Favorites, previous station, volume, theme persist | Automated | `settings` roundtrip + `runtime::persistence::Persistence` policy tests. |
 | 8 | Failed stations temporarily disabled for the session | Automated | `catalog::SessionStationHealth` + `app::on_failed` tests. |
 | 9 | ICY metadata appears when available | Automated (parse) + Manual | `audio::icy` synthetic-byte tests; live ICY is manual. |
 | 10 | Wide/medium/compact layouts are intentional, no overlap | Automated (render) + Manual | per-tier `ui` render tests; visual quality is manual. |
@@ -931,7 +931,7 @@ or interactive resize and is exercised via the manual checklist below, not CI.
 
 Offline behavior (the "Offline / Network Failure" section): a failed online
 search sets an offline state and an explicit offline search status without
-crashing (`cli::apply_search_response`), the indicator renders in every layout
+crashing (`runtime::search_worker::apply_search_response`), the indicator renders in every layout
 tier, and built-in retry candidates stay visible
 (`ui::offline_state_is_visible_in_every_tier`,
 `offline_search_status_is_visible_in_every_tier`,
@@ -1015,7 +1015,8 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   navigation, preserved global player shortcuts, and stage-local `z`
   consumption with unchanged Signal View routing outside the stage), and
   monitor/mouse-capture/click routing including the low-power geometry
-  path (`cli`);
+  path (`cli` for parsing/help text and key mapping, `runtime` for routing,
+  monitor, and mouse-capture behavior);
 - the App-owned low-power visual capture: silent startup frames capture
   nothing, the first audible frame (RMS above the silence threshold with
   real phase data) becomes the frozen geometry source and captures every

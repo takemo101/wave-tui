@@ -3,7 +3,7 @@
 
 id = "wave-tui.radio"
 name = "wave-tui"
-version = "0.1.4"
+version = "0.1.5"
 description = "Terminal internet radio for work-session BGM with a read-only Agent Pulse companion."
 min_herdr_version = "0.7.0"
 platforms = ["macos", "linux"]

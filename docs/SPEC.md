@@ -212,6 +212,12 @@ Persist:
 
 Do not include custom URL station entry in MVP.
 
+Settings saves are atomic: settings are serialized once, written to a unique
+sibling temporary file that is flushed and synced, then renamed over
+`settings.json`, so a failed save never replaces a valid settings file with
+partial JSON. A failed save is nonfatal — playback continues and the footer
+shows a `settings not saved` notice until a later save succeeds.
+
 Favorites are added from:
 
 - built-in catalog stations

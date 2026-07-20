@@ -11,7 +11,9 @@
 //! surface as an `Err` from [`load`]/[`load_from`] so the caller can fall back
 //! to [`Settings::default`] at the app boundary.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -202,14 +204,81 @@ pub fn load_from(path: &Path) -> Result<Settings> {
 }
 
 /// Save settings to an explicit path, creating parent directories as needed.
+///
+/// The save is atomic with respect to the target file: settings are serialized
+/// once, written to a unique sibling temporary file that is flushed and synced,
+/// then renamed over the target. A failure at any step leaves any preexisting
+/// settings file untouched.
 pub fn save_to(path: &Path, settings: &Settings) -> Result<()> {
+    save_to_with(&StdFs, path, settings)
+}
+
+/// The filesystem operations [`save_to`] needs, injectable so tests can force
+/// each failure mode deterministically without touching real config paths.
+trait SaveFs {
+    fn create_dir_all(&self, dir: &Path) -> std::io::Result<()>;
+    /// Write `bytes` to `path` and force them onto disk (flush + sync).
+    fn write_sync(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()>;
+    fn remove_file(&self, path: &Path) -> std::io::Result<()>;
+}
+
+/// The real filesystem used outside tests.
+struct StdFs;
+
+impl SaveFs for StdFs {
+    fn create_dir_all(&self, dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)
+    }
+
+    fn write_sync(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_file(path)
+    }
+}
+
+/// Monotonic per-process sequence so concurrent saves never share a temp file.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A unique temporary path beside `path`, so the final rename stays on one
+/// filesystem and therefore atomic.
+fn temp_sibling(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| SETTINGS_FILE.to_string());
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!("{name}.{}.{seq}.tmp", std::process::id()))
+}
+
+/// [`save_to`] over an injected filesystem seam.
+fn save_to_with(fs: &impl SaveFs, path: &Path, settings: &Settings) -> Result<()> {
+    let json = serde_json::to_string_pretty(settings).context("serializing settings to JSON")?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
+        fs.create_dir_all(parent)
             .with_context(|| format!("creating settings directory {}", parent.display()))?;
     }
-    let json = serde_json::to_string_pretty(settings).context("serializing settings to JSON")?;
-    std::fs::write(path, json)
-        .with_context(|| format!("writing settings file {}", path.display()))?;
+    let temp = temp_sibling(path);
+    fs.write_sync(&temp, json.as_bytes())
+        .inspect_err(|_| {
+            let _ = fs.remove_file(&temp);
+        })
+        .with_context(|| format!("writing temporary settings file {}", temp.display()))?;
+    fs.rename(&temp, path)
+        .inspect_err(|_| {
+            let _ = fs.remove_file(&temp);
+        })
+        .with_context(|| format!("replacing settings file {}", path.display()))?;
     Ok(())
 }
 
@@ -372,6 +441,105 @@ mod tests {
         save_to(&path, &settings).unwrap();
         let loaded = load_from(&path).unwrap();
         assert_eq!(loaded, settings);
+    }
+
+    /// A filesystem fake that delegates to the real filesystem but fails the
+    /// selected operation, so each save failure mode is deterministic.
+    struct FailingFs {
+        fail_write: bool,
+        fail_rename: bool,
+    }
+
+    impl SaveFs for FailingFs {
+        fn create_dir_all(&self, dir: &Path) -> std::io::Result<()> {
+            StdFs.create_dir_all(dir)
+        }
+
+        fn write_sync(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+            if self.fail_write {
+                return Err(std::io::Error::other("injected temporary-write failure"));
+            }
+            StdFs.write_sync(path, bytes)
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            if self.fail_rename {
+                return Err(std::io::Error::other("injected rename failure"));
+            }
+            StdFs.rename(from, to)
+        }
+
+        fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+            StdFs.remove_file(path)
+        }
+    }
+
+    /// Names of every entry in `dir`, for asserting no temp files linger.
+    fn dir_entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn settings_with_volume(volume: u8) -> Settings {
+        Settings {
+            volume: VolumePercent::new(volume).unwrap(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn successful_save_is_atomic_and_leaves_no_temporary_files() {
+        let dir = TempDir::new();
+        let path = dir.path().join("settings.json");
+        save_to(&path, &settings_with_volume(42)).unwrap();
+
+        // Only the final file remains; the sibling temp file was renamed away.
+        assert_eq!(dir_entries(dir.path()), vec!["settings.json"]);
+        assert_eq!(load_from(&path).unwrap(), settings_with_volume(42));
+    }
+
+    #[test]
+    fn failed_temporary_write_preserves_the_existing_settings_file() {
+        let dir = TempDir::new();
+        let path = dir.path().join("settings.json");
+        save_to(&path, &settings_with_volume(30)).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let fs = FailingFs {
+            fail_write: true,
+            fail_rename: false,
+        };
+        let result = save_to_with(&fs, &path, &settings_with_volume(99));
+
+        assert!(result.is_err());
+        // The prior file is byte-identical and no temp file is left behind.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(dir_entries(dir.path()), vec!["settings.json"]);
+        assert_eq!(load_from(&path).unwrap(), settings_with_volume(30));
+    }
+
+    #[test]
+    fn failed_rename_preserves_the_existing_settings_file_and_cleans_temp() {
+        let dir = TempDir::new();
+        let path = dir.path().join("settings.json");
+        save_to(&path, &settings_with_volume(30)).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let fs = FailingFs {
+            fail_write: false,
+            fail_rename: true,
+        };
+        let result = save_to_with(&fs, &path, &settings_with_volume(99));
+
+        assert!(result.is_err());
+        // The written temp file was cleaned up and the prior file survives.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert_eq!(dir_entries(dir.path()), vec!["settings.json"]);
+        assert_eq!(load_from(&path).unwrap(), settings_with_volume(30));
     }
 
     #[test]

@@ -465,6 +465,8 @@ pub enum Action {
     SetSearchStatus(SearchStatus),
     /// Set the offline flag (network/Radio Browser reachability).
     SetOffline(bool),
+    /// Record the recoverable outcome of a controller settings-save attempt.
+    SettingsSaveResult { failed: bool },
     /// Apply an audio runtime event to playback state.
     Audio(AudioEvent),
     /// Toggle the temporary Signal View display mode (`z`).
@@ -555,6 +557,9 @@ pub struct App {
     /// does. Process-local presentation state; never persisted.
     status_viz: Option<VizFrame>,
     offline: bool,
+    /// Whether the most recent settings save failed. Nonfatal: playback
+    /// continues and the flag clears on the next successful save.
+    settings_save_failed: bool,
     search_query: String,
     search_status: SearchStatus,
     now_playing_title: Option<String>,
@@ -594,6 +599,7 @@ impl App {
             low_power_orbit: None,
             status_viz: None,
             offline: false,
+            settings_save_failed: false,
             search_query: String::new(),
             search_status: SearchStatus::Idle,
             now_playing_title: None,
@@ -638,6 +644,7 @@ impl App {
             Action::SetSearchQuery(query) => self.search_query = query,
             Action::SetSearchStatus(status) => self.search_status = status,
             Action::SetOffline(offline) => self.offline = offline,
+            Action::SettingsSaveResult { failed } => self.settings_save_failed = failed,
             Action::Audio(event) => self.apply_audio(event),
             Action::ToggleSignalView => self.toggle_signal_view(),
             Action::LeaveSignalView => self.display_mode = DisplayMode::Normal,
@@ -1465,6 +1472,11 @@ impl App {
         self.offline
     }
 
+    /// Whether the most recent settings save failed (shown as a footer notice).
+    pub fn settings_save_failed(&self) -> bool {
+        self.settings_save_failed
+    }
+
     /// The live search query text shown in the search strip.
     pub fn search_query(&self) -> &str {
         &self.search_query
@@ -1804,6 +1816,20 @@ mod tests {
             .iter()
             .map(|s| s.id.as_str().to_string())
             .collect()
+    }
+
+    #[test]
+    fn settings_save_failure_notice_sets_and_clears() {
+        // A failed save raises the nonfatal notice; the next successful save
+        // clears it, so the failure stays visible exactly while it is current.
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        assert!(!app.settings_save_failed());
+
+        app.apply(Action::SettingsSaveResult { failed: true });
+        assert!(app.settings_save_failed());
+
+        app.apply(Action::SettingsSaveResult { failed: false });
+        assert!(!app.settings_save_failed());
     }
 
     #[test]

@@ -995,7 +995,8 @@ fn volume_gauge_line<'a>(theme: &Theme, volume: u8, width: usize) -> Line<'a> {
     ])
 }
 
-/// Footer key hints plus network/offline state.
+/// Footer key hints plus network/offline state and the nonfatal
+/// settings-save-failure notice.
 fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact: bool) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -1041,6 +1042,16 @@ fn render_footer(app: &App, theme: &Theme, area: Rect, buf: &mut Buffer, compact
     }
 
     let mut spans = Vec::new();
+    // Leads the footer so it survives the compact tier, where trailing spans
+    // are clipped by the hint row.
+    if app.settings_save_failed() {
+        spans.push(Span::styled(
+            "● settings not saved  ",
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     for (key, label) in hints {
         spans.push(Span::styled(key, accent));
         spans.push(Span::styled(format!(" {label}  "), muted));
@@ -1688,6 +1699,31 @@ mod tests {
             assert!(
                 text.to_lowercase().contains("offline"),
                 "offline search status missing at {w}x{h}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_settings_save_notice_is_visible_in_every_tier() {
+        // A failed settings save is nonfatal but must stay visible: the footer
+        // carries the notice at every pane size until a later save succeeds.
+        let mut app = base_app();
+        app.apply(Action::SettingsSaveResult { failed: true });
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                text.contains("settings not saved"),
+                "settings save notice missing at {w}x{h}: {text}"
+            );
+        }
+
+        // A later successful save clears the notice everywhere.
+        app.apply(Action::SettingsSaveResult { failed: false });
+        for (w, h) in TIER_SIZES {
+            let text = buffer_text(&render_buffer(&app, w, h));
+            assert!(
+                !text.contains("settings not saved"),
+                "settings save notice must clear after success at {w}x{h}"
             );
         }
     }

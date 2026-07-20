@@ -750,7 +750,11 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   `O open pane`; the stage footer omits that duplicate while the table is open.
   `o`/`O` explicitly focuses the selected existing pane through
   `agent.focus` asynchronously while preserving the stage, table, selection,
-  and playback; it is allowed only for a selected `Connected` snapshot. While
+  and playback; it is allowed only for a selected `Connected` snapshot. At most
+  one focus request is in flight at a time: presses made while a request is
+  still running are ignored rather than queued, so a stalled socket cannot
+  accumulate detached workers or replay stale jumps, and the next press after a
+  request completes dispatches normally. While
   a live table is open, `r`/`R` opens an inline `Name`
   input seeded only from the selected agent's explicit Herdr name. Regular
   typing and Backspace edit the process-local input; Enter sends

@@ -148,7 +148,7 @@ search controls act on the focused pane.
 | `G` / `End` | jump to last station         |
 | `Enter`     | play selected station        |
 | `Space`     | stop / play toggle           |
-| `+` / `-`   | volume up / down             |
+| `+` / `-`   | volume up / down (`=` / `_` also work) |
 | `f`         | toggle favorite              |
 | `t`         | cycle theme                  |
 | `v`         | cycle visualizer mode        |
@@ -213,9 +213,12 @@ station. It hides the Search, Browse, and Stations UI and presents the current
 station center-stage with a large visualizer that fills the largest region of
 the screen. Press `z` or `Esc` to return to the normal UI; `q` still quits.
 
-While Signal View is active, only `Space` (play/stop), `+`/`-` (volume), `v`
+While Signal View is active, only `Space` (play/stop), `+`/`-` (volume — `=`
+and `_` work as aliases), `v`
 (visualizer mode), `t` (theme), and `f` (favorite) stay active — `f` favorites
-the station shown on screen. A favorited current station uses the same `★` marker
+the station shown on screen. The station or ICY title stays centered and
+never takes more than two lines; longer titles are ellipsized instead of
+pushing the layout out of view. A favorited current station uses the same `★` marker
 as the station list; non-favorites show no marker. Discovery, navigation, and
 focus keys are ignored. Signal View is a temporary view: it is not saved across
 launches and has no command-line flag. With no current station it shows a short
@@ -546,81 +549,10 @@ for findings and caveats.
 - [`herdr-plugin.toml`](herdr-plugin.toml) — official Herdr plugin manifest
 - [`docs/herdr-plugin.md`](docs/herdr-plugin.md) — Herdr plugin manual
   (install, verify, open, local dev, update, uninstall, troubleshooting)
-- [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
-  — Herdr Agent Pulse integration design (packaging, eligibility, monitoring;
-  presentation superseded by the Lissajous Scope design)
-- [`docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md)
-  — Agent Planets Stage design (current stage chrome and disc-mask
-  decision; its permanent Side Tags are superseded by the details-modal
-  design and its status rings by the orbiting-particles-focus design as
-  revised)
-- [`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md)
-  — Agent Planets details modal design (current selected-agent details
-  decision)
-- [`docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md)
-  — Agent Planets surface status design (current interior-only status
-  decision; replaced the status atmospheres)
-- [`docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md)
-  — Agent Planets solar orbit design (current planet-motion decision:
-  static central sun and Working-only invisible orbits; replaced
-  audio-driven planet body motion)
-- [`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md)
-  — Agent Planets orbiting particles and focus design (its selection focus
-  brackets remain current; historical for status — its thin status
-  atmospheres are superseded by the surface-status design)
-- [`docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md)
-  — Agent Planets drifting particles design (historical; never implemented,
-  superseded by the orbiting-particles-focus design)
-- [`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md)
-  — Agent Pulse Pocket Planets design (surface palette and privacy
-  contracts current; its stage layout, shadowed presentation, selected-only
-  callout, and state-ring language are superseded by the later Agent
-  Planets designs)
-- [`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md)
-  — Agent Pulse Ringed Planets design (historical; planet scale/surface
-  presentation superseded by Pocket Planets, its selected callout by the
-  Agent Planets details modal, and its ring/satellite state language by
-  the Agent Planets interior surface status, via the interim status
-  atmospheres)
-- [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
-  — Agent Pulse Lissajous Scope design (current Dual Phase Scope decision;
-  its agent-frame presentation is superseded by the planet designs)
-- [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
-  — Agent Pulse Kinetic Collage design (historical; presentation superseded
-  by the Lissajous Scope design)
-- [`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md)
-  — Agent Pulse Bioluminescent Current design (superseded by Kinetic Collage)
-- [`docs/superpowers/plans/2026-06-27-radio-replacement.md`](docs/superpowers/plans/2026-06-27-radio-replacement.md)
-  — implementation plan
-- [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
-  — Herdr Agent Pulse implementation plan
-- [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md)
-  — Kinetic Collage implementation plan
-- [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md)
-  — Lissajous Scope implementation plan
-- [`docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md)
-  — Ringed Planets implementation plan (historical; docs pass superseded by
-  Pocket Planets)
-- [`docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md)
-  — Pocket Planets implementation plan (historical; presentation superseded
-  by the Agent Planets stage plan)
-- [`docs/superpowers/plans/2026-07-19-agent-planets-stage.md`](docs/superpowers/plans/2026-07-19-agent-planets-stage.md)
-  — Agent Planets Stage implementation plan (current for the stage chrome;
-  its Side Tag and status-ring tasks are superseded by the later plans
-  below)
-- [`docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md`](docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md)
-  — Agent Planets details modal implementation plan (current)
-- [`docs/superpowers/plans/2026-07-19-agent-planets-drifting-particles.md`](docs/superpowers/plans/2026-07-19-agent-planets-drifting-particles.md)
-  — Agent Planets drifting particles implementation plan (historical; never
-  implemented)
-- [`docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md`](docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md)
-  — Agent Planets orbiting particles and focus implementation plan (its
-  focus brackets remain current; historical for status — its atmospheres
-  are superseded by the surface-status plan)
-- [`docs/superpowers/plans/2026-07-19-agent-planets-surface-status.md`](docs/superpowers/plans/2026-07-19-agent-planets-surface-status.md)
-  — Agent Planets surface status implementation plan (current)
-- [`docs/superpowers/plans/2026-07-19-agent-planets-solar-orbit.md`](docs/superpowers/plans/2026-07-19-agent-planets-solar-orbit.md)
-  — Agent Planets solar orbit implementation plan (current)
+
+The dated per-iteration superpowers design and plan documents were
+consolidated into the canonical docs above and removed; the originals are
+preserved in git history.
 
 ## Verification
 

@@ -16,49 +16,16 @@ Start here:
    direction from the design deck.
 4. [`docs/audio-spike.md`](docs/audio-spike.md) — native audio spike results and
    playback caveats.
-5. [`docs/superpowers/plans/2026-06-27-radio-replacement.md`](docs/superpowers/plans/2026-06-27-radio-replacement.md)
-   — implementation plan for the replacement.
-6. [`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`](docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md)
-   and [`docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md`](docs/superpowers/plans/2026-07-16-herdr-agent-pulse.md)
-   — original design and plan for the optional Herdr Agent Pulse integration
-   (packaging, eligibility, monitoring); its presentation — and the interim
-   [`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`](docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md)
-   / [`docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md`](docs/superpowers/plans/2026-07-18-agent-pulse-kinetic-collage.md)
-   presentation — is superseded by
-   [`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md)
-   and [`docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md`](docs/superpowers/plans/2026-07-19-agent-pulse-lissajous-scope.md),
-   which remain current for the Dual Phase Scope. The Lissajous design's
-   square agent frames were replaced by the historical
-   [`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md)
-   / [`docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-ringed-planets.md),
-   whose planet scale/surface presentation is in turn superseded by
-   [`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`](docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md)
-   and [`docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md`](docs/superpowers/plans/2026-07-19-agent-pulse-pocket-planets.md);
-   the Pocket Planets stage layout, shadowed planet geometry, and
-   selected-only callout are superseded by the Agent Planets Stage design
-   and plan. Its permanent Side Tags are in turn superseded by the current
-   [`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md)
-   and [`docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md`](docs/superpowers/plans/2026-07-19-agent-planets-details-modal.md),
-   and its ring/arc/satellite status language by
-   [`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md)
-   and [`docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md`](docs/superpowers/plans/2026-07-19-agent-planets-orbiting-particles-focus.md)
-   as revised — the approved revision dropped that design's orbiting
-   particles, shipping thin per-status atmospheres and selection focus
-   brackets instead (the unimplemented drifting-particles design/plan pair
-   is historical). Its selection focus brackets remain current, but its
-   status atmospheres are in turn superseded by the interior-only surface
-   status of the current
-   [`docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md)
-   and [`docs/superpowers/plans/2026-07-19-agent-planets-surface-status.md`](docs/superpowers/plans/2026-07-19-agent-planets-surface-status.md),
-   and audio-driven planet body motion is superseded by the static central
-   sun and Working-only invisible orbits of the current
-   [`docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`](docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md)
-   and [`docs/superpowers/plans/2026-07-19-agent-planets-solar-orbit.md`](docs/superpowers/plans/2026-07-19-agent-planets-solar-orbit.md).
-   Read the current details-modal, surface-status, and solar-orbit designs
-   and plans (plus the orbiting-particles-focus design for the focus
-   brackets, the Lissajous Scope
-   design for the scope itself and the Pocket Planets design for the Banded
-   Worlds surface palette) before changing Agent Pulse presentation.
+5. [`docs/herdr-plugin.md`](docs/herdr-plugin.md) — Herdr plugin operational
+   manual (install, verify, open, develop, update, uninstall, troubleshoot).
+
+Before changing Agent Pulse presentation, read the Agent Pulse sections of
+`docs/ui-design-decisions.md` and `docs/SPEC.md`; they record the current
+Agent Planets stage decisions (Dual Phase Scope, disc-mask planets, details
+modal, interior surface status, solar orbits, focus brackets) and the
+superseded presentation lineage. The dated per-iteration superpowers design
+and plan documents were consolidated into the canonical docs above and
+removed; the originals are preserved in git history.
 
 Before changing playback, search, persistence, themes, layout, module
 boundaries, or user-facing controls, re-read the relevant doc first.
@@ -81,19 +48,11 @@ Stay inside the MVP unless the user explicitly expands scope:
 - three responsive layout tiers;
 - Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes;
 - the optional, read-only Herdr Agent Pulse companion when launched as the
-  official Herdr plugin (current designs:
-  `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
-  for the Dual Phase Scope and
-  `docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`
-  for the Agent Planets stage,
-  `docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`
-  for its selected-agent details presentation,
-  `docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`
-  for its interior-only surface status,
-  `docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`
-  for its static central sun and Working-only invisible orbits, and
-  `docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
-  as revised — no orbiting particles — for its selection focus brackets).
+  official Herdr plugin (current presentation: the Agent Planets stage over
+  the Dual Phase Scope — disc-mask planets, details modal, interior-only
+  surface status, static sun with Working-only invisible orbits, and
+  selection focus brackets — as recorded in `docs/ui-design-decisions.md`
+  and `docs/SPEC.md`).
   It only observes approved agent details via `agent.list` on the plugin's local Herdr
   socket (across that session's workspaces); it is not a daemon, remote
   control, or an internal plugin system.
@@ -215,9 +174,8 @@ Develop in small, testable slices.
 7. Update durable docs when documented behavior or boundaries change.
 8. Avoid opportunistic unrelated refactors.
 
-For non-trivial code changes, follow the existing implementation plan in
-`docs/superpowers/plans/2026-06-27-radio-replacement.md` unless the user asks to
-revise it.
+For non-trivial code changes, follow the scope, contracts, and verification
+status recorded in `docs/SPEC.md` unless the user asks to revise them.
 
 ### Delegated implementation/review workflow with asem
 
@@ -346,31 +304,9 @@ Update docs when changing:
 - audio architecture findings or spike conclusions: `docs/audio-spike.md`;
 - Herdr plugin packaging or Agent Pulse behavior: `README.md`,
   `docs/herdr-plugin.md` (the plugin install/open/update/uninstall and
-  troubleshooting manual), `docs/SPEC.md`,
-  and `docs/ui-design-decisions.md` (current agent details design record:
-  `docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`;
-  current interior surface-status design record:
-  `docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`;
-  current solar-orbit planet-motion design record:
-  `docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`;
-  current selection-focus design record:
-  `docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
-  as revised, without orbiting particles (its status atmospheres are
-  historical, superseded by the surface-status design);
-  Agent Planets stage design record:
-  `docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`;
-  Dual Phase Scope design record:
-  `docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`;
-  historical presentation records:
-  `docs/superpowers/specs/2026-07-19-agent-planets-drifting-particles-design.md`,
-  `docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`,
-  `docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`,
-  and
-  `docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`;
-  integration design record:
-  `docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`);
-- task order or implementation contracts:
-  `docs/superpowers/plans/2026-06-27-radio-replacement.md`.
+  troubleshooting manual), `docs/SPEC.md`, and `docs/ui-design-decisions.md`
+  (which holds the current Agent Planets presentation decisions and the
+  superseded lineage).
 
 `AGENTS.md` should stay focused on agent workflow and pointers to canonical
 docs.

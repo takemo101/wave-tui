@@ -134,8 +134,8 @@ Result:
 
 ## Recommendation
 
-Proceed with the replacement architecture from `docs/SPEC.md` and
-`docs/superpowers/plans/2026-06-27-radio-replacement.md`, with two adjustments:
+Proceed with the replacement architecture from `docs/SPEC.md`, with two
+adjustments:
 
 1. Do not use late-cli-style `/stream` URL appending for arbitrary Radio Browser
    station URLs.

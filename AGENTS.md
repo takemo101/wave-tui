@@ -96,6 +96,12 @@ Expected responsibility boundaries:
   requests; the only module that sees Herdr JSON or opaque pane ids.- `theme`: theme names and palette definitions.
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.
+  Agent Pulse lifecycle, display, and interaction state (connection ladder,
+  live agent table, selection, details modal, inline rename, focus/rename
+  notices, stale visual freeze, orbit phase) lives behind the private
+  `app::agent_pulse` substate. The core radio reducer only routes Agent Pulse
+  actions to it and never reaches into its fields, so no Herdr update can
+  move audio, search, settings, or station selection.
 - `ui`: Ratatui rendering only; do not put domain mutation logic here.
 - `cli`: CLI argument parsing, boundary parsing, and key mapping; it must not
   depend on terminal or adapter lifecycle details.

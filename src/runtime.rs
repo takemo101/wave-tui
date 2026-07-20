@@ -9,12 +9,14 @@
 //! The children are private: `debounce` (search scheduling policy),
 //! `persistence` (per-run save policy), `search_worker` (the blocking Radio
 //! Browser thread), `terminal` (raw-mode ownership), `splash` (lifecycle
-//! frames), `input` (key/mouse routing), and `event_loop` (render, poll, and
+//! frames), `key_policy` (pure per-mode key routing), `input` (the adapter
+//! boundary that applies a routed key), and `event_loop` (render, poll, and
 //! adapter draining).
 
 mod debounce;
 mod event_loop;
 mod input;
+mod key_policy;
 mod persistence;
 mod search_worker;
 mod splash;

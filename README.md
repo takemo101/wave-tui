@@ -53,8 +53,9 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   changes stay inside each disc; selecting one and pressing `Enter` opens an
   Agent table. It never reads agent output; explicit `o`/`O` may focus the
   selected live agent pane, while `r`/`R` can rename only its explicit display
-  name, and standalone
-  launches are completely unchanged (see [Herdr Agent Planets](#herdr-agent-planets-optional)).- **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
+  name, and standalone launches are completely unchanged (see [Herdr Agent
+  Planets](#herdr-agent-planets-optional)).
+- **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
 - **Resilient offline/error handling** — a failed online search shows a clear
@@ -437,6 +438,7 @@ socket. Failures are recoverable and never interrupt playback:
 
 The Agent Planets companion is observational except for explicit focus and
 explicit-name rename actions:
+
 - It polls only `agent.list`; an `o`/`O` press for a selected current planet
   may call `agent.focus`, and `r`/`R` then Enter may call `agent.rename` for
   that agent's explicit display name. It never reads pane output, prompts,

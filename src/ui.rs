@@ -2589,7 +2589,10 @@ mod tests {
         )]);
         app.apply(Action::ToggleAgentOverlay);
         let unselected = buffer_text(&render_buffer(&app, 120, 36));
-        assert!(!unselected.contains("research"));
+        assert!(
+            unselected.contains("research"),
+            "the explicit Herdr name labels its planet before the table opens"
+        );
         assert!(!unselected.contains("working"));
 
         app.apply(Action::SelectNextAgent);

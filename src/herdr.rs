@@ -71,6 +71,16 @@ pub enum FocusResult {
     NoSelection,
 }
 
+/// Recoverable outcome of an explicit request to rename the selected live
+/// agent. Raw Herdr errors and identifiers remain inside this adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameResult {
+    Renamed,
+    Unsupported,
+    Missing,
+    Unavailable,
+}
+
 /// The only agent-list fields that may reach the read-only details modal.
 /// Identity/location/session fields stay behind the private [`AgentId`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -214,15 +224,53 @@ fn agent_focus_request(request_id: u64, id: &AgentId) -> String {
     format!("{request}\n")
 }
 
+/// The sole Agent Planets metadata edit request. An empty user input becomes
+/// JSON null so Herdr clears the explicit name rather than storing whitespace.
+fn agent_rename_request(request_id: u64, id: &AgentId, name: Option<&str>) -> String {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id.to_string(),
+        "method": "agent.rename",
+        "params": { "target": id.pane_target(), "name": name },
+    });
+    format!("{request}\n")
+}
+
 /// Normalize a focus reply without passing raw JSON, server messages, or
 /// identifiers beyond this adapter boundary. The official protocol uses a
 /// JSON-RPC success result; an absent/moved target is any other server error.
 fn parse_agent_focus(line: &str) -> FocusResult {
+    match response_kind(line) {
+        ResponseKind::Success => FocusResult::Focused,
+        ResponseKind::Unsupported => FocusResult::Unsupported,
+        ResponseKind::Missing => FocusResult::Missing,
+        ResponseKind::Unavailable => FocusResult::Unavailable,
+    }
+}
+
+fn parse_agent_rename(line: &str) -> RenameResult {
+    match response_kind(line) {
+        ResponseKind::Success => RenameResult::Renamed,
+        ResponseKind::Unsupported => RenameResult::Unsupported,
+        ResponseKind::Missing => RenameResult::Missing,
+        ResponseKind::Unavailable => RenameResult::Unavailable,
+    }
+}
+
+/// Classify a JSON-RPC response without preserving its raw server text.
+enum ResponseKind {
+    Success,
+    Unsupported,
+    Missing,
+    Unavailable,
+}
+
+fn response_kind(line: &str) -> ResponseKind {
     let Ok(response) = serde_json::from_str::<serde_json::Value>(line) else {
-        return FocusResult::Unavailable;
+        return ResponseKind::Unavailable;
     };
     if response.get("result").is_some() {
-        return FocusResult::Focused;
+        return ResponseKind::Success;
     }
     if response
         .get("error")
@@ -230,14 +278,13 @@ fn parse_agent_focus(line: &str) -> FocusResult {
         .and_then(serde_json::Value::as_i64)
         == Some(-32601)
     {
-        FocusResult::Unsupported
+        ResponseKind::Unsupported
     } else if response.get("error").is_some() {
-        FocusResult::Missing
+        ResponseKind::Missing
     } else {
-        FocusResult::Unavailable
+        ResponseKind::Unavailable
     }
 }
-
 fn request_agent_list(context: &HerdrContext, request_id: u64) -> Option<Vec<AgentSnapshot>> {
     let mut stream = UnixStream::connect(&context.socket_path).ok()?;
     stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT)).ok()?;
@@ -281,6 +328,25 @@ fn request_agent_focus(context: &HerdrContext, id: &AgentId) -> FocusResult {
     }
 }
 
+fn request_agent_rename(context: &HerdrContext, id: &AgentId, name: Option<&str>) -> RenameResult {
+    let Ok(mut stream) = UnixStream::connect(&context.socket_path) else {
+        return RenameResult::Unavailable;
+    };
+    if stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT)).is_err()
+        || stream.set_write_timeout(Some(SOCKET_IO_TIMEOUT)).is_err()
+        || stream
+            .write_all(agent_rename_request(0, id, name).as_bytes())
+            .is_err()
+    {
+        return RenameResult::Unavailable;
+    }
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) | Err(_) => RenameResult::Unavailable,
+        Ok(_) => parse_agent_rename(line.trim_end()),
+    }
+}
 /// Handle for the background polling thread. Dropping it (or calling
 /// [`HerdrMonitor::stop`]) wakes the thread and joins it.
 pub(crate) struct HerdrMonitor {
@@ -288,6 +354,8 @@ pub(crate) struct HerdrMonitor {
     events: mpsc::Receiver<MonitorEvent>,
     focus_events: mpsc::Receiver<FocusResult>,
     focus_event_tx: mpsc::Sender<FocusResult>,
+    rename_events: mpsc::Receiver<RenameResult>,
+    rename_event_tx: mpsc::Sender<RenameResult>,
     stop: Option<mpsc::Sender<()>>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -304,6 +372,12 @@ impl HerdrMonitor {
         &self.focus_events
     }
 
+    /// Typed results of explicit background rename requests. They remain
+    /// separate from polling, so a slow or failed edit cannot delay recovery.
+    pub(crate) fn rename_events(&self) -> &mpsc::Receiver<RenameResult> {
+        &self.rename_events
+    }
+
     /// Dispatch a focus request through the local socket without blocking the
     /// UI event loop. The one-shot worker keeps the same bounded I/O and
     /// recoverable result semantics as polling, then returns only a typed
@@ -316,6 +390,15 @@ impl HerdrMonitor {
         });
     }
 
+    /// Dispatch an explicit name edit without blocking rendering or keyboard
+    /// input. Only the typed result crosses back to the controller.
+    pub(crate) fn rename_agent(&self, id: AgentId, name: Option<String>) {
+        let context = self.context.clone();
+        let result_tx = self.rename_event_tx.clone();
+        thread::spawn(move || {
+            let _ = result_tx.send(request_agent_rename(&context, &id, name.as_deref()));
+        });
+    }
     pub(crate) fn stop(mut self) {
         self.shutdown();
     }
@@ -340,6 +423,7 @@ impl Drop for HerdrMonitor {
 pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
     let (event_tx, event_rx) = mpsc::channel();
     let (focus_event_tx, focus_events) = mpsc::channel();
+    let (rename_event_tx, rename_events) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let monitor_context = context.clone();
     let handle = thread::spawn(move || {
@@ -360,6 +444,8 @@ pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
         events: event_rx,
         focus_events,
         focus_event_tx,
+        rename_events,
+        rename_event_tx,
         stop: Some(stop_tx),
         handle: Some(handle),
     }
@@ -644,6 +730,25 @@ mod tests {
         assert_eq!(value["method"], "agent.focus");
         assert_eq!(value["params"], serde_json::json!({ "target": "pane-7" }));
         assert!(!body.contains("other-workspace"));
+    }
+
+    #[test]
+    fn rename_request_targets_only_the_opaque_pane_and_clears_blank_names_with_null() {
+        let id = AgentId::new("workspace-private", "pane-7");
+        let named: serde_json::Value =
+            serde_json::from_str(agent_rename_request(9, &id, Some("Research")).trim_end())
+                .expect("rename request must be JSON");
+        assert_eq!(named["method"], "agent.rename");
+        assert_eq!(
+            named["params"],
+            serde_json::json!({ "target": "pane-7", "name": "Research" })
+        );
+        assert!(!named.to_string().contains("workspace-private"));
+
+        let cleared: serde_json::Value =
+            serde_json::from_str(agent_rename_request(10, &id, None).trim_end())
+                .expect("clear rename request must be JSON");
+        assert_eq!(cleared["params"]["name"], serde_json::Value::Null);
     }
 
     #[test]

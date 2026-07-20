@@ -252,32 +252,52 @@ Implications:
   status detail. The body palette never encodes status.
   Stale freezes the last live composition — traces, the sun, discs at
   frozen orbit positions, interior status, and brackets — dimmed under a
-  quiet `· reconnecting` note on the stage heading; unavailable closes
-  details and hides the sun and planets behind one calm
-  `agents · unavailable · retrying` line while the stage chrome stays.
-- **On-demand details, no permanent labels.** The stage field renders no
-  agent text. Selecting a planet (`Tab`/`↓`/`j` for the next planet,
+  quiet `· reconnecting` note on the stage heading; an open table freezes
+  and dims with the same snapshot; unavailable closes the table and hides
+  the sun and planets behind one calm `agents · unavailable · retrying` line
+  while the stage chrome stays.
+- **On-demand table, explicit-name-only labels.** The stage field renders no
+  agent text except an explicit Herdr name as a one-line, ellipsized label
+  directly beneath its planet disc. Unnamed planets remain label-free; labels
+  stay within their planet tiles and are omitted when their candidate rectangles
+  collide with a prior displayed label, the sun, or stage chrome. Selecting a
+  planet (`Tab`/`↓`/`j` for the next planet,
   wrapping last → first, and `Shift+Tab`/`↑`/`k` for the previous,
   wrapping first → last — cyclic only while the stage selection is
   interactive — or a click on its disc body cells) marks it with four
   theme-colored corner brackets around its tile: a foreground-only focus
   treatment with no painted selection background, decorative and never a
   hit target, and the identity surface is never restyled by selection. `Enter`
-  opens a centered read-only Agent details record for the selected live
-  planet showing only non-empty `name`, `agent`, normalized `status`, and
-  `activity` (`terminal_title`) rows; its modal footer shows `O open pane`,
-  while the stage footer shows that focus hint only when the record is closed.
-  `o`/`O` focuses that selected current pane without closing the record or
-  changing selection. Unsupported,
-  missing/moved, unavailable, and no-selection attempts show only short
-  modal-local feedback. `Enter`/`Esc` close only the record and `a` closes
-  the record and the stage. Pane ids, workspace ids, working directories,
-  terminal/session ids, and raw status never render.
-- **Player-first input.** The stage consumes search and station
+  opens a centered `Name | Agent | Status | Activity` table for every active
+  agent in the current planet display order. It is a native
+  table with responsive `Name` 25%, `Agent` 20%, `Status` 15%, and `Activity`
+  40% columns; all four remain on narrow panes with cell ellipsis instead of
+  column removal. The modal uses 90% of the field, capped at 100 cells, and a
+  scrolling maximum of ten rows keeps the shared selected planet row in view.
+  Selection uses the active theme's normal selected-row style, not a marker
+  glyph. The modal has outer borders, no header separator or bottom margin,
+  and no full cell grid. Its dedicated full-width modal footer owns `O open
+  pane`; the stage footer omits that duplicate while the table is open.
+  `o`/`O` focuses the selected current pane without closing the table or
+  changing selection. In a live table, `r`/`R` opens an inline `Name` input
+  seeded from the selected explicit Herdr name; typing/Backspace edit it and
+  Enter asynchronously sends `agent.rename`. Blank input clears the explicit
+  name as JSON `null`; success updates the in-memory row immediately while a
+  later `agent.list` stays authoritative. Failures retain input with short
+  local feedback; `Esc` cancels only the input while leaving table/stage open;
+  stale retains but disables it, and unavailable closes it with the table.
+  Unsupported, missing/moved, unavailable, and no-selection
+  attempts show only short modal-local feedback. `Enter`/`Esc` close only
+  the table when no inline input is open, and `a` closes the table and the
+  stage. Pane ids,
+  workspace ids, working directories, terminal/session ids, and raw status
+  never render.- **Player-first input.** The stage consumes search and station
   navigation/selection keys, but the documented global player shortcuts —
   `Space`, `+`/`-`, `f`, `t`, and `v` — fall through with their exact
-  normal semantics while details are closed (an open details record
-  consumes them). `z` is consumed as a no-op while the stage is open and
+  normal semantics while the table is closed (an open table consumes them).
+  Rename mode also consumes table navigation, focus, and player controls while
+  accepting ordinary text input; only `q`/`Ctrl+C` still quit. `z` is consumed
+  as a no-op while the stage is open and
   never enters Single View from it; outside the stage `z` keeps its normal
   Signal View toggle. Mouse clicks only select planets (their disc body
   cells), and

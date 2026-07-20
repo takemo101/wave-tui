@@ -148,14 +148,22 @@ does nothing.
 
 When active, the integration polls the `agent.list` API on the session's
 local Unix socket every 5 seconds and shows every agent that session reports,
-across its workspaces. It never reads pane output and persists nothing. The
-sole explicit control is `o`/`O` from Agent Planets: for a selected current
-agent, it may request `agent.focus` for that existing pane. Missing/moved
-panes, socket failures, and unsupported Herdr (update to 0.7.0+) remain local
-recoverable notices; it never creates, restarts, closes, or sends text to a
-pane. Disable it for one run with `--no-agent-pulse` (never written to
-settings).
-
+across its workspaces. In the stage field, only an explicit Herdr name may
+render: as a one-line, ellipsized label directly beneath that agent's planet
+within its tile. Unnamed planets remain label-free, and a candidate label is
+omitted if it would collide with an earlier displayed label, the sun, or stage
+chrome. It never reads pane output and persists nothing. The explicit controls
+are `o`/`O` from Agent Planets, which may request
+`agent.focus` for the selected current pane, and `r`/`R` then Enter in its
+Agent table, which may request `agent.rename` for that agent's explicit display
+name. Rename is asynchronous; blank input clears the name as JSON `null`,
+`Esc` cancels only the input, and only short local feedback is shown for
+failures. Neither control creates,
+restarts, closes, or sends pane input to a pane; missing/moved panes, socket
+failures, and unsupported Herdr (update to 0.7.0+) remain recoverable local
+notices. Stale state disables rename while retaining its input; unavailable
+closes the table/input. Disable the integration for one run with
+`--no-agent-pulse` (never written to settings).
 ## Troubleshooting
 
 **`herdr plugin install` fails during the build.** The build step runs

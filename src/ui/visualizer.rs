@@ -412,7 +412,7 @@ mod tests {
     use crate::app::{Action, App};
     use crate::audio::AudioEvent;
     use crate::catalog::Catalog;
-    use crate::model::{VisualizerMode, VizFrame};
+    use crate::model::{PlaybackRequestSeq, VisualizerMode, VizFrame};
     use crate::settings::Settings;
     use crate::theme::{Theme, ThemeName};
     use ratatui::buffer::Buffer;
@@ -420,6 +420,18 @@ mod tests {
 
     fn base_app() -> App {
         App::new(Settings::default(), Catalog::curated())
+    }
+
+    /// Feed a visualizer frame to `app`, starting playback first if needed:
+    /// frames are only accepted for the currently expected playback request.
+    fn push_frame(app: &mut App, frame: VizFrame) {
+        if app.playback_request().is_none() {
+            app.apply(Action::PlaySelected(PlaybackRequestSeq::new().next_id()));
+        }
+        let request = app
+            .playback_request()
+            .expect("playback started for the frame fixture");
+        app.apply(Action::Audio(AudioEvent::Viz { request, frame }));
     }
 
     /// Flatten a buffer's cell symbols into newline-separated text.
@@ -465,11 +477,10 @@ mod tests {
     /// Apply a steady viz frame whose bands are all `level`.
     fn with_flat_frame(level: f32, bands: usize) -> App {
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![level; bands],
-            level,
-            vec![level; bands],
-        ))));
+        push_frame(
+            &mut app,
+            VizFrame::new(vec![level; bands], level, vec![level; bands]),
+        );
         app
     }
 
@@ -578,11 +589,14 @@ mod tests {
         // and rendering the same frame twice yields an identical buffer (symbols
         // and colors), with no RNG/time/tick state.
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.3, 0.6, 0.9, 0.2, 0.7, 1.0, 0.4, 0.5],
-            0.6,
-            vec![0.0; 8],
-        ))));
+        push_frame(
+            &mut app,
+            VizFrame::new(
+                vec![0.3, 0.6, 0.9, 0.2, 0.7, 1.0, 0.4, 0.5],
+                0.6,
+                vec![0.0; 8],
+            ),
+        );
         let first = render_spectrum_buffer(&app, 40, 12);
         let second = render_spectrum_buffer(&app, 40, 12);
         assert_eq!(first, second, "SpectrumStack render is not deterministic");
@@ -596,11 +610,7 @@ mod tests {
         bands[0] = 1.0; // loud band
         bands[15] = 0.25; // quiet band
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            bands,
-            0.5,
-            vec![0.0; 16],
-        ))));
+        push_frame(&mut app, VizFrame::new(bands, 0.5, vec![0.0; 16]));
         let h = 16u16;
         let buf = render_spectrum_buffer(&app, 16, h);
         let col_height = |x: u16| {
@@ -653,13 +663,9 @@ mod tests {
         // Silent/empty frames stay calm: no particles at all. Also safe for tiny
         // and zero-sized panes.
         let mut silent = base_app();
-        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        push_frame(&mut silent, VizFrame::silent(16));
         let mut empty = base_app();
-        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            Vec::<f32>::new(),
-            0.0,
-            vec![],
-        ))));
+        push_frame(&mut empty, VizFrame::new(Vec::<f32>::new(), 0.0, vec![]));
         for app in [&silent, &empty] {
             for (w, h) in [(0, 0), (1, 1), (2, 4), (48, 16)] {
                 let text = buffer_text(&render_spectrum_buffer(app, w, h));
@@ -743,11 +749,7 @@ mod tests {
         // assert per-column coverage (each column carries at least one dust cell).
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 4],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 4], 1.0, vec![]));
         let area = Rect::new(0, 0, 40, 6);
         let mut buf = Buffer::empty(area);
         render_spectrum(&theme, &app, area, &mut buf);
@@ -772,14 +774,10 @@ mod tests {
         let theme = Theme::for_name(ThemeName::Minimal);
         // Silent frame: bands present but zero, so no dust is drawn.
         let mut silent = base_app();
-        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        push_frame(&mut silent, VizFrame::silent(16));
         // Empty frame: no bands at all.
         let mut empty = base_app();
-        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            Vec::<f32>::new(),
-            0.0,
-            vec![],
-        ))));
+        push_frame(&mut empty, VizFrame::new(Vec::<f32>::new(), 0.0, vec![]));
 
         for app in [&silent, &empty] {
             for (w, h) in [(1, 1), (2, 1), (1, 4), (40, 1)] {
@@ -801,11 +799,7 @@ mod tests {
         // The default SpectrumStack draws a particle field; cycling to PeakDots
         // routes to a distinct renderer that emphasizes the per-column peak.
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 8],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 8], 1.0, vec![]));
         assert_eq!(app.visualizer_mode(), VisualizerMode::SpectrumStack);
 
         let stack_text = buffer_text(&render_viz_buffer(&app, 32, 8));
@@ -838,11 +832,7 @@ mod tests {
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut app = base_app();
         app.apply(Action::CycleVisualizerMode); // SpectrumStack -> PeakDots
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 4],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 4], 1.0, vec![]));
         let area = Rect::new(0, 0, 40, 6);
         let mut buf = Buffer::empty(area);
         render_peak_dots(&theme, &app, area, &mut buf);
@@ -864,11 +854,7 @@ mod tests {
         let mut app = base_app();
         app.apply(Action::CycleTheme); // Minimal -> Neon
         app.apply(Action::CycleVisualizerMode); // -> PeakDots
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 8],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 8], 1.0, vec![]));
         let theme = app.theme().theme();
         let buf = render_viz_buffer(&app, 30, 8);
         assert!(
@@ -888,11 +874,7 @@ mod tests {
         let mut app = base_app();
         app.apply(Action::CycleVisualizerMode); // SpectrumStack -> PeakDots
         for magnitude in [0.2_f32, 0.4, 0.6] {
-            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-                [magnitude],
-                magnitude,
-                [],
-            ))));
+            push_frame(&mut app, VizFrame::new([magnitude], magnitude, []));
         }
 
         let area = Rect::new(0, 0, 1, 10);
@@ -912,11 +894,7 @@ mod tests {
         let mut app = base_app();
         app.apply(Action::CycleVisualizerMode); // SpectrumStack -> PeakDots
         for _ in 0..3 {
-            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-                [1.0_f32],
-                1.0,
-                [],
-            ))));
+            push_frame(&mut app, VizFrame::new([1.0_f32], 1.0, []));
         }
 
         let area = Rect::new(0, 0, 1, 6);
@@ -931,14 +909,10 @@ mod tests {
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut silent = base_app();
         silent.apply(Action::CycleVisualizerMode);
-        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        push_frame(&mut silent, VizFrame::silent(16));
         let mut empty = base_app();
         empty.apply(Action::CycleVisualizerMode);
-        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            Vec::<f32>::new(),
-            0.0,
-            vec![],
-        ))));
+        push_frame(&mut empty, VizFrame::new(Vec::<f32>::new(), 0.0, vec![]));
 
         for app in [&silent, &empty] {
             for (w, h) in [(1, 1), (2, 1), (1, 4), (40, 1)] {
@@ -962,11 +936,7 @@ mod tests {
         // distinct from both the filled SpectrumStack bars and the single
         // PeakDots dot.
         let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 8],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 8], 1.0, vec![]));
 
         let skyline_text = buffer_text(&render_viz_buffer(&app, 32, 8));
         assert!(
@@ -988,11 +958,7 @@ mod tests {
         );
 
         let mut stack = base_app();
-        stack.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 8],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut stack, VizFrame::new(vec![1.0_f32; 8], 1.0, vec![]));
         let stack_text = buffer_text(&render_viz_buffer(&stack, 32, 8));
         assert_ne!(
             stack_text, skyline_text,
@@ -1006,11 +972,7 @@ mod tests {
         // shared full-width sampling helper, not just bands.len() cells.
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 4],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 4], 1.0, vec![]));
         let area = Rect::new(0, 0, 40, 6);
         let mut buf = Buffer::empty(area);
         render_skyline_peaks(&theme, &app, area, &mut buf);
@@ -1031,11 +993,7 @@ mod tests {
         // it, so the silhouette reads as a digital skyline rather than a solid bar.
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 4],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 4], 1.0, vec![]));
         let area = Rect::new(0, 0, 8, 6);
         let mut buf = Buffer::empty(area);
         render_skyline_peaks(&theme, &app, area, &mut buf);
@@ -1075,11 +1033,7 @@ mod tests {
         while app.visualizer_mode() != VisualizerMode::SkylinePeaks {
             app.apply(Action::CycleVisualizerMode);
         }
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 8],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0_f32; 8], 1.0, vec![]));
         let theme = app.theme().theme();
         let buf = render_viz_buffer(&app, 30, 8);
         assert!(
@@ -1094,13 +1048,9 @@ mod tests {
     fn skyline_peaks_is_safe_for_tiny_panes_and_silent_frames() {
         let theme = Theme::for_name(ThemeName::Minimal);
         let mut silent = app_in_mode(VisualizerMode::SkylinePeaks);
-        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+        push_frame(&mut silent, VizFrame::silent(16));
         let mut empty = app_in_mode(VisualizerMode::SkylinePeaks);
-        empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            Vec::<f32>::new(),
-            0.0,
-            vec![],
-        ))));
+        push_frame(&mut empty, VizFrame::new(Vec::<f32>::new(), 0.0, vec![]));
 
         for app in [&silent, &empty] {
             for (w, h) in [(0u16, 0u16), (1, 1), (2, 1), (1, 4), (40, 1)] {
@@ -1122,11 +1072,10 @@ mod tests {
         // WaveScope draws one trace point per column from VizFrame::waveform; a
         // non-flat waveform produces a trace that varies in height.
         let mut app = app_in_mode(VisualizerMode::WaveScope);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![],
-            0.0,
-            vec![-1.0, -0.5, 0.0, 0.5, 1.0],
-        ))));
+        push_frame(
+            &mut app,
+            VizFrame::new(vec![], 0.0, vec![-1.0, -0.5, 0.0, 0.5, 1.0]),
+        );
         let text = buffer_text(&render_viz_buffer(&app, 16, 7));
         assert!(text.contains('•'), "wave scope trace missing: {text}");
         assert!(
@@ -1141,11 +1090,7 @@ mod tests {
         // silence and must render identically — a single baseline row.
         let render = |wf: Vec<f32>| {
             let mut app = app_in_mode(VisualizerMode::WaveScope);
-            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-                vec![],
-                0.0,
-                wf,
-            ))));
+            push_frame(&mut app, VizFrame::new(vec![], 0.0, wf));
             buffer_text(&render_viz_buffer(&app, 16, 7))
         };
         let empty = render(vec![]);
@@ -1164,11 +1109,10 @@ mod tests {
     #[test]
     fn wave_scope_fills_full_pane_width() {
         let mut app = app_in_mode(VisualizerMode::WaveScope);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![],
-            0.0,
-            vec![0.2, -0.2, 0.6, -0.6],
-        ))));
+        push_frame(
+            &mut app,
+            VizFrame::new(vec![], 0.0, vec![0.2, -0.2, 0.6, -0.6]),
+        );
         let (w, h) = (40u16, 8u16);
         let buf = render_viz_buffer(&app, w, h);
         for x in 0..w {
@@ -1182,11 +1126,7 @@ mod tests {
     #[test]
     fn mirror_wave_is_symmetric_around_center() {
         let mut app = app_in_mode(VisualizerMode::MirrorWave);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![],
-            0.0,
-            vec![0.8; 8],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![], 0.0, vec![0.8; 8]));
         let h = 7u16;
         let buf = render_viz_buffer(&app, 20, h);
         assert!(buffer_text(&buf).contains('┃'), "mirror wave bars missing");
@@ -1205,11 +1145,7 @@ mod tests {
     fn mirror_wave_reflects_waveform_and_is_flat_for_silence() {
         let render = |wf: Vec<f32>| {
             let mut app = app_in_mode(VisualizerMode::MirrorWave);
-            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-                vec![],
-                0.0,
-                wf,
-            ))));
+            push_frame(&mut app, VizFrame::new(vec![], 0.0, wf));
             buffer_text(&render_viz_buffer(&app, 20, 7))
         };
         let loud = render(vec![0.9; 8]);
@@ -1233,11 +1169,7 @@ mod tests {
     #[test]
     fn mirror_wave_fills_full_pane_width() {
         let mut app = app_in_mode(VisualizerMode::MirrorWave);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![],
-            0.0,
-            vec![0.3, -0.3, 0.7],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![], 0.0, vec![0.3, -0.3, 0.7]));
         let (w, h) = (40u16, 8u16);
         let buf = render_viz_buffer(&app, w, h);
         for x in 0..w {
@@ -1253,11 +1185,7 @@ mod tests {
         // Real RMS + bands produce ambient shading; a silent frame draws nothing
         // (proving the mode reacts to data instead of animating on its own).
         let mut active = app_in_mode(VisualizerMode::AmbientPulse);
-        active.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.9; 8],
-            0.8,
-            vec![],
-        ))));
+        push_frame(&mut active, VizFrame::new(vec![0.9; 8], 0.8, vec![]));
         let active_text = buffer_text(&render_viz_buffer(&active, 24, 7));
         assert!(
             has_ambient_shade(&active_text),
@@ -1265,7 +1193,7 @@ mod tests {
         );
 
         let mut silent = app_in_mode(VisualizerMode::AmbientPulse);
-        silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(8))));
+        push_frame(&mut silent, VizFrame::silent(8));
         let silent_text = buffer_text(&render_viz_buffer(&silent, 24, 7));
         assert!(
             !has_ambient_shade(&silent_text),
@@ -1277,11 +1205,7 @@ mod tests {
     fn ambient_pulse_pulses_from_rms_without_bands() {
         // RMS alone (no bands) still drives the ambient display.
         let mut app = app_in_mode(VisualizerMode::AmbientPulse);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![],
-            0.9,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![], 0.9, vec![]));
         let text = buffer_text(&render_viz_buffer(&app, 24, 7));
         assert!(has_ambient_shade(&text), "rms-only ambient missing: {text}");
     }
@@ -1289,11 +1213,7 @@ mod tests {
     #[test]
     fn ambient_pulse_fills_full_pane_width() {
         let mut app = app_in_mode(VisualizerMode::AmbientPulse);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0; 8],
-            1.0,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![1.0; 8], 1.0, vec![]));
         let (w, h) = (40u16, 7u16);
         let buf = render_viz_buffer(&app, w, h);
         for x in 0..w {
@@ -1317,7 +1237,7 @@ mod tests {
         let mut app = base_app();
         let mut texts = Vec::new();
         for _ in 0..VisualizerMode::ALL.len() {
-            app.apply(Action::Audio(AudioEvent::Viz(frame.clone())));
+            push_frame(&mut app, frame.clone());
             texts.push(buffer_text(&render_viz_buffer(&app, 32, 9)));
             app.apply(Action::CycleVisualizerMode);
         }
@@ -1336,13 +1256,12 @@ mod tests {
             VisualizerMode::AmbientPulse,
         ] {
             let mut silent = app_in_mode(mode);
-            silent.apply(Action::Audio(AudioEvent::Viz(VizFrame::silent(16))));
+            push_frame(&mut silent, VizFrame::silent(16));
             let mut empty = app_in_mode(mode);
-            empty.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-                Vec::<f32>::new(),
-                0.0,
-                Vec::<f32>::new(),
-            ))));
+            push_frame(
+                &mut empty,
+                VizFrame::new(Vec::<f32>::new(), 0.0, Vec::<f32>::new()),
+            );
             for app in [&silent, &empty] {
                 for (w, h) in [(0u16, 0u16), (1, 1), (2, 1), (1, 4), (40, 1)] {
                     let _ = render_viz_buffer(app, w, h);

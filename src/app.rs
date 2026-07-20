@@ -21,7 +21,9 @@ use crate::catalog::{
 use crate::herdr::{
     self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
 };
-use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
+use crate::model::{
+    PlaybackRequestId, PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent,
+};
 use crate::search::SearchResults;
 use crate::settings::Settings;
 use crate::theme::ThemeName;
@@ -418,10 +420,16 @@ pub enum Action {
     SelectFirst,
     /// Jump selection to the last visible station.
     SelectLast,
-    /// Play the currently selected station (`Enter`).
-    PlaySelected,
+    /// Play the currently selected station (`Enter`) as playback request
+    /// `.0`, which the controller must also put on the matching
+    /// [`AudioCommand::Play`](crate::audio::AudioCommand::Play).
+    PlaySelected(PlaybackRequestId),
     /// Stop/Play toggle for the current station (`Space`).
-    TogglePlayback,
+    ///
+    /// Carries the request id to use *if* the toggle starts playback. When it
+    /// stops instead, the id is discarded (ids need not be contiguous) and the
+    /// app stops expecting any request's events.
+    TogglePlayback(PlaybackRequestId),
     /// Toggle favorite state of the selected station (`f`).
     ToggleFavorite,
     /// Cycle to the next theme (`t`).
@@ -537,6 +545,12 @@ pub struct App {
     focus: FocusPane,
     playback: PlaybackState,
     current: Option<Station>,
+    /// The playback request whose station-scoped audio events are currently
+    /// authoritative, recorded from the controller-allocated id on every play
+    /// intent. `None` while nothing is expected (startup, and after a stop), so
+    /// a superseded attempt's late events are ignored. Process-local
+    /// coordination state; never persisted.
+    playback_request: Option<PlaybackRequestId>,
     viz: VizFrame,
     viz_history: VecDeque<VizFrame>,
     /// Whether the low-power visual policy is active; configured exactly once
@@ -592,6 +606,7 @@ impl App {
             focus: FocusPane::Stations,
             playback: PlaybackState::Stopped,
             current,
+            playback_request: None,
             viz,
             viz_history,
             low_power_visuals: false,
@@ -618,8 +633,8 @@ impl App {
             Action::SelectPrevious => self.select_previous(),
             Action::SelectFirst => self.selected = 0,
             Action::SelectLast => self.selected = self.visible.len().saturating_sub(1),
-            Action::PlaySelected => self.play_selected(),
-            Action::TogglePlayback => self.toggle_playback(),
+            Action::PlaySelected(request) => self.play_selected(request),
+            Action::TogglePlayback(request) => self.toggle_playback(request),
             Action::ToggleFavorite => self.toggle_favorite(),
             Action::CycleTheme => self.settings.theme = self.settings.theme.next(),
             Action::CycleVisualizerMode => {
@@ -914,8 +929,9 @@ impl App {
 
     // --- playback --------------------------------------------------------
 
-    /// Promote the selected station to the current station and begin connecting.
-    fn play_selected(&mut self) {
+    /// Promote the selected station to the current station and begin connecting
+    /// as playback request `request`.
+    fn play_selected(&mut self, request: PlaybackRequestId) {
         if let Some(station) = self.selected_station().cloned() {
             // Switching to a different station drops the old ICY title so a stale
             // one never lingers; resuming the same station keeps it.
@@ -924,36 +940,84 @@ impl App {
             }
             self.current = Some(station);
             self.playback = PlaybackState::Connecting;
+            self.playback_request = Some(request);
         }
     }
 
     /// `Space` semantics: stop while active, reconnect a stopped/failed current.
-    fn toggle_playback(&mut self) {
+    fn toggle_playback(&mut self, request: PlaybackRequestId) {
         match self.playback {
             PlaybackState::Playing | PlaybackState::Connecting => {
                 self.playback = PlaybackState::Stopped;
+                // Nothing is expected any more, so the stopped attempt's workers
+                // cannot revive playback state as they drain.
+                self.playback_request = None;
             }
             PlaybackState::Stopped | PlaybackState::Failed(_) => {
                 if self.current.is_some() {
                     self.playback = PlaybackState::Connecting;
+                    self.playback_request = Some(request);
                 }
             }
         }
     }
 
     /// Fold an audio runtime event into playback/visualizer/health state.
+    ///
+    /// Station-scoped events are accepted only while they belong to the
+    /// currently expected playback request; anything older is dropped whole, so
+    /// a superseded attempt cannot touch playback state, selection, station
+    /// health, the previous station, ICY metadata, or the visualizer. Because
+    /// ownership is the request instance rather than the station id, replaying
+    /// the same station rejects the earlier attempt's events too.
+    ///
+    /// `Stopped` and `VolumeChanged` are deliberately global and always applied;
+    /// see [`AudioEvent`] for why that is safe and intended.
     fn apply_audio(&mut self, event: AudioEvent) {
         match event {
-            AudioEvent::Connecting { .. } => {
-                self.playback = PlaybackState::Connecting;
+            AudioEvent::Connecting { request, .. } => {
+                if self.is_current_request(request) {
+                    self.playback = PlaybackState::Connecting;
+                }
             }
-            AudioEvent::Playing { station } => self.on_playing(station),
+            AudioEvent::Playing { request, station } => {
+                if self.is_current_request(request) {
+                    self.on_playing(station);
+                }
+            }
             AudioEvent::Stopped => self.playback = PlaybackState::Stopped,
-            AudioEvent::Failed { station, message } => self.on_failed(station, message),
+            AudioEvent::Failed {
+                request,
+                station,
+                message,
+            } => {
+                if self.is_current_request(request) {
+                    self.on_failed(station, message);
+                }
+            }
             AudioEvent::VolumeChanged(volume) => self.settings.volume = volume,
-            AudioEvent::Viz(frame) => self.set_viz_frame(frame),
-            AudioEvent::IcyTitle { station, title } => self.on_icy_title(station, title),
+            AudioEvent::Viz { request, frame } => {
+                if self.is_current_request(request) {
+                    self.set_viz_frame(frame);
+                }
+            }
+            AudioEvent::IcyTitle {
+                request,
+                station,
+                title,
+            } => {
+                if self.is_current_request(request) {
+                    self.on_icy_title(station, title);
+                }
+            }
         }
+    }
+
+    /// Whether `request` is the playback attempt the app is currently expecting
+    /// events from. False once playback was stopped, so a torn-down attempt's
+    /// trailing events are ignored as well.
+    fn is_current_request(&self, request: PlaybackRequestId) -> bool {
+        self.playback_request == Some(request)
     }
 
     /// Store the latest visualizer frame and retain the short history used by
@@ -1442,6 +1506,12 @@ impl App {
         &self.playback
     }
 
+    /// The playback request whose station-scoped audio events are currently
+    /// accepted, or `None` when none are.
+    pub fn playback_request(&self) -> Option<PlaybackRequestId> {
+        self.playback_request
+    }
+
     /// The current station (playing, connecting, or last/previous).
     pub fn current_station(&self) -> Option<&Station> {
         self.current.as_ref()
@@ -1773,8 +1843,8 @@ mod tests {
     use super::*;
     use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult};
     use crate::model::{
-        BitrateKbps, CodecKind, PhaseTrace, StationId, StationName, StationSource, StreamUrl,
-        VisualizerMode, VolumePercent,
+        BitrateKbps, CodecKind, PhaseTrace, PlaybackRequestSeq, StationId, StationName,
+        StationSource, StreamUrl, VisualizerMode, VolumePercent,
     };
     use crate::settings::Favorites;
     use crate::theme::ThemeName;
@@ -1795,6 +1865,27 @@ mod tests {
             click_count: Some(10),
             source: StationSource::RadioBrowser,
         }
+    }
+
+    /// A single playback request id, for tests that exercise one attempt.
+    ///
+    /// Tests that need to tell attempts apart draw several ids from one
+    /// [`PlaybackRequestSeq`] instead, exactly as the controller does.
+    fn one_request() -> PlaybackRequestId {
+        PlaybackRequestSeq::new().next_id()
+    }
+
+    /// Start playback on `app`, returning the request its station-scoped audio
+    /// events must carry to be accepted.
+    fn start_playback(app: &mut App) -> PlaybackRequestId {
+        let request = one_request();
+        app.apply(Action::PlaySelected(request));
+        request
+    }
+
+    /// A visualizer event belonging to `request`.
+    fn viz_event(request: PlaybackRequestId, frame: VizFrame) -> Action {
+        Action::Audio(AudioEvent::Viz { request, frame })
     }
 
     /// An app whose visible list is exactly `ids`, in order, with a known
@@ -1983,28 +2074,40 @@ mod tests {
     #[test]
     fn play_selected_sets_current_and_connecting() {
         let mut app = app_with(&["a", "b"]);
+        let request = one_request();
         app.apply(Action::SelectNext);
-        app.apply(Action::PlaySelected);
+        app.apply(Action::PlaySelected(request));
         assert_eq!(app.current_station().unwrap().id.as_str(), "b");
         assert_eq!(app.playback(), &PlaybackState::Connecting);
+        assert_eq!(
+            app.playback_request(),
+            Some(request),
+            "the play intent records the request whose events are expected"
+        );
     }
 
     #[test]
     fn toggle_playback_stops_active_and_resumes_current() {
         let mut app = app_with(&["a"]);
-        app.apply(Action::PlaySelected);
+        let requests = PlaybackRequestSeq::new();
+        let first = requests.next_id();
+        app.apply(Action::PlaySelected(first));
         app.apply(Action::Audio(AudioEvent::Playing {
+            request: first,
             station: StationId::new("a").unwrap(),
         }));
         assert_eq!(app.playback(), &PlaybackState::Playing);
 
-        // Space while playing stops.
-        app.apply(Action::TogglePlayback);
+        // Space while playing stops, and stops expecting any request.
+        app.apply(Action::TogglePlayback(requests.next_id()));
         assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert_eq!(app.playback_request(), None);
 
-        // Space while stopped with a current station reconnects.
-        app.apply(Action::TogglePlayback);
+        // Space while stopped with a current station reconnects as a new request.
+        let resumed = requests.next_id();
+        app.apply(Action::TogglePlayback(resumed));
         assert_eq!(app.playback(), &PlaybackState::Connecting);
+        assert_eq!(app.playback_request(), Some(resumed));
     }
 
     #[test]
@@ -2012,17 +2115,24 @@ mod tests {
         let mut app = app_with(&["a"]);
         // Nothing has been played yet and there is no previous station.
         assert!(app.current_station().is_none());
-        app.apply(Action::TogglePlayback);
+        app.apply(Action::TogglePlayback(one_request()));
         assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert_eq!(
+            app.playback_request(),
+            None,
+            "a toggle that starts nothing expects nothing"
+        );
     }
 
     #[test]
     fn audio_playing_updates_previous_station() {
         let mut app = app_with(&["a", "b"]);
-        app.apply(Action::PlaySelected); // current = "a"
+        let request = one_request();
+        app.apply(Action::PlaySelected(request)); // current = "a"
         assert!(app.settings().previous_station.is_none());
 
         app.apply(Action::Audio(AudioEvent::Playing {
+            request,
             station: StationId::new("a").unwrap(),
         }));
         assert_eq!(app.playback(), &PlaybackState::Playing);
@@ -2040,9 +2150,11 @@ mod tests {
     #[test]
     fn audio_failed_marks_session_and_presents_next_viable() {
         let mut app = app_with(&["a", "b", "c"]);
-        app.apply(Action::PlaySelected); // current/selected = "a" at index 0
+        let request = one_request();
+        app.apply(Action::PlaySelected(request)); // current/selected = "a" at index 0
 
         app.apply(Action::Audio(AudioEvent::Failed {
+            request,
             station: StationId::new("a").unwrap(),
             message: "boom".to_string(),
         }));
@@ -2058,15 +2170,26 @@ mod tests {
     #[test]
     fn audio_failed_keeps_selection_viable_when_some_remain() {
         let mut app = app_with(&["a", "b", "c"]);
-        // Fail b and c; selection must land on the only viable station, a.
+        let requests = PlaybackRequestSeq::new();
+
+        // Fail b, then c; selection must land on the only viable station, a.
+        app.apply(Action::SelectNext); // b
+        let playing_b = requests.next_id();
+        app.apply(Action::PlaySelected(playing_b));
         app.apply(Action::Audio(AudioEvent::Failed {
+            request: playing_b,
             station: StationId::new("b").unwrap(),
             message: "x".to_string(),
         }));
+
+        let playing_c = requests.next_id();
+        app.apply(Action::PlaySelected(playing_c)); // selection advanced to c
         app.apply(Action::Audio(AudioEvent::Failed {
+            request: playing_c,
             station: StationId::new("c").unwrap(),
             message: "x".to_string(),
         }));
+
         assert_eq!(app.selected_station().unwrap().id.as_str(), "a");
     }
 
@@ -2074,27 +2197,37 @@ mod tests {
     fn audio_playing_recovers_a_previously_failed_station() {
         let mut app = app_with(&["a", "b"]);
         let a = StationId::new("a").unwrap();
+        let requests = PlaybackRequestSeq::new();
+
+        let failing = requests.next_id();
+        app.apply(Action::PlaySelected(failing)); // current = "a"
         app.apply(Action::Audio(AudioEvent::Failed {
+            request: failing,
             station: a.clone(),
             message: "transient".to_string(),
         }));
         assert!(app.is_failed(&a));
 
         // A later successful play of the same station clears the session mark.
-        app.apply(Action::PlaySelected);
         app.apply(Action::SelectFirst);
-        app.apply(Action::PlaySelected); // current = "a"
-        app.apply(Action::Audio(AudioEvent::Playing { station: a.clone() }));
+        let retry = requests.next_id();
+        app.apply(Action::PlaySelected(retry)); // current = "a" again
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request: retry,
+            station: a.clone(),
+        }));
         assert!(!app.is_failed(&a));
     }
 
     #[test]
     fn icy_title_updates_now_playing_for_current_station() {
         let mut app = app_with(&["a", "b"]);
-        app.apply(Action::PlaySelected); // current = "a"
+        let request = one_request();
+        app.apply(Action::PlaySelected(request)); // current = "a"
         assert!(app.now_playing_title().is_none());
 
         app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request,
             station: StationId::new("a").unwrap(),
             title: "Artist - Hit".to_string(),
         }));
@@ -2104,10 +2237,13 @@ mod tests {
     #[test]
     fn icy_title_from_a_non_current_station_is_ignored() {
         let mut app = app_with(&["a", "b"]);
-        app.apply(Action::PlaySelected); // current = "a"
+        let request = one_request();
+        app.apply(Action::PlaySelected(request)); // current = "a"
 
-        // A late event from a station the user already left must not show.
+        // A late event from a station the user already left must not show,
+        // even if it somehow carried the live request.
         app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request,
             station: StationId::new("b").unwrap(),
             title: "Stale Title".to_string(),
         }));
@@ -2117,8 +2253,11 @@ mod tests {
     #[test]
     fn switching_station_clears_a_previous_icy_title() {
         let mut app = app_with(&["a", "b"]);
-        app.apply(Action::PlaySelected); // current = "a"
+        let requests = PlaybackRequestSeq::new();
+        let on_a = requests.next_id();
+        app.apply(Action::PlaySelected(on_a)); // current = "a"
         app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request: on_a,
             station: StationId::new("a").unwrap(),
             title: "On A".to_string(),
         }));
@@ -2126,27 +2265,271 @@ mod tests {
 
         // Move to a different station: the stale title must not linger.
         app.apply(Action::SelectNext);
-        app.apply(Action::PlaySelected); // current = "b"
+        app.apply(Action::PlaySelected(requests.next_id())); // current = "b"
         assert!(app.now_playing_title().is_none());
+    }
+
+    // --- stale playback-request events (MIK-065) -------------------------
+
+    #[test]
+    fn stale_connecting_and_playing_cannot_revive_a_superseded_attempt() {
+        let mut app = app_with(&["a", "b"]);
+        let requests = PlaybackRequestSeq::new();
+
+        let first = requests.next_id();
+        app.apply(Action::PlaySelected(first)); // current = "a"
+
+        // The user moves on to "b" before "a" ever connected.
+        app.apply(Action::SelectNext);
+        let second = requests.next_id();
+        app.apply(Action::PlaySelected(second)); // current = "b"
+
+        // "a"'s attempt finally reports in. It must not claim playback, and it
+        // must not persist "a" as the previous station.
+        app.apply(Action::Audio(AudioEvent::Connecting {
+            request: first,
+            station: StationId::new("a").unwrap(),
+        }));
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request: first,
+            station: StationId::new("a").unwrap(),
+        }));
+
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+        assert_eq!(app.current_station().unwrap().id.as_str(), "b");
+        assert!(
+            app.settings().previous_station.is_none(),
+            "a superseded attempt never becomes the persisted previous station"
+        );
+        assert_eq!(app.playback_request(), Some(second));
+    }
+
+    #[test]
+    fn stale_failed_cannot_change_playback_health_or_selection() {
+        let mut app = app_with(&["a", "b", "c"]);
+        let requests = PlaybackRequestSeq::new();
+
+        let first = requests.next_id();
+        app.apply(Action::PlaySelected(first)); // current/selected = "a"
+
+        app.apply(Action::SelectLast); // selection on "c"
+        let second = requests.next_id();
+        app.apply(Action::PlaySelected(second)); // current = "c"
+
+        app.apply(Action::Audio(AudioEvent::Failed {
+            request: first,
+            station: StationId::new("a").unwrap(),
+            message: "boom".to_string(),
+        }));
+
+        assert_eq!(
+            app.playback(),
+            &PlaybackState::Connecting,
+            "a superseded failure cannot fail the live attempt"
+        );
+        assert!(
+            !app.is_failed(&StationId::new("a").unwrap()),
+            "a superseded failure cannot mark session health"
+        );
+        assert_eq!(
+            app.selected_station().unwrap().id.as_str(),
+            "c",
+            "a superseded failure cannot move the selection"
+        );
+    }
+
+    #[test]
+    fn stale_viz_and_icy_events_cannot_touch_the_display() {
+        let mut app = app_with(&["a", "b"]);
+        let requests = PlaybackRequestSeq::new();
+
+        let first = requests.next_id();
+        app.apply(Action::PlaySelected(first)); // current = "a"
+        let live_frame = VizFrame::new([0.4], 0.4, []);
+        app.apply(viz_event(first, live_frame.clone()));
+
+        app.apply(Action::SelectNext);
+        let second = requests.next_id();
+        app.apply(Action::PlaySelected(second)); // current = "b"
+
+        // The old decoder/analyzer threads drain after the switch.
+        app.apply(viz_event(first, VizFrame::new([0.9], 0.9, [])));
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request: first,
+            station: StationId::new("a").unwrap(),
+            title: "Stale Track".to_string(),
+        }));
+
+        assert_eq!(
+            app.viz(),
+            &live_frame,
+            "a superseded attempt cannot drive the visualizer"
+        );
+        assert!(
+            app.now_playing_title().is_none(),
+            "a superseded attempt cannot set the now-playing title"
+        );
+    }
+
+    #[test]
+    fn replaying_the_same_station_rejects_the_previous_attempts_events() {
+        // Station identity alone cannot decide event ownership: both attempts
+        // carry the same station id, and only the newer one is authoritative.
+        let mut app = app_with(&["a", "b"]);
+        let requests = PlaybackRequestSeq::new();
+        let station = StationId::new("a").unwrap();
+
+        let first = requests.next_id();
+        app.apply(Action::PlaySelected(first));
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request: first,
+            station: station.clone(),
+        }));
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request: first,
+            station: station.clone(),
+            title: "First Attempt".to_string(),
+        }));
+
+        // Stop, then play the very same station again.
+        app.apply(Action::TogglePlayback(requests.next_id()));
+        let second = requests.next_id();
+        app.apply(Action::PlaySelected(second));
+        assert_eq!(app.playback(), &PlaybackState::Connecting);
+
+        // Everything the first attempt emits from here is stale, even though
+        // the station id still matches the current station.
+        app.apply(Action::Audio(AudioEvent::Failed {
+            request: first,
+            station: station.clone(),
+            message: "first attempt died".to_string(),
+        }));
+        app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request: first,
+            station: station.clone(),
+            title: "Stale Track".to_string(),
+        }));
+        app.apply(viz_event(first, VizFrame::new([0.9], 0.9, [])));
+
+        assert_eq!(
+            app.playback(),
+            &PlaybackState::Connecting,
+            "the replay is still connecting"
+        );
+        assert!(
+            !app.is_failed(&station),
+            "the first attempt's death cannot fail the replay"
+        );
+        assert_eq!(
+            app.now_playing_title(),
+            Some("First Attempt"),
+            "replaying the same station keeps its title, but stale titles never overwrite it"
+        );
+
+        // The replay's own events are accepted.
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request: second,
+            station: station.clone(),
+        }));
+        assert_eq!(app.playback(), &PlaybackState::Playing);
+    }
+
+    #[test]
+    fn events_from_a_stopped_attempt_are_ignored() {
+        let mut app = app_with(&["a"]);
+        let requests = PlaybackRequestSeq::new();
+        let station = StationId::new("a").unwrap();
+
+        let request = requests.next_id();
+        app.apply(Action::PlaySelected(request));
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request,
+            station: station.clone(),
+        }));
+
+        app.apply(Action::TogglePlayback(requests.next_id())); // Space stops
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+
+        // The torn-down session's workers drain afterwards.
+        app.apply(Action::Audio(AudioEvent::Failed {
+            request,
+            station: station.clone(),
+            message: "stream ended unexpectedly".to_string(),
+        }));
+        app.apply(viz_event(request, VizFrame::new([0.9], 0.9, [])));
+
+        assert_eq!(
+            app.playback(),
+            &PlaybackState::Stopped,
+            "a stopped attempt cannot resurrect playback state"
+        );
+        assert!(!app.is_failed(&station));
+    }
+
+    #[test]
+    fn global_stop_and_volume_events_stay_unscoped_by_request() {
+        // Deliberate contract: `Stopped` and `VolumeChanged` describe the whole
+        // runtime, are emitted only from its control thread in command order,
+        // and are applied regardless of which request is expected.
+        let mut app = app_with(&["a"]);
+        let requests = PlaybackRequestSeq::new();
+
+        let request = requests.next_id();
+        app.apply(Action::PlaySelected(request));
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request,
+            station: StationId::new("a").unwrap(),
+        }));
+        assert_eq!(app.playback(), &PlaybackState::Playing);
+
+        app.apply(Action::Audio(AudioEvent::Stopped));
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert_eq!(
+            app.playback_request(),
+            Some(request),
+            "a global stop does not clear the expected request: a Stop/Play race \
+             must not make the newer attempt's events unrecognizable"
+        );
+
+        app.apply(Action::Audio(AudioEvent::VolumeChanged(
+            VolumePercent::new(21).unwrap(),
+        )));
+        assert_eq!(app.settings().volume.get(), 21);
+
+        // Still unconditional once nothing at all is expected.
+        app.apply(Action::TogglePlayback(requests.next_id()));
+        app.apply(Action::TogglePlayback(requests.next_id()));
+        app.apply(Action::Audio(AudioEvent::Stopped));
+        app.apply(Action::Audio(AudioEvent::VolumeChanged(
+            VolumePercent::new(7).unwrap(),
+        )));
+        assert_eq!(app.playback(), &PlaybackState::Stopped);
+        assert_eq!(app.settings().volume.get(), 7);
     }
 
     #[test]
     fn audio_viz_updates_current_frame() {
         let mut app = app_with(&["a"]);
+        let request = one_request();
+        app.apply(Action::PlaySelected(request));
         let frame = VizFrame::new([0.1, 0.9, 0.5], 0.7, [-0.5, 0.0, 0.5]);
-        app.apply(Action::Audio(AudioEvent::Viz(frame.clone())));
+        app.apply(Action::Audio(AudioEvent::Viz {
+            request,
+            frame: frame.clone(),
+        }));
         assert_eq!(app.viz(), &frame);
     }
 
     #[test]
     fn audio_viz_keeps_current_plus_five_trailing_frames() {
         let mut app = app_with(&["a"]);
+        let request = one_request();
+        app.apply(Action::PlaySelected(request));
         for index in 0..8 {
-            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-                [index as f32 / 10.0],
-                0.0,
-                [],
-            ))));
+            app.apply(Action::Audio(AudioEvent::Viz {
+                request,
+                frame: VizFrame::new([index as f32 / 10.0], 0.0, []),
+            }));
         }
 
         let history: Vec<f32> = app.viz_history().map(|frame| frame.bands()[0]).collect();
@@ -2707,7 +3090,7 @@ mod tests {
         assert_eq!(app.selected_index(), 0);
 
         // ...and playable like any other source.
-        app.apply(Action::PlaySelected);
+        app.apply(Action::PlaySelected(one_request()));
         assert_eq!(app.current_station().unwrap().id.as_str(), "fav-a");
         assert_eq!(app.playback(), &PlaybackState::Connecting);
     }
@@ -2864,7 +3247,7 @@ mod tests {
     fn toggle_current_favorite_uses_current_station_not_hidden_selection() {
         let mut app = app_with(&["selected", "current"]);
         app.apply(Action::SelectLast);
-        app.apply(Action::PlaySelected);
+        app.apply(Action::PlaySelected(one_request()));
         app.apply(Action::SelectFirst);
 
         let current = app.current_station().cloned().expect("current station");
@@ -2901,7 +3284,7 @@ mod tests {
         // Play the middle favorite so it becomes the current station, then move
         // the hidden selection elsewhere to prove current drives the removal.
         app.apply(Action::SelectNext); // index 1 == "b"
-        app.apply(Action::PlaySelected); // current = "b"
+        app.apply(Action::PlaySelected(one_request())); // current = "b"
         app.apply(Action::SelectFirst); // hidden selection back to "a"
 
         app.apply(Action::ToggleCurrentFavorite);
@@ -2996,10 +3379,11 @@ mod tests {
     #[test]
     fn stale_viz_is_captured_at_the_stale_edge_and_cleared_on_recovery() {
         let mut app = app_with_agents(vec![agent("ws", "p1", None, AgentStatus::Working)]);
+        let request = start_playback(&mut app);
         let older = VizFrame::new(vec![0.2; 16], 0.2, Vec::<f32>::new());
         let last = VizFrame::new(vec![0.8; 16], 0.9, Vec::<f32>::new());
-        app.apply(Action::Audio(AudioEvent::Viz(older.clone())));
-        app.apply(Action::Audio(AudioEvent::Viz(last.clone())));
+        app.apply(viz_event(request, older.clone()));
+        app.apply(viz_event(request, last.clone()));
         assert!(app.stale_viz().is_none(), "connected keeps no snapshot");
 
         app.apply(Action::AgentPollFailed {
@@ -3016,11 +3400,10 @@ mod tests {
         );
 
         // Later audio and repeated failures do not move the snapshot.
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.1; 16],
-            0.1,
-            Vec::<f32>::new(),
-        ))));
+        app.apply(viz_event(
+            request,
+            VizFrame::new(vec![0.1; 16], 0.1, Vec::<f32>::new()),
+        ));
         app.apply(Action::AgentPollFailed {
             now: Instant::now(),
         });
@@ -3064,35 +3447,38 @@ mod tests {
     fn low_power_visuals_skip_silence_and_capture_the_first_audible_frame() {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.configure_low_power_visuals(true);
+        let request = start_playback(&mut app);
         assert!(app.low_power_viz().is_none(), "no capture before any frame");
 
         // Startup silence — even the analyzer's non-empty all-zero phase
         // shape — must not become the permanent geometry capture.
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::with_phase(
-            vec![0.0; 16],
-            0.0,
-            Vec::<f32>::new(),
-            PhaseTrace::new([0.0, 0.0], [0.0, 0.0]),
-            PhaseTrace::new([0.0], [0.0]),
-        ))));
+        app.apply(viz_event(
+            request,
+            VizFrame::with_phase(
+                vec![0.0; 16],
+                0.0,
+                Vec::<f32>::new(),
+                PhaseTrace::new([0.0, 0.0], [0.0, 0.0]),
+                PhaseTrace::new([0.0], [0.0]),
+            ),
+        ));
         assert!(
             app.low_power_viz().is_none(),
             "silent frames retain no capture"
         );
 
         // Loud but phase-less frames are not visually audible either.
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.5; 16],
-            0.5,
-            Vec::<f32>::new(),
-        ))));
+        app.apply(viz_event(
+            request,
+            VizFrame::new(vec![0.5; 16], 0.5, Vec::<f32>::new()),
+        ));
         assert!(
             app.low_power_viz().is_none(),
             "a frame without phase data retains no capture"
         );
 
         let audible = audible_frame(0.4);
-        app.apply(Action::Audio(AudioEvent::Viz(audible.clone())));
+        app.apply(viz_event(request, audible.clone()));
         let (frame, history) = app
             .low_power_viz()
             .expect("the first audible frame is captured");
@@ -3100,7 +3486,7 @@ mod tests {
         assert_eq!(history.len(), 3, "the earlier frames trail the capture");
 
         let later = audible_frame(0.9);
-        app.apply(Action::Audio(AudioEvent::Viz(later.clone())));
+        app.apply(viz_event(request, later.clone()));
         assert_eq!(
             app.low_power_viz().unwrap().0,
             &audible,
@@ -3112,14 +3498,15 @@ mod tests {
     #[test]
     fn low_power_visuals_default_off_and_disabling_clears_the_capture() {
         let mut app = App::new(Settings::default(), Catalog::curated());
-        app.apply(Action::Audio(AudioEvent::Viz(audible_frame(0.5))));
+        let request = start_playback(&mut app);
+        app.apply(viz_event(request, audible_frame(0.5)));
         assert!(
             app.low_power_viz().is_none(),
             "the default policy captures nothing"
         );
 
         app.configure_low_power_visuals(true);
-        app.apply(Action::Audio(AudioEvent::Viz(audible_frame(0.6))));
+        app.apply(viz_event(request, audible_frame(0.6)));
         assert!(app.low_power_viz().is_some());
 
         app.configure_low_power_visuals(false);
@@ -3644,7 +4031,7 @@ mod tests {
     #[test]
     fn overlay_opens_and_closes_without_touching_radio_state() {
         let mut app = app_with(&["a", "b"]);
-        app.apply(Action::PlaySelected);
+        app.apply(Action::PlaySelected(one_request()));
         app.apply(Action::SetSearchQuery("jazz".to_string()));
         app.apply(Action::SetFocus(FocusPane::Search));
         app.apply(agent_snapshot(

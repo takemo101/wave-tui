@@ -390,6 +390,43 @@ pub enum PlaybackState {
     Failed(String),
 }
 
+/// Identity of one playback request instance.
+///
+/// A station id is not enough to decide whether an asynchronous audio event
+/// still belongs to what the user is listening to: the same station can be
+/// stopped and replayed, and the old attempt's worker threads may still emit
+/// events afterwards. Every play/replay request therefore gets its own
+/// monotonically increasing id, allocated by the controller
+/// ([`PlaybackRequestSeq`]) and carried on the command and on every
+/// station-scoped event it produces.
+///
+/// Opaque on purpose: ids are only ever compared for equality, never parsed,
+/// persisted, or displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlaybackRequestId(u64);
+
+/// Monotonic allocator for [`PlaybackRequestId`]s.
+///
+/// Owned by the controller side of the audio boundary (the audio handle), so
+/// ids stay unique for the whole process run regardless of which key path
+/// starts playback. Allocation takes `&self` because the handle is shared
+/// immutably across the controller's key handlers.
+#[derive(Debug, Default)]
+pub struct PlaybackRequestSeq(std::sync::atomic::AtomicU64);
+
+impl PlaybackRequestSeq {
+    /// A fresh allocator. The first issued id is `1`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allocate the next id. Every call returns a value greater than the last.
+    pub fn next_id(&self) -> PlaybackRequestId {
+        let previous = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        PlaybackRequestId(previous + 1)
+    }
+}
+
 /// One of the selectable visualizer renderers.
 ///
 /// `SpectrumStack` is the default. All six modes of the Calm Suite
@@ -637,6 +674,29 @@ impl VizFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_request_ids_are_unique_and_monotonic() {
+        let seq = PlaybackRequestSeq::new();
+        let first = seq.next_id();
+        let second = seq.next_id();
+        let third = seq.next_id();
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        assert_ne!(first, third);
+        // Equality is the only comparison the reducer performs.
+        assert_eq!(first, first);
+    }
+
+    #[test]
+    fn separate_playback_request_sequences_start_over() {
+        // Two allocators are independent; the process uses exactly one, which is
+        // why the audio handle owns it rather than each key path.
+        assert_eq!(
+            PlaybackRequestSeq::new().next_id(),
+            PlaybackRequestSeq::new().next_id()
+        );
+    }
 
     #[test]
     fn station_id_rejects_blank() {

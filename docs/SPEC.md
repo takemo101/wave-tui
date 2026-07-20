@@ -122,6 +122,20 @@ handling.
   the stream rate, and add resampling or an explicit unsupported-rate failure
   path before broad station rollout.
 - Non-supported or broken stations are treated as playback failures.
+- Scope playback events to the play request that produced them: every play or
+  replay is a distinct, monotonically identified playback request, and the app
+  applies Connecting/Playing/Failed/visualizer/ICY events only while they belong
+  to the request it is currently expecting. A superseded attempt's decoder,
+  analyzer, or output threads may still be draining, and their late events must
+  not change playback state, selection, session station health, the persisted
+  previous station, the now-playing title, or the visualizer. Station identity
+  alone is not event ownership: replaying the same station rejects the earlier
+  attempt's events too.
+- Stop and volume-change events stay deliberately global rather than
+  request-scoped. They describe the whole runtime (nothing is playing; the live
+  output volume, which persists across stations) and are emitted only from the
+  audio control thread in command order, so they cannot overtake a newer
+  request's events the way a worker thread's can.
 - The MVP should not depend on `mpv` for normal playback.
 
 #### Native Audio Spike Findings
@@ -801,6 +815,10 @@ Use automated tests for core logic:
 - station ranking/filtering
 - search cache behavior
 - temporary failed-station state
+- playback-request scoping: stale Connecting/Playing/Failed/visualizer/ICY
+  events (including a replay of the same station and events from a stopped
+  attempt) changing nothing, and the deliberately global stop/volume events
+  still applying
 - layout tier selection
 - theme lookup
 - FFT normalization/band mapping where deterministic

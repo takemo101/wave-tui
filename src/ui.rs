@@ -1188,13 +1188,36 @@ mod tests {
     use crate::app::{Action, SearchStatus};
     use crate::audio::AudioEvent;
     use crate::catalog::{Catalog, Category};
-    use crate::model::{VisualizerMode, VizFrame};
+    use crate::model::{PlaybackRequestSeq, VisualizerMode, VizFrame};
     use crate::search::SearchResults;
     use crate::settings::Settings;
     use crate::theme::ThemeName;
 
     fn base_app() -> App {
         App::new(Settings::default(), Catalog::curated())
+    }
+
+    /// One play request id. Rendering tests only need playback to have started,
+    /// not to distinguish attempts.
+    fn one_request() -> crate::model::PlaybackRequestId {
+        PlaybackRequestSeq::new().next_id()
+    }
+
+    /// The playback request `app` currently expects events from, starting
+    /// playback first if it has not begun. Station-scoped audio events are only
+    /// applied for that request, so rendering fixtures must carry it.
+    fn live_request(app: &mut App) -> crate::model::PlaybackRequestId {
+        if app.playback_request().is_none() {
+            app.apply(Action::PlaySelected(one_request()));
+        }
+        app.playback_request()
+            .expect("playback started for the audio fixture")
+    }
+
+    /// Feed a visualizer frame to `app` as its current playback request.
+    fn push_frame(app: &mut App, frame: VizFrame) {
+        let request = live_request(app);
+        app.apply(Action::Audio(AudioEvent::Viz { request, frame }));
     }
 
     /// Render an app into a standalone buffer of the given size — no terminal.
@@ -1238,8 +1261,27 @@ mod tests {
 
     fn play_first(app: &mut App) {
         let id = app.selected_station().unwrap().id.clone();
-        app.apply(Action::PlaySelected);
-        app.apply(Action::Audio(AudioEvent::Playing { station: id }));
+        let request = live_request(app);
+        app.apply(Action::Audio(AudioEvent::Playing {
+            request,
+            station: id,
+        }));
+    }
+
+    /// Mark the second visible station failed for the session, then restore the
+    /// selection to the first, so failed and selected markers land on different
+    /// rows. The failure is reported for the request that actually played it —
+    /// stale-request failures are ignored by design.
+    fn fail_second_station(app: &mut App) {
+        app.apply(Action::SelectNext);
+        let station = app.selected_station().unwrap().id.clone();
+        let request = live_request(app);
+        app.apply(Action::Audio(AudioEvent::Failed {
+            request,
+            station,
+            message: "x".to_string(),
+        }));
+        app.apply(Action::SelectFirst);
     }
 
     #[test]
@@ -1354,11 +1396,7 @@ mod tests {
     fn results_table_preserves_selection_favorite_and_failed_markers() {
         let mut app = base_app();
         app.apply(Action::ToggleFavorite);
-        let other = app.visible().as_slice()[1].id.clone();
-        app.apply(Action::Audio(AudioEvent::Failed {
-            station: other,
-            message: "x".to_string(),
-        }));
+        fail_second_station(&mut app);
 
         let text = buffer_text(&render_station_list_buffer(&app, 76, 12, false));
 
@@ -1574,11 +1612,10 @@ mod tests {
         // Compact needs width<72 or height<18 under the layout policy.
         assert_eq!(LayoutTier::from_size(70, 16), LayoutTier::Compact);
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.9_f32; 16],
-            0.8,
-            vec![0.5_f32; 16],
-        ))));
+        push_frame(
+            &mut app,
+            VizFrame::new(vec![0.9_f32; 16], 0.8, vec![0.5_f32; 16]),
+        );
         play_first(&mut app);
         let buf = render_buffer(&app, 70, 16);
         let text = buffer_text(&buf);
@@ -1604,11 +1641,10 @@ mod tests {
     #[test]
     fn spectrum_stack_is_shared_and_renders_themed_particles_across_tiers() {
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![1.0_f32; 16],
-            1.0,
-            vec![1.0_f32; 16],
-        ))));
+        push_frame(
+            &mut app,
+            VizFrame::new(vec![1.0_f32; 16], 1.0, vec![1.0_f32; 16]),
+        );
         play_first(&mut app);
 
         let theme = app.theme().theme();
@@ -1635,7 +1671,9 @@ mod tests {
         let mut app = base_app();
         let id = app.selected_station().unwrap().id.clone();
         play_first(&mut app);
+        let request = live_request(&mut app);
         app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request,
             station: id,
             title: "Live Track Title".to_string(),
         }));
@@ -1752,8 +1790,9 @@ mod tests {
     fn failed_playback_surfaces_the_error_message() {
         let mut app = base_app();
         let id = app.selected_station().unwrap().id.clone();
-        app.apply(Action::PlaySelected);
+        let request = live_request(&mut app);
         app.apply(Action::Audio(AudioEvent::Failed {
+            request,
             station: id,
             message: "boom".to_string(),
         }));
@@ -1769,11 +1808,7 @@ mod tests {
         // Star the selected station.
         app.apply(Action::ToggleFavorite);
         // Fail a different visible station for the session.
-        let other = app.visible().as_slice()[1].id.clone();
-        app.apply(Action::Audio(AudioEvent::Failed {
-            station: other,
-            message: "x".to_string(),
-        }));
+        fail_second_station(&mut app);
         let buf = render_buffer(&app, 130, 32);
         let text = buffer_text(&buf);
 
@@ -2007,11 +2042,7 @@ mod tests {
         // Wide, Medium, and Compact, while station context stays visible.
         let mut app = base_app();
         app.apply(Action::CycleVisualizerMode); // -> PeakDots
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.9_f32; 16],
-            0.8,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![0.9_f32; 16], 0.8, vec![]));
         play_first(&mut app);
         for (w, h) in TIER_SIZES {
             let text = buffer_text(&render_buffer(&app, w, h));
@@ -2022,11 +2053,7 @@ mod tests {
     #[test]
     fn skyline_peaks_renders_in_every_layout_tier() {
         let mut app = app_in_mode(VisualizerMode::SkylinePeaks);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.9_f32; 16],
-            0.8,
-            vec![],
-        ))));
+        push_frame(&mut app, VizFrame::new(vec![0.9_f32; 16], 0.8, vec![]));
         play_first(&mut app);
         for (w, h) in TIER_SIZES {
             let text = buffer_text(&render_buffer(&app, w, h));
@@ -2056,11 +2083,14 @@ mod tests {
             VisualizerMode::AmbientPulse,
         ] {
             let mut app = app_in_mode(mode);
-            app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-                vec![0.9; 16],
-                0.8,
-                vec![-0.8, -0.2, 0.4, 0.9, 0.1, -0.5, 0.6, -0.3],
-            ))));
+            push_frame(
+                &mut app,
+                VizFrame::new(
+                    vec![0.9; 16],
+                    0.8,
+                    vec![-0.8, -0.2, 0.4, 0.9, 0.1, -0.5, 0.6, -0.3],
+                ),
+            );
             play_first(&mut app);
             let glyphs: &[char] = match mode {
                 VisualizerMode::WaveScope => &['•'],
@@ -2081,11 +2111,10 @@ mod tests {
     #[test]
     fn renders_without_panicking_across_sizes_and_tiers() {
         let mut app = base_app();
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.5_f32; 16],
-            0.5,
-            vec![0.5_f32; 16],
-        ))));
+        push_frame(
+            &mut app,
+            VizFrame::new(vec![0.5_f32; 16], 0.5, vec![0.5_f32; 16]),
+        );
         play_first(&mut app);
         for (w, h) in [
             (0, 0),
@@ -2260,7 +2289,9 @@ mod tests {
         let mut app = base_app();
         let id = app.selected_station().unwrap().id.clone();
         play_first(&mut app);
+        let request = live_request(&mut app);
         app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request,
             station: id,
             title: "Midnight Drive — Soft Neon Mix".to_string(),
         }));
@@ -2279,7 +2310,7 @@ mod tests {
         // Signal View uses the station-list favorite language: no marker when the
         // current station is not a favorite.
         let mut app = base_app();
-        app.apply(Action::PlaySelected);
+        app.apply(Action::PlaySelected(one_request()));
         app.apply(Action::ToggleSignalView);
         assert!(!app.current_station_is_favorite());
 
@@ -2301,7 +2332,7 @@ mod tests {
         // The favorite state of the current station is shown like the station
         // list: a star only when it is actually favorited.
         let mut app = base_app();
-        app.apply(Action::PlaySelected);
+        app.apply(Action::PlaySelected(one_request()));
         app.apply(Action::ToggleCurrentFavorite);
         app.apply(Action::ToggleSignalView);
         assert!(app.current_station_is_favorite());
@@ -2325,7 +2356,7 @@ mod tests {
         // The active visualizer mode is controlled by `v` and should not be
         // visually attached to the volume control line.
         let mut app = base_app();
-        app.apply(Action::PlaySelected);
+        app.apply(Action::PlaySelected(one_request()));
         app.apply(Action::SetVolume(VolumePercent::new(60).unwrap()));
         app.apply(Action::ToggleSignalView);
 
@@ -2357,14 +2388,14 @@ mod tests {
         let frame = VizFrame::new(vec![1.0_f32; 16], 1.0, vec![0.0; 32]);
 
         let mut signal = base_app();
-        signal.apply(Action::PlaySelected);
-        signal.apply(Action::Audio(AudioEvent::Viz(frame.clone())));
+        signal.apply(Action::PlaySelected(one_request()));
+        push_frame(&mut signal, frame.clone());
         signal.apply(Action::ToggleSignalView);
         let signal_buf = render_buffer(&signal, 120, 40);
 
         let mut normal = base_app();
-        normal.apply(Action::PlaySelected);
-        normal.apply(Action::Audio(AudioEvent::Viz(frame)));
+        normal.apply(Action::PlaySelected(one_request()));
+        push_frame(&mut normal, frame);
         let normal_buf = render_buffer(&normal, 120, 40);
 
         let text = buffer_text(&signal_buf);
@@ -2387,12 +2418,11 @@ mod tests {
         // Tiny/small terminals must stay bounded and never panic; they keep the
         // Center Stage concept instead of falling back to the normal compact UI.
         let mut app = base_app();
-        app.apply(Action::PlaySelected);
-        app.apply(Action::Audio(AudioEvent::Viz(VizFrame::new(
-            vec![0.5_f32; 16],
-            0.5,
-            vec![0.5_f32; 16],
-        ))));
+        app.apply(Action::PlaySelected(one_request()));
+        push_frame(
+            &mut app,
+            VizFrame::new(vec![0.5_f32; 16], 0.5, vec![0.5_f32; 16]),
+        );
         app.apply(Action::ToggleSignalView);
         for (w, h) in [(0, 0), (1, 1), (2, 3), (6, 4), (12, 5), (20, 8), (40, 10)] {
             let buf = render_buffer(&app, w, h);
@@ -2431,7 +2461,9 @@ mod tests {
         let mut app = base_app();
         let id = app.selected_station().unwrap().id.clone();
         play_first(&mut app);
+        let request = live_request(&mut app);
         app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request,
             station: id,
             title: "Extremely ".repeat(40),
         }));
@@ -2680,7 +2712,9 @@ mod tests {
         ]);
         play_first(&mut app);
         let station = app.current_station().unwrap().id.clone();
+        let request = live_request(&mut app);
         app.apply(Action::Audio(AudioEvent::IcyTitle {
+            request,
             station,
             title: "Aurora Drift - Nightwave".to_string(),
         }));

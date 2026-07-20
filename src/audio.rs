@@ -28,7 +28,9 @@ use ringbuf::{
     HeapRb,
 };
 
-use crate::model::{Station, StationId, VizFrame, VolumePercent};
+use crate::model::{
+    PlaybackRequestId, PlaybackRequestSeq, Station, StationId, VizFrame, VolumePercent,
+};
 
 use self::decoder::StreamDecoder;
 use self::output::SharedVolume;
@@ -54,9 +56,15 @@ const VIZ_INTERVAL_LOW_POWER: Duration = Duration::from_millis(250);
 pub enum AudioCommand {
     /// Stop any current playback and start `station` at `volume`.
     ///
+    /// `request` identifies this play attempt. It is echoed on every
+    /// station-scoped event the attempt produces, so the app can tell the
+    /// current attempt's events apart from a superseded one's — including a
+    /// replay of the same station.
+    ///
     /// The station is boxed to keep the command enum small (a `Station` carries
     /// several owned fields), so cloning/queuing commands stays cheap.
     Play {
+        request: PlaybackRequestId,
         station: Box<Station>,
         volume: VolumePercent,
     },
@@ -69,23 +77,58 @@ pub enum AudioCommand {
 }
 
 /// A progress event emitted by the audio runtime.
+///
+/// Event scoping is deliberately split in two:
+///
+/// - *Station-scoped* events (`Connecting`, `Playing`, `Failed`, `Viz`,
+///   `IcyTitle`) carry the [`PlaybackRequestId`] of the [`AudioCommand::Play`]
+///   that produced them. These are the events that can arrive late: `Failed`,
+///   `Viz`, and `IcyTitle` are emitted from the decoder/analyzer/output worker
+///   threads, which outlive the command that spawned them and may still be
+///   draining while a newer request is already connecting. The app rejects any
+///   of them whose request is not the currently expected one.
+/// - *Global* events (`Stopped`, `VolumeChanged`) carry no request and are
+///   applied unconditionally. Both are emitted only from the control thread, in
+///   command order, on the single event channel — so they cannot overtake a
+///   later request's events the way a worker thread's can. They also describe
+///   runtime-wide state (nothing is playing; the live output volume) rather
+///   than the fate of one attempt, so scoping them to a request would be wrong
+///   even if they could race: a `Stop` issued between two plays must still stop
+///   the UI, and volume persists across stations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioEvent {
     /// Connecting to the station's stream (emitted before the network attempt).
-    Connecting { station: StationId },
+    Connecting {
+        request: PlaybackRequestId,
+        station: StationId,
+    },
     /// Playback has started for the station.
-    Playing { station: StationId },
-    /// Playback stopped (in response to `Stop`).
+    Playing {
+        request: PlaybackRequestId,
+        station: StationId,
+    },
+    /// Playback stopped (in response to `Stop`). Global; see the type docs.
     Stopped,
     /// Playback could not start or failed; the station is recoverable-failed.
-    Failed { station: StationId, message: String },
-    /// The live volume changed.
+    Failed {
+        request: PlaybackRequestId,
+        station: StationId,
+        message: String,
+    },
+    /// The live volume changed. Global; see the type docs.
     VolumeChanged(VolumePercent),
     /// A visualizer frame derived from the most recent played samples.
-    Viz(VizFrame),
+    Viz {
+        request: PlaybackRequestId,
+        frame: VizFrame,
+    },
     /// A new ICY/Shoutcast `StreamTitle` was demuxed for `station`. Emitted only
     /// when the title changes, so the app is not flooded with repeats.
-    IcyTitle { station: StationId, title: String },
+    IcyTitle {
+        request: PlaybackRequestId,
+        station: StationId,
+        title: String,
+    },
 }
 
 /// Configuration for [`AudioRuntime::spawn`].
@@ -100,9 +143,35 @@ pub struct AudioRuntimeConfig {
 /// Handle to a running audio runtime: send [`AudioCommand`]s and receive
 /// [`AudioEvent`]s. Dropping the handle (and thus `command_tx`) shuts the
 /// runtime down.
+///
+/// The handle also owns the process's [`PlaybackRequestSeq`]. Allocation lives
+/// on the controller side of the boundary — not inside the reducer and not on
+/// the audio thread — so every play path (`Enter`, `Space`, Signal View,
+/// startup auto-play) draws from one sequence and the app is only ever *told*
+/// which request to expect.
 pub struct AudioHandle {
     pub command_tx: Sender<AudioCommand>,
     pub event_rx: Receiver<AudioEvent>,
+    requests: PlaybackRequestSeq,
+}
+
+impl AudioHandle {
+    /// Build a handle around an existing command/event pair.
+    pub fn new(command_tx: Sender<AudioCommand>, event_rx: Receiver<AudioEvent>) -> Self {
+        Self {
+            command_tx,
+            event_rx,
+            requests: PlaybackRequestSeq::new(),
+        }
+    }
+
+    /// Allocate the id for the next play request.
+    ///
+    /// The caller must record it with the app (so the app expects that
+    /// request's events) and send it on the matching [`AudioCommand::Play`].
+    pub fn next_playback_request(&self) -> PlaybackRequestId {
+        self.requests.next_id()
+    }
 }
 
 /// The native audio runtime. Use [`AudioRuntime::spawn`] to start it.
@@ -117,10 +186,7 @@ impl AudioRuntime {
         let (command_tx, command_rx) = mpsc::channel::<AudioCommand>();
         let (event_tx, event_rx) = mpsc::channel::<AudioEvent>();
         thread::spawn(move || run_control_loop(config, command_rx, event_tx));
-        AudioHandle {
-            command_tx,
-            event_rx,
-        }
+        AudioHandle::new(command_tx, event_rx)
     }
 }
 
@@ -164,23 +230,32 @@ fn run_control_loop(
 
     while let Ok(command) = command_rx.recv() {
         match command {
-            AudioCommand::Play { station, volume: v } => {
-                // Stop the previous stream before announcing the new one.
+            AudioCommand::Play {
+                request,
+                station,
+                volume: v,
+            } => {
+                // Stop the previous stream before announcing the new one. The
+                // old session's workers may still emit events after this point;
+                // they carry the old request and the app drops them.
                 drop(current.take());
                 let station_id = station.id.clone();
                 let _ = event_tx.send(AudioEvent::Connecting {
+                    request,
                     station: station_id.clone(),
                 });
                 volume.set(v);
-                match start_playback(&station, &config, &volume, &event_tx) {
+                match start_playback(request, &station, &config, &volume, &event_tx) {
                     Ok(playback) => {
                         current = Some(playback);
                         let _ = event_tx.send(AudioEvent::Playing {
+                            request,
                             station: station_id,
                         });
                     }
                     Err(err) => {
                         let _ = event_tx.send(AudioEvent::Failed {
+                            request,
                             station: station_id,
                             message: format!("{err:#}"),
                         });
@@ -208,6 +283,7 @@ fn run_control_loop(
 /// [`Playback`]. Any failure (network, device, unsupported rate, decode) is
 /// returned as an error for the caller to surface as [`AudioEvent::Failed`].
 fn start_playback(
+    request: PlaybackRequestId,
     station: &Station,
     config: &AudioRuntimeConfig,
     volume: &SharedVolume,
@@ -218,12 +294,13 @@ fn start_playback(
     // upstream, per the audio spike findings.
     //
     // ICY titles are demuxed inside the decoder and surfaced as events tagged
-    // with this station's id, so the app can ignore stale titles from a station
-    // it has since left.
+    // with this request, so the app can ignore titles from an attempt it has
+    // since left — including an earlier attempt at this same station.
     let icy_event_tx = event_tx.clone();
     let icy_station = station.id.clone();
     let on_title: Box<dyn FnMut(String) + Send + Sync> = Box::new(move |title| {
         let _ = icy_event_tx.send(AudioEvent::IcyTitle {
+            request,
             station: icy_station.clone(),
             title,
         });
@@ -257,6 +334,7 @@ fn start_playback(
         played_tx,
         move |message| {
             let _ = output_err_tx.send(AudioEvent::Failed {
+                request,
                 station: output_err_station.clone(),
                 message,
             });
@@ -272,6 +350,7 @@ fn start_playback(
             queue_tx,
             decoder_stop,
             decoder_event_tx,
+            request,
             station_id,
         )
     });
@@ -292,7 +371,7 @@ fn start_playback(
             interval,
             analyzer_stop,
             |frame| {
-                let _ = viz_tx.send(AudioEvent::Viz(frame));
+                let _ = viz_tx.send(AudioEvent::Viz { request, frame });
             },
         );
     });
@@ -326,6 +405,7 @@ fn pump_decoder(
     mut queue_tx: ringbuf::HeapProd<f32>,
     stop: Arc<AtomicBool>,
     event_tx: Sender<AudioEvent>,
+    request: PlaybackRequestId,
     station: StationId,
 ) {
     // `by_ref` keeps `decoder` alive after the loop so we can read why it ended.
@@ -355,7 +435,11 @@ fn pump_decoder(
         let message = decoder
             .take_last_error()
             .unwrap_or_else(|| "stream ended unexpectedly".to_string());
-        let _ = event_tx.send(AudioEvent::Failed { station, message });
+        let _ = event_tx.send(AudioEvent::Failed {
+            request,
+            station,
+            message,
+        });
     }
 }
 
@@ -422,6 +506,42 @@ pub(crate) fn resolve_stream_url(raw: &str, mount: StreamMount) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handle with no runtime behind it: enough to exercise the
+    /// controller-side request allocation without a device or network.
+    fn detached_handle() -> AudioHandle {
+        let (command_tx, _command_rx) = mpsc::channel();
+        let (_event_tx, event_rx) = mpsc::channel();
+        AudioHandle::new(command_tx, event_rx)
+    }
+
+    #[test]
+    fn the_handle_allocates_a_distinct_request_per_play() {
+        let handle = detached_handle();
+        let first = handle.next_playback_request();
+        let second = handle.next_playback_request();
+        let third = handle.next_playback_request();
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        assert_ne!(first, third);
+    }
+
+    #[test]
+    fn station_scoped_events_are_distinguished_by_request_not_station() {
+        // The whole point of MIK-065: two attempts at the *same* station are
+        // different events, so the app can reject the older one.
+        let handle = detached_handle();
+        let station = crate::model::StationId::new("a").unwrap();
+        let first = AudioEvent::Playing {
+            request: handle.next_playback_request(),
+            station: station.clone(),
+        };
+        let second = AudioEvent::Playing {
+            request: handle.next_playback_request(),
+            station,
+        };
+        assert_ne!(first, second);
+    }
 
     #[test]
     fn direct_policy_never_appends_stream() {

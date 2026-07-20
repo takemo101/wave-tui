@@ -18,7 +18,9 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::herdr::{self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult};
+use crate::herdr::{
+    self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
+};
 use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
@@ -171,6 +173,25 @@ struct AgentFocusNotice {
     shown_at: Instant,
 }
 
+/// Ephemeral inline Name input owned by the App reducer. The private identity
+/// is held only long enough for the controller to return it to `herdr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentRenameOverlay {
+    Closed,
+    Editing {
+        id: AgentId,
+        input: String,
+        submitting: bool,
+    },
+}
+
+/// Short, modal-local feedback from an explicit rename request. Like focus,
+/// this retains no raw server text or private identifiers.
+#[derive(Debug)]
+struct AgentRenameNotice {
+    result: RenameResult,
+    shown_at: Instant,
+}
 /// The visualizer display frozen at the Connected→Stale edge: the
 /// then-current frame plus the prior frames behind it (most recent first),
 /// so the canvas can keep drawing the exact last live current and trails.
@@ -212,7 +233,9 @@ struct AgentPulse {
     selected: Option<AgentId>,
     overlay: AgentOverlay,
     details: AgentDetailsOverlay,
+    rename: AgentRenameOverlay,
     focus_notice: Option<AgentFocusNotice>,
+    rename_notice: Option<AgentRenameNotice>,
     /// When the last successful snapshot arrived.
     last_success: Option<Instant>,
     /// When the current failure streak began; cleared by any success.
@@ -234,7 +257,9 @@ impl AgentPulse {
             selected: None,
             overlay: AgentOverlay::Closed,
             details: AgentDetailsOverlay::Closed,
+            rename: AgentRenameOverlay::Closed,
             focus_notice: None,
+            rename_notice: None,
             last_success: None,
             first_failure: None,
             stale_viz: None,
@@ -254,6 +279,7 @@ impl AgentPulse {
         if self.selected_index().is_none() {
             self.selected = None;
             self.details = AgentDetailsOverlay::Closed;
+            self.rename = AgentRenameOverlay::Closed;
         }
     }
 
@@ -472,6 +498,18 @@ pub enum Action {
     OpenAgentDetails,
     /// Close the temporary Agent Planets details modal.
     CloseAgentDetails,
+    /// Open the inline Name input in the Agent table for its selected agent.
+    OpenAgentRename,
+    /// Append one ordinary typed character to the inline Name input.
+    AppendAgentRename(char),
+    /// Remove one Unicode scalar from the inline Name input.
+    BackspaceAgentRename,
+    /// Mark the current inline Name input as dispatched to the Herdr adapter.
+    SubmitAgentRename,
+    /// Cancel the inline Name input while leaving the Agent table open.
+    CloseAgentRename,
+    /// Fold a typed asynchronous `agent.rename` outcome into the live table.
+    AgentRenameResult { result: RenameResult, now: Instant },
     /// Select an active agent by its stable identity (mouse/particle
     /// selection).
     SelectAgent(AgentId),
@@ -614,6 +652,14 @@ impl App {
             Action::SelectPreviousAgent => self.select_previous_agent(),
             Action::OpenAgentDetails => self.open_agent_details(),
             Action::CloseAgentDetails => self.close_agent_details(),
+            Action::OpenAgentRename => self.open_agent_rename(),
+            Action::AppendAgentRename(character) => self.append_agent_rename(character),
+            Action::BackspaceAgentRename => self.backspace_agent_rename(),
+            Action::SubmitAgentRename => self.submit_agent_rename(),
+            Action::CloseAgentRename => self.close_agent_rename(),
+            Action::AgentRenameResult { result, now } => {
+                self.record_agent_rename_result(result, now)
+            }
             Action::SelectAgent(id) => self.select_agent(id),
         }
     }
@@ -846,6 +892,7 @@ impl App {
         self.display_mode = match self.display_mode {
             DisplayMode::Normal => {
                 self.agent_pulse.details = AgentDetailsOverlay::Closed;
+                self.agent_pulse.rename = AgentRenameOverlay::Closed;
                 DisplayMode::SignalView
             }
             DisplayMode::SignalView => DisplayMode::Normal,
@@ -1096,6 +1143,7 @@ impl App {
         if pulse.connection == AgentPulseConnection::Unavailable {
             pulse.stale_viz = None;
             pulse.details = AgentDetailsOverlay::Closed;
+            pulse.rename = AgentRenameOverlay::Closed;
         }
     }
 
@@ -1122,6 +1170,7 @@ impl App {
             pulse.connection = AgentPulseConnection::Unavailable;
             pulse.stale_viz = None;
             pulse.details = AgentDetailsOverlay::Closed;
+            pulse.rename = AgentRenameOverlay::Closed;
         }
     }
 
@@ -1162,6 +1211,7 @@ impl App {
             AgentOverlay::Closed => AgentOverlay::Open,
             AgentOverlay::Open => {
                 self.agent_pulse.details = AgentDetailsOverlay::Closed;
+                self.agent_pulse.rename = AgentRenameOverlay::Closed;
                 AgentOverlay::Closed
             }
         };
@@ -1173,6 +1223,7 @@ impl App {
         }
         self.agent_pulse.overlay = AgentOverlay::Closed;
         self.agent_pulse.details = AgentDetailsOverlay::Closed;
+        self.agent_pulse.rename = AgentRenameOverlay::Closed;
     }
 
     fn open_agent_details(&mut self) {
@@ -1186,6 +1237,113 @@ impl App {
 
     fn close_agent_details(&mut self) {
         self.agent_pulse.details = AgentDetailsOverlay::Closed;
+        self.agent_pulse.rename = AgentRenameOverlay::Closed;
+    }
+
+    fn open_agent_rename(&mut self) {
+        if !self.agent_selection_interactive()
+            || !matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
+        {
+            return;
+        }
+        let Some(agent) = self.selected_agent() else {
+            return;
+        };
+        self.agent_pulse.rename = AgentRenameOverlay::Editing {
+            id: agent.id.clone(),
+            input: agent.details.name.clone().unwrap_or_default(),
+            submitting: false,
+        };
+        self.agent_pulse.rename_notice = None;
+    }
+
+    fn append_agent_rename(&mut self, character: char) {
+        if self.agent_pulse.connection != AgentPulseConnection::Connected {
+            return;
+        }
+        if let AgentRenameOverlay::Editing {
+            input, submitting, ..
+        } = &mut self.agent_pulse.rename
+        {
+            if !*submitting {
+                input.push(character);
+                self.agent_pulse.rename_notice = None;
+            }
+        }
+    }
+
+    fn backspace_agent_rename(&mut self) {
+        if self.agent_pulse.connection != AgentPulseConnection::Connected {
+            return;
+        }
+        if let AgentRenameOverlay::Editing {
+            input, submitting, ..
+        } = &mut self.agent_pulse.rename
+        {
+            if !*submitting {
+                input.pop();
+                self.agent_pulse.rename_notice = None;
+            }
+        }
+    }
+
+    fn submit_agent_rename(&mut self) {
+        if self.agent_pulse.connection != AgentPulseConnection::Connected {
+            return;
+        }
+        if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.agent_pulse.rename {
+            if !*submitting {
+                *submitting = true;
+                self.agent_pulse.rename_notice = None;
+            }
+        }
+    }
+
+    fn close_agent_rename(&mut self) {
+        self.agent_pulse.rename = AgentRenameOverlay::Closed;
+        self.agent_pulse.rename_notice = None;
+    }
+
+    fn record_agent_rename_result(&mut self, result: RenameResult, now: Instant) {
+        if self.agent_pulse.connection != AgentPulseConnection::Connected {
+            if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.agent_pulse.rename {
+                *submitting = false;
+                self.agent_pulse.rename_notice = Some(AgentRenameNotice {
+                    result: RenameResult::Unavailable,
+                    shown_at: now,
+                });
+            }
+            return;
+        }
+        let AgentRenameOverlay::Editing {
+            id,
+            input,
+            submitting: _,
+        } = &self.agent_pulse.rename
+        else {
+            return;
+        };
+        if result == RenameResult::Renamed {
+            let name = (!input.trim().is_empty()).then(|| input.trim().to_owned());
+            if let Some(agent) = self
+                .agent_pulse
+                .active
+                .iter_mut()
+                .find(|agent| agent.id == *id)
+            {
+                agent.name = name.clone();
+                agent.details.name = name;
+            }
+            self.agent_pulse.rename = AgentRenameOverlay::Closed;
+            self.agent_pulse.rename_notice = None;
+        } else if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.agent_pulse.rename
+        {
+            *submitting = false;
+            self.agent_pulse.rename_notice = Some(AgentRenameNotice {
+                result,
+                shown_at: now,
+            });
+        }
     }
 
     /// Move the overlay selection to the next sorted agent, wrapping from
@@ -1458,6 +1616,71 @@ impl App {
         matches!(self.agent_pulse.details, AgentDetailsOverlay::Open(_))
     }
 
+    /// Whether the Agent table's inline Name input is open.
+    pub(crate) fn is_agent_rename_open(&self) -> bool {
+        matches!(self.agent_pulse.rename, AgentRenameOverlay::Editing { .. })
+    }
+
+    /// Current inline Name input. The empty string is intentional: it maps to
+    /// a JSON null clear request at the Herdr boundary.
+    pub(crate) fn agent_rename_input(&self) -> Option<&str> {
+        let AgentRenameOverlay::Editing { input, .. } = &self.agent_pulse.rename else {
+            return None;
+        };
+        Some(input)
+    }
+
+    /// Whether a submitted inline rename is awaiting its asynchronous typed
+    /// outcome. The UI stays responsive but prevents duplicate submissions.
+    pub(crate) fn agent_rename_is_submitting(&self) -> bool {
+        matches!(
+            self.agent_pulse.rename,
+            AgentRenameOverlay::Editing {
+                submitting: true,
+                ..
+            }
+        )
+    }
+
+    /// Opaque target plus normalized request value for the controller. This
+    /// never exposes the private id to UI or persistence, and stale snapshots
+    /// intentionally return `None` without clearing the user's input.
+    pub(crate) fn agent_rename_request(&self) -> Option<(AgentId, Option<String>)> {
+        if self.agent_pulse.connection != AgentPulseConnection::Connected {
+            return None;
+        }
+        let AgentRenameOverlay::Editing {
+            id,
+            input,
+            submitting: false,
+        } = &self.agent_pulse.rename
+        else {
+            return None;
+        };
+        Some((
+            id.clone(),
+            (!input.trim().is_empty()).then(|| input.trim().to_owned()),
+        ))
+    }
+
+    /// Short inline-name failure copy. It deliberately omits server text and
+    /// private identifiers, and only remains while the input is still open.
+    pub(crate) fn agent_rename_notice(&self, now: Instant) -> Option<&'static str> {
+        if !self.is_agent_rename_open() {
+            return None;
+        }
+        let notice = self.agent_pulse.rename_notice.as_ref()?;
+        if now.saturating_duration_since(notice.shown_at) >= AGENT_FOCUS_NOTICE_FOR {
+            return None;
+        }
+        match notice.result {
+            RenameResult::Unsupported => Some("rename requires Herdr 0.7.0+"),
+            RenameResult::Missing => Some("agent is no longer available"),
+            RenameResult::Unavailable => Some("rename unavailable · retrying"),
+            RenameResult::Renamed => None,
+        }
+    }
+
     /// Approved details for the selected identity while the table modal is open.
     /// Kept test-only because production presentation reads the complete live
     /// display-order table rather than a single selected record.
@@ -1536,7 +1759,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, FocusResult};
+    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult};
     use crate::model::{
         BitrateKbps, CodecKind, PhaseTrace, StationId, StationName, StationSource, StreamUrl,
         VisualizerMode, VolumePercent,
@@ -3561,6 +3784,85 @@ mod tests {
             AgentPulseConnection::Unavailable
         );
         assert!(!app.is_agent_details_open());
+    }
+
+    #[test]
+    fn inline_rename_seeds_edits_and_updates_the_live_table_on_success() {
+        let mut app = app_with_agents(vec![agent(
+            "ws",
+            "p1",
+            Some("research"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::OpenAgentRename);
+        assert_eq!(app.agent_rename_input(), Some("research"));
+
+        app.apply(Action::AppendAgentRename('!'));
+        app.apply(Action::BackspaceAgentRename);
+        app.apply(Action::SubmitAgentRename);
+        assert!(app.agent_rename_is_submitting());
+        app.apply(Action::AgentRenameResult {
+            result: RenameResult::Renamed,
+            now: Instant::now(),
+        });
+
+        assert!(!app.is_agent_rename_open());
+        assert_eq!(
+            app.selected_agent()
+                .and_then(|agent| agent.details.name.as_deref()),
+            Some("research"),
+            "successful rename updates the current table snapshot immediately"
+        );
+    }
+
+    #[test]
+    fn failed_or_stale_inline_rename_keeps_the_input_without_sending_again() {
+        let now = Instant::now();
+        let mut app = app_with_agents(vec![agent("ws", "p1", Some("old"), AgentStatus::Working)]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::BackspaceAgentRename);
+        app.apply(Action::BackspaceAgentRename);
+        app.apply(Action::BackspaceAgentRename);
+        app.apply(Action::AppendAgentRename('n'));
+        app.apply(Action::AppendAgentRename('e'));
+        app.apply(Action::AppendAgentRename('w'));
+        app.apply(Action::SubmitAgentRename);
+        app.apply(Action::AgentRenameResult {
+            result: RenameResult::Unavailable,
+            now,
+        });
+        assert_eq!(app.agent_rename_input(), Some("new"));
+        assert_eq!(
+            app.agent_rename_notice(now),
+            Some("rename unavailable · retrying")
+        );
+
+        app.apply(Action::AgentPollFailed { now });
+        app.apply(Action::SubmitAgentRename);
+        assert_eq!(app.agent_rename_input(), Some("new"));
+        assert!(!app.agent_rename_is_submitting());
+    }
+
+    #[test]
+    fn unavailable_agent_pulse_closes_table_and_inline_rename() {
+        let now = Instant::now();
+        let mut app = app_with_agents(vec![agent("ws", "p1", Some("old"), AgentStatus::Working)]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AgentPollFailed {
+            now: now + herdr::STALE_AFTER + Duration::from_secs(1),
+        });
+
+        assert!(!app.is_agent_details_open());
+        assert!(!app.is_agent_rename_open());
     }
 
     #[test]

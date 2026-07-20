@@ -517,7 +517,7 @@ plugin, shows a **read-only Agent Pulse**: the live status of the AI coding
 agents visible on that Herdr session's local control socket, presented as
 ambient context beside radio playback. The canvas background is the Dual
 Phase Scope and the agent presentation is the Agent Planets stage — the
-centered stage with round disc-mask planets, on-demand Agent details
+centered stage with round disc-mask planets, on-demand Agent table
 modal, interior-only surface status, static central sun with Working-only
 invisible orbits, and selection focus brackets recorded in
 `docs/ui-design-decisions.md`, which also records the superseded
@@ -560,9 +560,9 @@ enabled.
 
 - A focused `herdr` adapter module owns environment parsing, the Unix socket
   transport, newline-delimited JSON-RPC framing, `agent.list` payload
-  normalization, and the explicit `agent.focus` request; nothing else in the
-  app sees raw JSON, sockets, pane ids, or server-error text.
-- A background thread polls `agent.list` every 5 seconds with a 3-second
+  normalization, and the explicit `agent.focus` and `agent.rename` requests;
+  nothing else in the
+  app sees raw JSON, sockets, pane ids, or server-error text.- A background thread polls `agent.list` every 5 seconds with a 3-second
   socket I/O timeout and forwards typed snapshot/failure events into the
   existing event loop; the reducer in `app` owns all lifecycle state.
 - Every agent returned by the current socket is normalized — across all of
@@ -677,7 +677,11 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   silent startup renders the live frame, Working orbit drift included,
   until audio becomes audible) while fresh agent snapshots may still
   update the per-status interior treatment and colors.
-- Planets keep no permanent label. While the stage selection is
+- Only an explicit Herdr name may render in the stage field: as a single-line,
+  ellipsized label directly beneath its planet disc. Unnamed planets remain
+  label-free. A label stays within its planet tile and is omitted when its
+  candidate rectangle would collide with an earlier displayed label, the sun,
+  or stage chrome; planets always remain. While the stage selection is
   interactive (overlay open on a live connection), `Tab`/`↓`/`j` select the
   next planet and wrap from the last agent back to the first, and
   `Shift+Tab`/`↑`/`k` select the previous planet and wrap from the first
@@ -685,22 +689,36 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   previous at the last). The selected planet gains four theme-colored
   corner brackets around its allocated tile — a foreground-only treatment
   that never paints a selection background, never restyles the identity
-  surface, and is decorative rather than a hit target. `Enter` opens the
-  centered
-  **Agent details** record for the selected live planet (no-op without
-  one), showing non-empty `name`, `agent`, normalized `status`, and
-  `activity` (`terminal_title`) rows in that order. Its modal footer shows
-  `O open pane`; the stage footer shows that focus hint only while details
-  are closed. `o`/`O` explicitly focuses the selected existing pane through
-  `agent.focus` asynchronously while preserving the stage, record,
-  selection, and playback; it is allowed only for a
-  selected `Connected` snapshot. Unsupported Herdr (requiring 0.7.0+), a
-  missing/moved pane, unavailable socket, or no selection yields a short
-  modal-local notification without retrying, creating a pane, sending input,
-  or exposing identifiers. `Enter`/`Esc` close only the record, `a` closes
-  the record and the stage, and while it is open selection, player, theme,
-  favorite, visualizer, search, and Signal
-  View input is consumed (`q`/`Ctrl+C` still quit). Normal-layout
+  surface, and is decorative rather than a hit target. `Enter` opens a
+  centered **Agent table** for the selected live planet (no-op without one).
+  It contains every active agent in current planet display order in the four
+  columns `Name | Agent | Status | Activity`; its highlighted row always
+  matches the shared planet selection. It uses responsive `Name` 25%, `Agent`
+  20%, `Status` 15%, and `Activity` 40% columns, keeping all four with cell
+  ellipsis on narrow panes rather than dropping a column. The modal takes 90%
+  of its field capped at 100 cells, shows at most ten scrolling rows while
+  keeping selection visible, and uses `theme.selection_style()` rather than a
+  marker glyph. The modal has outer borders, only the header's subtle bottom
+  margin, and no full cell grid. Its dedicated full-width modal footer shows
+  `O open pane`; the stage footer omits that duplicate while the table is open.
+  `o`/`O` explicitly focuses the selected existing pane through
+  `agent.focus` asynchronously while preserving the stage, table, selection,
+  and playback; it is allowed only for a selected `Connected` snapshot. While
+  a live table is open, `r`/`R` opens an inline `Name`
+  input seeded only from the selected agent's explicit Herdr name. Regular
+  typing and Backspace edit the process-local input; Enter sends
+  `agent.rename` asynchronously, with blank input encoded as JSON `null` to
+  clear the name. A successful reply immediately updates the in-memory table
+  snapshot; a later `agent.list` remains authoritative. Failures retain the
+  input and show only short modal-local feedback. `Esc` cancels only the
+  rename input, leaving the table/stage open. Stale state disables editing and
+  submit while retaining the input, and Unavailable closes the table/input.
+  Unsupported Herdr (requiring 0.7.0+), a missing/moved pane, unavailable
+  socket, or no selection yields a short modal-local notification without
+  retrying, creating a pane, sending input, or exposing identifiers.
+  `Enter`/`Esc` close only the table when no inline input is open, `a` closes
+  the table and the stage, and while it is
+  open selection, player, theme, favorite, visualizer, search, and Signal  View input is consumed (`q`/`Ctrl+C` still quit). Normal-layout
   navigation keys keep their non-wrapping behavior outside the stage.
   Search (`/`) and
   station navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed,
@@ -715,7 +733,7 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 - Mouse capture is enabled only for eligible plugin launches, solely to feed
   planet-selection clicks; only a planet's disc body cells select —
   background trace, vignette, the sun, focus-bracket, and empty cells
-  resolve nothing, and clicks are consumed while the details record is
+  resolve nothing, and clicks are consumed while the Agent table is
   open. Clicks resolve against the planet geometry actually drawn
   (including low-power frozen geometry) and only while the connection is
   `Connected`. During stale/unavailable states selection is frozen entirely —
@@ -723,17 +741,18 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   still close the stage. Selection input, from either device, must not act
   on data that may no longer be current.
 
-#### Privacy and read-only guarantees
+#### Privacy and control guarantees
 
-- Monitoring calls only `agent.list`. The sole control exception is an
-  explicit user `o`/`O` request for `agent.focus` on the selected current pane;
-  it never creates/restarts/closes panes or sends text. Pane output, prompts,
-  files, and scrollback are never read.
-- Every agent reported by the plugin invocation's local Herdr socket is
+- Monitoring calls only `agent.list`. Explicit user controls are `o`/`O` for
+  `agent.focus` on the selected current pane and `r`/`R` then Enter for
+  `agent.rename` of its explicit display name; neither creates/restarts/closes
+  panes or sends pane input. Pane output, prompts,
+  files, and scrollback are never read.- Every agent reported by the plugin invocation's local Herdr socket is
   shown, across that session's workspaces; other Herdr sessions are never
   discovered.
-- The stage field renders no agent text at all. Only the on-demand Agent
-  details record renders agent data, and only an agent's explicit Herdr
+- The stage field renders no agent text except an agent's explicit Herdr name
+  as its eligible one-line planet label. The on-demand Agent table renders
+  agent data, and only an agent's explicit Herdr
   `name`, its `agent` runtime label, normalized status, and
   `terminal_title` Activity when non-empty. Pane ids, workspace ids,
   working directories, terminal/session ids, and raw status never appear
@@ -905,8 +924,8 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   (29-sample primary fallback, 97-sample secondary) — with no scrolling
   waveform substitution (`model`, `audio::output`, `audio::analyzer`);
 - `--no-agent-pulse` parsing/help text, `a` routing, Signal View suppression,
-  the stage key gate (planet selection, details open/close and
-  details-open input consumption, suppressed search/station
+  the stage key gate (planet selection, table open/close and
+  table-open input consumption, suppressed search/station
   navigation, preserved global player shortcuts, and stage-local `z`
   consumption with unchanged Signal View routing outside the stage), and
   monitor/mouse-capture/click routing including the low-power geometry
@@ -946,8 +965,11 @@ The suite covers, without any live Herdr process, socket, audio, or terminal:
   no status detail, dense orbit-radius scaling with the smallest bodies
   dropped only when the sun/body gap cannot hold (never the sun), the
   selected planet's four bounded corner brackets that never select, the
-  Agent details record's field ordering/truncation/privacy exclusions,
-  stale/low-power frozen disc/orbit-phase/bracket geometry with per-status
+  Agent table's all-active display order, shared theme selection style,
+  25%/20%/15%/40% responsive columns, ten-row scrolling viewport,
+  90%-field/100-cell modal cap, four-column ellipsis behavior, and privacy
+  exclusions, stale/low-power frozen disc/orbit-phase/bracket geometry with
+  per-status
   colors still refreshing, stale freeze/unavailable rendering (unavailable
   hiding sun and planets), and body-only hit testing that never resolves
   the sun (`ui`, `ui::agent_pulse`).
@@ -1000,8 +1022,8 @@ the release as fully validated:
       the last, clicks land only on planet disc body cells (the sun and
       bracket cells select nothing), the selected planet shows only four
       corner brackets with no painted selection background, and `Enter`
-      opens the Agent details record with only non-empty name/agent/
-      status/activity rows — no pane, workspace, cwd, or session data.
+      opens the all-active `Name | Agent | Status | Activity` Agent table
+      with its shared selected row — no pane, workspace, cwd, or session data.
 - [ ] Resize the tab through Wide/Medium/Compact; confirm the eligible
       Wide/Medium footer shows the `a Agent Planets` hint, the summary and
       hint hide in Compact while `a` still opens the full-screen stage, and
@@ -1013,10 +1035,10 @@ the release as fully validated:
 - [ ] Temporarily remove socket access; confirm the dimmed count, the
       frozen stale stage (traces, the sun, discs at frozen orbit
       positions, interior status, and brackets frozen and dimmed under the
-      heading's `· reconnecting` note, an open
-      details record dimmed with `reconnecting` in its title), the
-      15-second `agents · unavailable · retrying` state closing details
-      and hiding the sun and planets behind the notice
+      heading's `· reconnecting` note, an open Agent table frozen and
+      dimmed with the snapshot), the 15-second
+      `agents · unavailable · retrying` state closing the table and hiding
+      the sun and planets behind the notice
       while the stage chrome stays, and full recovery when the socket
       returns — with playback unaffected throughout, and mouse clicks and
       keyboard selection changing nothing while stale/unavailable.

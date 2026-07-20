@@ -601,6 +601,12 @@ struct FocusBracket {
     glyph: &'static str,
 }
 
+/// One explicit display-name label constrained to a planet tile.
+struct PlanetLabel {
+    rect: Rect,
+    text: String,
+}
+
 /// One agent's planet in field cells, derived purely from its tile, status,
 /// selection, and the current phase frame — every field follows the
 /// audio-transformed `rect`. Only the Working band and Blocked pulse
@@ -825,6 +831,65 @@ fn focus_brackets(tile: &CollageTile, disc: &DiscGeometry, area: Rect) -> Vec<Fo
 /// planet only — focus brackets from its tile. Craters and the identity
 /// surface stay stable; only the Working band and Blocked pulse follow the
 /// played phase frame.
+fn planet_label_candidate(
+    tile: &CollageTile,
+    geometry: &PlanetGeometry,
+    name: Option<&str>,
+) -> Option<PlanetLabel> {
+    let name: String = name?
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    if name.is_empty() || tile.rect.width == 0 || tile.rect.height == 0 {
+        return None;
+    }
+
+    let ellipsis_width = Line::raw("…").width() as u16;
+    let available_width = tile.rect.width;
+    if available_width < ellipsis_width {
+        return None;
+    }
+    let mut text = String::new();
+    for character in name.chars() {
+        let mut next = text.clone();
+        next.push(character);
+        if Line::raw(next.as_str()).width() as u16 > available_width {
+            break;
+        }
+        text = next;
+    }
+    if text.len() < name.len() {
+        while Line::raw(format!("{text}…")).width() as u16 > available_width {
+            text.pop();
+        }
+        text.push('…');
+    }
+    let width = Line::raw(text.as_str()).width() as u16;
+    let y = geometry
+        .body
+        .iter()
+        .map(|&(_, y)| y)
+        .max()?
+        .saturating_add(1);
+    if y >= tile.rect.y + tile.rect.height {
+        return None;
+    }
+    let x = tile.rect.x + tile.rect.width.saturating_sub(width) / 2;
+    let rect = Rect::new(x, y, width, 1);
+    (rect.x >= tile.rect.x
+        && rect.y >= tile.rect.y
+        && rect.x + rect.width <= tile.rect.x + tile.rect.width
+        && rect.y + rect.height <= tile.rect.y + tile.rect.height)
+        .then_some(PlanetLabel { rect, text })
+}
+
+fn rects_overlap(left: Rect, right: Rect) -> bool {
+    left.x < right.x + right.width
+        && right.x < left.x + left.width
+        && left.y < right.y + right.height
+        && right.y < left.y + left.height
+}
+
 fn planet_geometry(
     tile: &CollageTile,
     area: Rect,
@@ -1179,7 +1244,16 @@ fn render_agent_planets_stage(
         }
     }
 
-    render_agent_details_modal(app, theme, stale, field, now, buf);
+    render_planet_labels(
+        buf,
+        &layout,
+        &geometries,
+        agents,
+        theme,
+        stale,
+        selected_index,
+    );
+    render_agent_table_modal(app, theme, stale, field, now, buf);
 }
 
 /// Centered stage heading: `Agent Planets · n active` in the same Title
@@ -1256,16 +1330,16 @@ fn render_stage_title_block(app: &App, theme: &Theme, stale: bool, area: Rect, b
 
 /// Centered restrained footer: selection, player, and close hints. `z` is
 /// deliberately not advertised — Single View is not a stage action. Pane
-/// focus belongs to the details modal while it is open, so its `O` hint never
+/// focus belongs to the agent table while it is open, so its `O` hint never
 /// competes with the modal-local control.
-fn render_stage_footer(theme: &Theme, details_open: bool, area: Rect, buf: &mut Buffer) {
+fn render_stage_footer(theme: &Theme, table_open: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let hint = if details_open {
+    let hint = if table_open {
         "Tab/↑↓ select · Enter/Esc close · a close"
     } else {
-        "Tab/↑↓/click select · Enter details · O open pane · Space play · a/Esc close"
+        "Tab/↑↓/click select · Enter table · O open pane · Space play · a/Esc close"
     };
     Paragraph::new(hint)
         .alignment(Alignment::Center)
@@ -1273,8 +1347,73 @@ fn render_stage_footer(theme: &Theme, details_open: bool, area: Rect, buf: &mut 
         .render(area, buf);
 }
 
-/// Render the selected planet's compact, read-only details record.
-fn render_agent_details_modal(
+/// Truncate one table cell without dropping a column at narrow widths.
+fn ellipsize_cell(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count <= width {
+        value.to_string()
+    } else if width <= 1 {
+        "…".to_string()
+    } else {
+        let mut truncated: String = value.chars().take(width - 1).collect();
+        truncated.push('…');
+        truncated
+    }
+}
+
+/// The Agent table's fixed responsive column proportions. They deliberately
+/// keep every approved field available, even in the narrowest modal.
+const AGENT_TABLE_WIDTHS: [Constraint; 4] = [
+    Constraint::Percentage(25),
+    Constraint::Percentage(20),
+    Constraint::Percentage(15),
+    Constraint::Percentage(40),
+];
+const AGENT_TABLE_MAX_ROWS: usize = 10;
+
+/// Resolve the actual Ratatui column widths so cell text can ellipsize before
+/// rendering. This uses the exact constraints and spacing passed to `Table`.
+fn agent_table_widths(inner_width: u16) -> [usize; 4] {
+    let columns = Layout::horizontal(AGENT_TABLE_WIDTHS)
+        .spacing(1)
+        .split(Rect::new(0, 0, inner_width, 1));
+    std::array::from_fn(|index| columns[index].width as usize)
+}
+
+/// One data or header row, clipped to its responsive Ratatui column width.
+fn agent_table_row(cells: [&str; 4], widths: [usize; 4]) -> Row<'static> {
+    Row::new(
+        cells
+            .into_iter()
+            .zip(widths)
+            .map(|(value, width)| Cell::from(ellipsize_cell(value, width)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Center a table that takes 90% of its field, capped at 100 cells, and
+/// reserves only ten scrolling data rows plus fixed table chrome.
+fn agent_table_modal_area(field: Rect, agent_count: usize) -> Rect {
+    let width = (field.width.saturating_mul(90) / 100).clamp(12, 100);
+    let width = width.min(field.width);
+    // Top border + header + up to ten scrolling rows + a dedicated modal
+    // footer + bottom border. The table itself scrolls enough rows to keep
+    // selection visible through `TableState`.
+    let height = (agent_count.min(AGENT_TABLE_MAX_ROWS) as u16 + 4)
+        .min(field.height)
+        .max(5);
+    Rect::new(
+        field.x + field.width.saturating_sub(width) / 2,
+        field.y + field.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+/// Render the centered, read-only table of every active agent in the same
+/// sorted display order as their planets. A Ratatui `TableState` keeps the
+/// shared selection visible in its ten-row viewport without a marker glyph.
+fn render_agent_table_modal(
     app: &App,
     theme: &Theme,
     stale: bool,
@@ -1282,100 +1421,79 @@ fn render_agent_details_modal(
     now: Instant,
     buf: &mut Buffer,
 ) {
-    let Some(details) = app.selected_agent_details() else {
+    if !app.is_agent_details_open() {
         render_agent_focus_notice(app, theme, field, now, buf);
         return;
-    };
+    }
     if field.width < 12 || field.height < 5 {
         return;
     }
-    let status = app
-        .selected_agent()
-        .map(|agent| status_label(agent.status))
-        .unwrap_or("unknown");
-    let mut rows = Vec::new();
-    if let Some(name) = &details.name {
-        rows.push(("name", name.as_str()));
-    }
-    if let Some(agent) = &details.agent {
-        rows.push(("agent", agent.as_str()));
-    }
-    rows.push(("status", status));
-    if let Some(activity) = &details.activity {
-        rows.push(("activity", activity.as_str()));
-    }
 
+    let agents = app.active_agents();
     let notice = app.agent_focus_notice(now);
-    let width = field.width.clamp(12, 48);
-    let height = ((rows.len() + 4 + usize::from(notice.is_some())) as u16)
-        .min(field.height)
-        .max(5);
-    let area = Rect::new(
-        field.x + field.width.saturating_sub(width) / 2,
-        field.y + field.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
-    let mut lines = Vec::with_capacity(rows.len() + 1);
-    for (label, value) in rows {
-        let prefix = format!("{label}: ");
-        if label == "activity" {
-            let inner_width = area.width.saturating_sub(2) as usize;
-            let first_width = inner_width.saturating_sub(prefix.chars().count()).max(1);
-            let second_width = inner_width.saturating_sub(prefix.chars().count()).max(1);
-            let chars: Vec<char> = value.chars().collect();
-            let first: String = chars.iter().take(first_width).collect();
-            lines.push(Line::from(vec![
-                Span::styled(prefix.clone(), Style::default().fg(theme.muted)),
-                Span::styled(first, Style::default().fg(theme.foreground)),
-            ]));
-            if chars.len() > first_width {
-                let remaining = &chars[first_width..];
-                let truncated = remaining.len() > second_width;
-                let keep = second_width.saturating_sub(usize::from(truncated));
-                let mut second: String = remaining.iter().take(keep).collect();
-                if truncated {
-                    second.push('…');
-                }
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        " ".repeat(prefix.chars().count()),
-                        Style::default().fg(theme.muted),
-                    ),
-                    Span::styled(second, Style::default().fg(theme.foreground)),
-                ]));
-            }
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(theme.muted)),
-                Span::styled(value.to_string(), Style::default().fg(theme.foreground)),
-            ]));
-        }
+    let area = agent_table_modal_area(field, agents.len());
+    let widths = agent_table_widths(area.width.saturating_sub(2));
+    let selected_index = app
+        .selected_agent()
+        .and_then(|selected| agents.iter().position(|view| view.id == selected.id));
+    let rows = agents.iter().map(|view| {
+        agent_table_row(
+            [
+                view.details.name.as_deref().unwrap_or("—"),
+                view.details.agent.as_deref().unwrap_or("—"),
+                status_label(view.status),
+                view.details.activity.as_deref().unwrap_or("—"),
+            ],
+            widths,
+        )
+    });
+    let mut muted = Style::default().fg(theme.muted);
+    if stale {
+        muted = muted.add_modifier(Modifier::DIM);
     }
-    lines.push(Line::from(Span::styled(
-        notice.unwrap_or("O open pane · Enter/Esc close"),
-        Style::default().fg(theme.muted),
-    )));
-
+    let footer = if let Some(input) = app.agent_rename_input() {
+        let mut prompt = format!("Name: {input}");
+        if stale {
+            prompt.push_str(" · reconnecting");
+        } else if app.agent_rename_is_submitting() {
+            prompt.push_str(" · saving");
+        } else if let Some(rename_notice) = app.agent_rename_notice(now) {
+            prompt.push_str(" · ");
+            prompt.push_str(rename_notice);
+        } else {
+            prompt.push_str(" · Enter save");
+        }
+        prompt
+    } else {
+        notice
+            .map(str::to_owned)
+            .unwrap_or_else(|| "O open pane · r rename · Enter/Esc close".to_string())
+    };
+    let header = agent_table_row(["Name", "Agent", "Status", "Activity"], widths)
+        .style(muted.add_modifier(Modifier::BOLD));
     let mut title = Style::default().fg(theme.accent);
     if stale {
         title = title.add_modifier(Modifier::DIM);
     }
-    Clear.render(area, buf);
-    Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(title)
-                .title(Span::styled(
-                    if stale {
-                        " Agent details · reconnecting "
-                    } else {
-                        " Agent details "
-                    },
-                    title,
-                )),
-        )
+    let highlight = if stale {
+        theme.selection_style().add_modifier(Modifier::DIM)
+    } else {
+        theme.selection_style()
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(title)
+        .title(Span::styled(
+            if stale {
+                " Agent table · reconnecting "
+            } else {
+                " Agent table "
+            },
+            title,
+        ));
+    let table = Table::new(rows, AGENT_TABLE_WIDTHS)
+        .header(header)
+        .column_spacing(1)
         .style(if stale {
             Style::default()
                 .fg(theme.foreground)
@@ -1383,10 +1501,35 @@ fn render_agent_details_modal(
         } else {
             Style::default().fg(theme.foreground)
         })
-        .render(area, buf);
+        .row_highlight_style(highlight);
+
+    Clear.render(area, buf);
+    block.render(area, buf);
+    let table_area = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(3),
+    );
+    let mut state = TableState::default();
+    state.select(selected_index);
+    StatefulWidget::render(table, table_area, buf, &mut state);
+
+    // This is deliberately outside `Table::footer`: it spans the entire
+    // modal interior below the columns while staying inside the outer border.
+    let footer_area = Rect::new(
+        area.x + 1,
+        area.y + area.height - 2,
+        area.width.saturating_sub(2),
+        1,
+    );
+    Paragraph::new(footer)
+        .alignment(Alignment::Center)
+        .style(muted)
+        .render(footer_area, buf);
 }
 
-/// A temporary centered focus result when the details modal is not open.
+/// A temporary centered focus result when the Agent table is not open.
 /// It has no agent metadata or identifiers and never changes selection.
 fn render_agent_focus_notice(
     app: &App,
@@ -1541,6 +1684,68 @@ fn render_planet(
                 stale,
             )),
         );
+    }
+}
+
+/// Render only explicit Herdr names directly beneath their own planet disc.
+/// Candidates stay within the planet tile and stage field. A candidate that
+/// would overwrite a sun, any planet body/focus bracket, or an earlier label
+/// is omitted; that never removes or changes a planet body.
+fn render_planet_labels(
+    buf: &mut Buffer,
+    layout: &CollageLayout,
+    geometries: &[PlanetGeometry],
+    agents: &[AgentView],
+    theme: &Theme,
+    stale: bool,
+    selected_index: Option<usize>,
+) {
+    let mut displayed = Vec::new();
+    for (tile, geometry) in layout.tiles.iter().zip(geometries) {
+        let Some(candidate) = planet_label_candidate(
+            tile,
+            geometry,
+            agents
+                .get(tile.index)
+                .and_then(|view| view.details.name.as_deref()),
+        ) else {
+            continue;
+        };
+        let collides_sun = layout
+            .sun
+            .is_some_and(|(x, y)| rects_overlap(candidate.rect, Rect::new(x, y, 1, 1)));
+        let collides_planet = geometries.iter().any(|geometry| {
+            geometry
+                .body
+                .iter()
+                .chain(geometry.brackets.iter().map(|bracket| &bracket.cell))
+                .any(|&(x, y)| rects_overlap(candidate.rect, Rect::new(x, y, 1, 1)))
+        });
+        if collides_sun
+            || collides_planet
+            || displayed
+                .iter()
+                .any(|&label| rects_overlap(candidate.rect, label))
+        {
+            continue;
+        }
+
+        let mut style = Style::default().fg(if Some(tile.index) == selected_index {
+            theme.accent
+        } else {
+            theme.muted
+        });
+        if stale {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        buf.set_stringn(
+            candidate.rect.x,
+            candidate.rect.y,
+            candidate.text.as_str(),
+            candidate.rect.width as usize,
+            own_emphasis(style),
+        );
+        displayed.push(candidate.rect);
     }
 }
 
@@ -1731,9 +1936,13 @@ mod tests {
     }
 
     fn render_collage_for(app: &App, low_power: bool, now: Instant) -> Buffer {
-        let mut buf = Buffer::empty(CANVAS);
+        render_collage_in(app, low_power, now, CANVAS)
+    }
+
+    fn render_collage_in(app: &App, low_power: bool, now: Instant, area: Rect) -> Buffer {
+        let mut buf = Buffer::empty(area);
         let theme = Theme::for_name(ThemeName::Minimal);
-        render_canvas(app, &theme, low_power, now, CANVAS, &mut buf);
+        render_canvas(app, &theme, low_power, now, area, &mut buf);
         buf
     }
 
@@ -3187,8 +3396,8 @@ mod tests {
         // At silence the field may hold only the vignette ring, the sun, and
         // planet bodies — no glyph tracing an orbit path exists at all.
         let mut app = collage_app(vec![
-            snap("ws", "p1", Some("one"), AgentStatus::Working),
-            snap("ws", "p2", Some("two"), AgentStatus::Idle),
+            snap("ws", "p1", None, AgentStatus::Working),
+            snap("ws", "p2", None, AgentStatus::Idle),
         ]);
         push_frame(&mut app, silent_phase_frame());
         let buf = render_collage_for(&app, false, Instant::now());
@@ -3207,8 +3416,8 @@ mod tests {
         // time-invariant; Working orbit motion is a clock concern, not an
         // audio one, and is covered separately.
         let mut app = collage_app(vec![
-            snap("ws", "p1", Some("one"), AgentStatus::Idle),
-            snap("ws", "p2", Some("two"), AgentStatus::Done),
+            snap("ws", "p1", None, AgentStatus::Idle),
+            snap("ws", "p2", None, AgentStatus::Done),
         ]);
         push_frame(&mut app, frame(0.0, vec![0.0; 16]));
         let first = render_collage_for(&app, false, t0);
@@ -3583,6 +3792,179 @@ mod tests {
         assert!(
             !text.contains("alpha"),
             "workspace ids never render: {text}"
+        );
+    }
+
+    #[test]
+    fn explicit_name_renders_beneath_its_planet_while_unnamed_stays_label_free() {
+        let named = collage_app(vec![snap(
+            "private-workspace",
+            "private-pane",
+            Some("Named"),
+            AgentStatus::Working,
+        )]);
+        let named_text = buffer_text(&render_collage_for(&named, false, Instant::now()));
+        assert!(
+            named_text.contains("Named"),
+            "explicit Herdr name is the sole stage label"
+        );
+        for private_value in ["private-workspace", "private-pane"] {
+            assert!(
+                !named_text.contains(private_value),
+                "agent-private fallback must never render: {private_value}"
+            );
+        }
+
+        let unnamed = collage_app(vec![snap(
+            "other-workspace",
+            "other-pane",
+            None,
+            AgentStatus::Idle,
+        )]);
+        let unnamed_text = buffer_text(&render_collage_for(&unnamed, false, Instant::now()));
+        assert!(!unnamed_text.contains("other-workspace"));
+        assert!(!unnamed_text.contains("other-pane"));
+    }
+
+    #[test]
+    fn long_explicit_name_is_ellipsized_to_its_planet_tile() {
+        let long_name = "A deliberately overlong explicit Herdr planet label";
+        let app = collage_app(vec![snap(
+            "ws",
+            "pane",
+            Some(long_name),
+            AgentStatus::Working,
+        )]);
+        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(
+            !text.contains(long_name),
+            "long labels never overflow their tiles"
+        );
+        assert!(
+            text.contains('…'),
+            "long label uses a visible ellipsis: {text}"
+        );
+    }
+
+    #[test]
+    fn colliding_explicit_name_labels_are_suppressed_without_dropping_planets() {
+        let agents = (0..80)
+            .map(|index| {
+                snap(
+                    "ws",
+                    &format!("pane-{index}"),
+                    Some("A"),
+                    AgentStatus::Working,
+                )
+            })
+            .collect();
+        let app = collage_app(agents);
+        let area = Rect::new(0, 0, 40, 16);
+        let buffer = render_collage_in(&app, false, Instant::now(), area);
+        let field = agent_stage_layout(area).field;
+        let mut rendered_labels = 0;
+        for y in field.y..field.y + field.height {
+            for x in field.x..field.x + field.width {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    rendered_labels += usize::from(cell.symbol() == "A");
+                }
+            }
+        }
+        assert!(
+            rendered_labels > 0,
+            "at least one non-colliding label remains visible"
+        );
+        assert!(
+            rendered_labels < 80,
+            "colliding label candidates are suppressed"
+        );
+        let unnamed_agents = (0..80)
+            .map(|index| snap("ws", &format!("pane-{index}"), None, AgentStatus::Working))
+            .collect();
+        let without_labels =
+            render_collage_in(&collage_app(unnamed_agents), false, Instant::now(), area);
+        let planet_cells = |buffer: &Buffer| {
+            let mut cells = Vec::new();
+            for y in field.y..field.y + field.height {
+                for x in field.x..field.x + field.width {
+                    if let Some(cell) = buffer.cell((x, y)) {
+                        let symbol = cell.symbol();
+                        if symbol == PLANET_BODY_GLYPH || symbol == CRATER_GLYPH {
+                            cells.push((x, y, symbol.to_string()));
+                        }
+                    }
+                }
+            }
+            cells
+        };
+        assert_eq!(
+            planet_cells(&buffer),
+            planet_cells(&without_labels),
+            "labels never replace planet bodies"
+        );
+    }
+
+    #[test]
+    fn selected_label_uses_accent_and_stale_label_dims_without_changing_that_color() {
+        let mut app = collage_app(vec![snap(
+            "ws",
+            "pane",
+            Some("Selected"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::SelectNextAgent);
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let live = render_collage_for(&app, false, Instant::now());
+        let live_style = live
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "S")
+            .map(|cell| cell.style());
+        assert_eq!(
+            live_style.map(|style| style.fg),
+            Some(Some(theme.accent)),
+            "selected label renders in the accent color"
+        );
+        assert!(
+            live_style.is_some_and(|style| !style.add_modifier.contains(Modifier::DIM)),
+            "selected live label is not dimmed"
+        );
+
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        let stale = render_collage_for(&app, false, Instant::now());
+        let stale_style = stale
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "S")
+            .map(|cell| cell.style());
+        assert_eq!(
+            stale_style.map(|style| style.fg),
+            Some(Some(theme.accent)),
+            "stale label keeps its selected accent color"
+        );
+        assert!(
+            stale_style.is_some_and(|style| style.add_modifier.contains(Modifier::DIM)),
+            "stale label stays visible but dims"
+        );
+    }
+
+    #[test]
+    fn unavailable_hides_explicit_planet_labels() {
+        let mut app = collage_app(vec![snap(
+            "ws",
+            "pane",
+            Some("Hidden"),
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(1),
+        });
+        let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(
+            !text.contains("Hidden"),
+            "unavailable hides every planet label"
         );
     }
 
@@ -4027,7 +4409,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_hides_details_until_the_selected_agent_opens_the_modal() {
+    fn stage_hides_agent_data_until_the_selected_planet_opens_the_table() {
         let mut app = collage_app(vec![AgentSnapshot {
             id: AgentId::new("workspace-private", "pane-private"),
             details: AgentDetails {
@@ -4040,7 +4422,10 @@ mod tests {
         push_frame(&mut app, phase_frame());
         let stage_buffer = render_collage_for(&app, false, Instant::now());
         let stage = buffer_text(&stage_buffer);
-        assert!(!stage.contains("research"));
+        assert!(
+            stage.contains("research"),
+            "explicit Herdr names label their planets"
+        );
         assert!(!stage.contains("working"));
         assert!(!stage.contains("pi"));
         assert!(stage_footer_text(&stage_buffer).contains("O open pane"));
@@ -4049,22 +4434,171 @@ mod tests {
         app.apply(Action::OpenAgentDetails);
         let modal_buffer = render_collage_for(&app, false, Instant::now());
         let modal = buffer_text(&modal_buffer);
-        assert!(modal.contains("Agent details"));
-        assert!(modal.contains("O open pane"), "modal owns the focus hint");
+        assert!(modal.contains("Agent table"));
+        for heading in ["Name", "Agent", "Status", "Activity"] {
+            assert!(modal.contains(heading), "missing {heading} header: {modal}");
+        }
+        assert!(
+            !modal.contains('|'),
+            "table has no hand-built cell dividers"
+        );
+        assert!(modal.contains("O open pane"), "table owns the focus hint");
+        assert!(
+            modal.contains("r rename"),
+            "table exposes its inline Name rename entry point"
+        );
         assert!(
             !stage_footer_text(&modal_buffer).contains("O open pane"),
-            "stage footer must not repeat the modal-local focus hint"
+            "stage footer must not repeat the table-local focus hint"
         );
-        assert!(modal.contains("name: research"));
-        assert!(modal.contains("agent: pi"));
-        assert!(modal.contains("status: working"));
-        assert!(modal.contains("activity: Review the modal"));
+        assert!(
+            !modal.contains('▶'),
+            "table selection uses only row styling"
+        );
+        assert!(modal.contains("research"));
+        assert!(modal.contains("pi"));
+        assert!(modal.contains("working"));
+        assert!(modal.contains("Review the modal"));
         assert!(!modal.contains("workspace-private"));
         assert!(!modal.contains("pane-private"));
     }
 
     #[test]
-    fn modal_content_follows_keyboard_navigation_across_planets() {
+    fn agent_table_lists_all_agents_and_styles_the_shared_selection() {
+        let mut app = collage_app(vec![
+            AgentSnapshot {
+                id: AgentId::new("ws", "p1"),
+                details: AgentDetails {
+                    name: Some("alpha".to_string()),
+                    agent: Some("pi".to_string()),
+                    activity: Some("First pass".to_string()),
+                },
+                status: AgentStatus::Working,
+            },
+            AgentSnapshot {
+                id: AgentId::new("ws", "p2"),
+                details: AgentDetails {
+                    name: Some("beta".to_string()),
+                    agent: Some("claude".to_string()),
+                    activity: Some("Second pass".to_string()),
+                },
+                status: AgentStatus::Idle,
+            },
+        ]);
+        push_frame(&mut app, phase_frame());
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+
+        let theme = Theme::for_name(ThemeName::Minimal);
+        let first_buffer = render_collage_for(&app, false, Instant::now());
+        let first = buffer_text(&first_buffer);
+        assert!(first.contains("Name"));
+        assert!(first.contains("Agent"));
+        assert!(first.contains("Status"));
+        assert!(first.contains("Activity"));
+        assert!(first.contains("alpha"));
+        assert!(first.contains("beta"));
+        assert!(first.contains("First pass"));
+        assert!(first.contains("Second pass"));
+        assert!(
+            !first.contains('▶'),
+            "table uses no selection marker: {first}"
+        );
+        assert!(first.contains("O open pane"));
+        let alpha_y = (0..CANVAS.height)
+            .find(|&y| {
+                (0..CANVAS.width)
+                    .map(|x| first_buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+                    .contains("alpha")
+            })
+            .expect("selected alpha row");
+        let alpha_x = (0..CANVAS.width)
+            .find(|&x| first_buffer.cell((x, alpha_y)).unwrap().symbol() == "a")
+            .expect("alpha cell");
+        let alpha_cell = first_buffer.cell((alpha_x, alpha_y)).unwrap();
+        assert_eq!(alpha_cell.fg, theme.selection_fg);
+        assert_eq!(alpha_cell.bg, theme.selection_bg);
+
+        app.apply(Action::SelectNextAgent);
+        let second = buffer_text(&render_collage_for(&app, false, Instant::now()));
+        assert!(
+            !second.contains('▶'),
+            "table uses no selection marker: {second}"
+        );
+    }
+
+    #[test]
+    fn agent_table_modal_has_outer_borders_and_a_centered_full_width_footer() {
+        let mut app = collage_app(vec![AgentSnapshot {
+            id: AgentId::new("ws", "p1"),
+            details: AgentDetails {
+                name: Some("alpha".to_string()),
+                agent: Some("pi".to_string()),
+                activity: Some("Review".to_string()),
+            },
+            status: AgentStatus::Working,
+        }]);
+        push_frame(&mut app, phase_frame());
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+
+        let buffer = render_collage_for(&app, false, Instant::now());
+        let area = agent_table_modal_area(stage_field(), app.active_agents().len());
+        let footer = "O open pane · r rename · Enter/Esc close";
+        let footer_x = area.x + 1 + (area.width - 1 - footer.chars().count() as u16) / 2;
+        let footer_y = area.y + area.height - 2;
+
+        for (x, y, border) in [
+            (area.x, area.y, "┌"),
+            (area.x + area.width - 1, area.y, "┐"),
+            (area.x, area.y + area.height - 1, "└"),
+            (area.x + area.width - 1, area.y + area.height - 1, "┘"),
+        ] {
+            assert_eq!(buffer.cell((x, y)).unwrap().symbol(), border);
+        }
+        assert_eq!(buffer.cell((area.x, area.y + 1)).unwrap().symbol(), "│");
+        assert_eq!(
+            buffer
+                .cell((area.x + area.width - 1, area.y + 1))
+                .unwrap()
+                .symbol(),
+            "│"
+        );
+        let footer_line: String = (area.x..area.x + area.width)
+            .map(|x| buffer.cell((x, footer_y)).unwrap().symbol())
+            .collect();
+        assert_eq!(
+            buffer.cell((footer_x, footer_y)).unwrap().symbol(),
+            "O",
+            "modal controls occupy a dedicated full-width footer below the table columns: {footer_line:?}"
+        );
+
+        let header_y = (area.y + 1..footer_y)
+            .find(|&y| {
+                (area.x + 1..area.x + area.width - 1)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+                    .contains("Name")
+            })
+            .expect("header row");
+        let first_row_y = (area.y + 1..footer_y)
+            .find(|&y| {
+                (area.x + 1..area.x + area.width - 1)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+                    .contains("alpha")
+            })
+            .expect("first data row");
+        assert_eq!(
+            first_row_y,
+            header_y + 1,
+            "the header has neither a separator nor a bottom margin before data rows"
+        );
+    }
+
+    #[test]
+    fn table_selection_follows_keyboard_navigation_across_planets() {
         let mut app = collage_app(vec![
             AgentSnapshot {
                 id: AgentId::new("ws", "p1"),
@@ -4089,24 +4623,21 @@ mod tests {
         app.apply(Action::SelectNextAgent);
         app.apply(Action::OpenAgentDetails);
         let first = buffer_text(&render_collage_for(&app, false, Instant::now()));
-        assert!(first.contains("name: alpha"));
-        assert!(first.contains("activity: First pass"));
+        assert!(!first.contains('▶'));
+        assert!(first.contains("alpha") && first.contains("beta"));
 
         app.apply(Action::SelectNextAgent);
         let second = buffer_text(&render_collage_for(&app, false, Instant::now()));
-        assert!(second.contains("Agent details"));
-        assert!(second.contains("name: beta"));
-        assert!(second.contains("agent: claude"));
-        assert!(second.contains("status: idle"));
-        assert!(second.contains("activity: Second pass"));
-        assert!(
-            !second.contains("alpha"),
-            "the modal drops the previous agent's record"
-        );
+        assert!(second.contains("Agent table"));
+        assert!(!second.contains('▶'));
+        assert!(second.contains("alpha"));
+        assert!(second.contains("claude"));
+        assert!(second.contains("idle"));
+        assert!(second.contains("Second pass"));
     }
 
     #[test]
-    fn long_activity_wraps_to_two_lines_without_growing_the_modal() {
+    fn narrow_table_keeps_all_four_columns_with_ellipses() {
         let activity =
             "012345678901234567890123456789012345678901234567890123456789012345678901234567890";
         let mut app = collage_app(vec![AgentSnapshot {
@@ -4121,19 +4652,83 @@ mod tests {
         push_frame(&mut app, phase_frame());
         app.apply(Action::SelectNextAgent);
         app.apply(Action::OpenAgentDetails);
-        let modal = buffer_text(&render_collage_for(&app, false, Instant::now()));
-        let activity_line = modal
+        let area = Rect::new(0, 0, 20, 12);
+        let mut buffer = Buffer::empty(area);
+        let theme = Theme::for_name(ThemeName::Minimal);
+        render_canvas(&app, &theme, false, Instant::now(), area, &mut buffer);
+        let modal = buffer_text(&buffer);
+        let header = modal
             .lines()
-            .find(|line| line.contains("activity: "))
-            .expect("first activity line");
-        assert!(activity_line.contains("012345678901234567890123456789012345"));
-        assert!(
-            modal.contains('…'),
-            "second line truncates with an ellipsis"
-        );
+            .find(|line| line.contains("Na…") && line.contains("Act…"))
+            .expect("four-column header");
+        assert!(header.contains("Na…"));
+        assert!(header.contains('…'), "narrow headers ellipsize");
+        assert!(!header.contains('|'), "columns are native table cells");
+        assert!(modal.contains('…'), "narrow cells ellipsize");
         assert!(
             !modal.contains(activity),
-            "a third activity line never renders"
+            "activity never spills beyond its cell"
+        );
+    }
+
+    #[test]
+    fn table_caps_the_modal_width_and_scrolls_at_ten_rows() {
+        assert_eq!(
+            AGENT_TABLE_WIDTHS,
+            [
+                Constraint::Percentage(25),
+                Constraint::Percentage(20),
+                Constraint::Percentage(15),
+                Constraint::Percentage(40),
+            ]
+        );
+        assert_eq!(
+            agent_table_modal_area(Rect::new(0, 0, 120, 20), 1).width,
+            100,
+            "wide fields cap the 90% modal at 100 cells"
+        );
+        assert_eq!(
+            agent_table_modal_area(Rect::new(0, 0, 80, 20), 1).width,
+            72,
+            "smaller fields use 90% of their width"
+        );
+
+        let snapshots = (0..12)
+            .map(|index| AgentSnapshot {
+                id: AgentId::new("ws", format!("p{index:02}")),
+                details: AgentDetails {
+                    name: Some(format!("row-{index:02}")),
+                    agent: Some("pi".to_string()),
+                    activity: Some("scroll test".to_string()),
+                },
+                status: AgentStatus::Working,
+            })
+            .collect();
+        let mut app = collage_app(snapshots);
+        push_frame(&mut app, phase_frame());
+        for _ in 0..12 {
+            app.apply(Action::SelectNextAgent);
+        }
+        app.apply(Action::OpenAgentDetails);
+
+        let buffer = render_collage_for(&app, false, Instant::now());
+        let modal_area = agent_table_modal_area(stage_field(), app.active_agents().len());
+        let buffer_ref = &buffer;
+        let modal: String = (modal_area.y..modal_area.y + modal_area.height)
+            .flat_map(|y| {
+                (modal_area.x..modal_area.x + modal_area.width)
+                    .map(move |x| buffer_ref.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+            })
+            .collect();
+        assert!(modal.contains("row-11"), "selected final row stays visible");
+        assert!(
+            !modal.contains("row-00"),
+            "viewport scrolls past the first row"
+        );
+        assert_eq!(
+            modal.matches("row-").count(),
+            10,
+            "at most ten data rows render"
         );
     }
 

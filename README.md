@@ -50,11 +50,11 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   title and the Single View volume line centered around the unchanged
   real-audio Dual Phase Scope, with small round disc-mask planets slowly
   orbiting a static central sun on invisible paths while quiet status
-  changes stay inside each disc; selecting one and pressing `Enter`
-  opens a read-only Agent details record. It never reads agent output; an
-  explicit `o`/`O` may focus the selected live agent pane, and standalone
-  launches are completely unchanged (see [Herdr Agent Planets](#herdr-agent-planets-optional)).
-- **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
+  changes stay inside each disc; selecting one and pressing `Enter` opens an
+  Agent table. It never reads agent output; explicit `o`/`O` may focus the
+  selected live agent pane, while `r`/`R` can rename only its explicit display
+  name, and standalone
+  launches are completely unchanged (see [Herdr Agent Planets](#herdr-agent-planets-optional)).- **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
 - **Resilient offline/error handling** — a failed online search shows a clear
@@ -237,9 +237,10 @@ mixing in unrelated status labels.
 
 When `wave-tui` is launched by its official Herdr plugin, it can quietly show
 the live status of the AI coding agents visible on that Herdr session's local
-control socket, across the session's workspaces. The feature is a read-only
-companion to radio playback: it never affects audio, search, settings, or
-standalone use, and it is invisible outside Herdr.
+control socket, across the session's workspaces. It is observational about
+agent output and a companion to radio playback: it never affects audio, search,
+settings, or standalone use, and it is invisible outside Herdr. Its only
+explicit controls are selected-pane focus and explicit-name rename.
 
 The full plugin manual — install, verify, open, local development,
 update/reinstall, uninstall, and troubleshooting — is
@@ -364,12 +365,17 @@ agent reported by the session's socket is shown.
   around its tile — a foreground-only treatment with no painted selection
   background. Brackets and the sun are decorative: only disc body cells
   are click targets.
-- Planets keep no permanent label. Select a live planet, then press `Enter`
-  for a centered **Agent details** compact record. It shows non-empty
-  `name`, `agent`, normalized `status`, and `activity` (`terminal_title`)
-  rows in that order. It never shows pane/workspace/cwd/session identifiers,
-  terminal IDs, or raw status. The record clears only its bounded field area;
-  Activity truncates rather than overflowing.
+- A planet with an explicit Herdr name may render that name as a single
+  ellipsized label directly beneath its disc; unnamed planets remain label-free.
+  Labels stay within their planet tiles and are omitted when they would collide
+  with an earlier displayed label, the sun, or stage chrome. Select a live
+  planet, then press `Enter` for a centered **Agent table** with `Name`, `Agent`, `Status`, and
+  `Activity` columns. It never shows pane/workspace/cwd/session identifiers,
+  terminal IDs, or raw status. In a live table, `r`/`R` opens an inline Name
+  input seeded from the selected explicit Herdr name; Enter sends the rename
+  asynchronously and blank input clears that name. The table updates
+  immediately on success, while later `agent.list` snapshots remain
+  authoritative. Failures retain the local input with short feedback.
 - In `--low-power`, trace, persistence, disc, orbit-phase, and selection
   bracket geometry are frozen while fresh agent snapshots may still update
   status colors. The frozen geometry — the whole solar orbit layout
@@ -383,22 +389,25 @@ agent reported by the session's socket is shown.
 
 | Key / input        | Action                                   |
 | ------------------ | ---------------------------------------- |
-| `a`                | close details and the stage               |
+| `a`                | close the table and the stage             |
 | `Tab` / `↓` / `j` | select the next planet (wraps last → first) |
 | `Shift+Tab` / `↑` / `k` | select the previous planet (wraps first → last) |
-| mouse click        | select a planet (its body cells only) when details are closed |
-| `Enter`            | open details for the selected live planet; close details when open |
+| mouse click        | select a planet (its body cells only) when the table is closed |
+| `Enter`            | open the table for the selected live planet; close the table when open |
 | `o` / `O`          | focus the selected current pane; errors stay as temporary stage/modal feedback |
-| `Esc`              | close details when open; otherwise close the stage |
-| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | consumed while details are open |
-| `q` / `Ctrl+C`     | quit the app                             |
+| `r` / `R`          | open inline Name rename in a live table |
+| `Esc`              | cancel rename; otherwise close the table, then the stage |
+| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | consumed while the table or rename input is open || `q` / `Ctrl+C`     | quit the app                             |
 
 Search (`/`) and station navigation/selection (`g`/`G`/`Home`/`End`) are
-suppressed while the stage is open. `Enter` opens details rather than playing a
-station. While details are open, `Tab`/`↓`/`j` and
-`Shift+Tab`/`↑`/`k` keep the modal open while cycling its selected agent record;
-all other documented modal-local controls remain consumed. When details are
-closed, normal player shortcuts retain their existing canvas semantics; `z` is consumed as a no-op while Agent Planets is open and
+suppressed while the stage is open. `Enter` opens the table rather than playing
+a station. While the table is open, `Tab`/`↓`/`j` and
+`Shift+Tab`/`↑`/`k` keep it open while cycling its selected agent row. Rename
+mode consumes table navigation, focus, and player shortcuts while accepting
+ordinary text input; only `q`/`Ctrl+C` quit, and `Esc` cancels only rename.
+Stale state disables edit/submit while retaining input; unavailable closes the
+table and input. When the table is closed, normal player shortcuts retain their
+existing canvas semantics; `z` is consumed as a no-op while Agent Planets is open and
 keeps its normal Single View toggle everywhere outside it. Mouse capture is
 enabled only for eligible plugin
 launches (native terminal text selection may then need `Shift`+drag);
@@ -417,28 +426,28 @@ socket. Failures are recoverable and never interrupt playback:
   freezes the last live composition — phase traces, persistence, the sun,
   discs at their frozen orbit positions, interior status treatments, and
   focus brackets — dimmed, with a quiet `· reconnecting` note appended to the stage
-  heading. An open details record stays dimmed and marks its title
-  `reconnecting`.
+  heading. An open table/input stays dimmed and disables rename submit while
+  retaining its local input.
 - After 15 seconds without a successful response, the summary disappears and
-  the stage closes details and hides its field behind
+  the stage closes the table/input and hides its field behind
   `agents · unavailable · retrying` (the stage chrome stays).
 - Polling continues; a fresh successful snapshot restores the live view.
 
-### Privacy and read-only limits
+### Privacy and control limits
 
-The Agent Planets companion is observational except for one explicit focus action:
-
-- It polls only `agent.list`, and an `o`/`O` press for a selected current
-  planet may call `agent.focus` for that existing pane. It never reads pane
-  output, prompts, files, or terminal scrollback.
-- It never creates, restarts, closes, sends text to, or otherwise controls
-  Herdr panes beyond that explicit focus request. Unsupported Herdr (update to
+The Agent Planets companion is observational except for explicit focus and
+explicit-name rename actions:
+- It polls only `agent.list`; an `o`/`O` press for a selected current planet
+  may call `agent.focus`, and `r`/`R` then Enter may call `agent.rename` for
+  that agent's explicit display name. It never reads pane output, prompts,
+  files, or terminal scrollback.
+- It never creates, restarts, closes, sends pane input to, or otherwise controls
+  Herdr panes beyond those explicit requests. Unsupported Herdr (update to
   0.7.0+), missing/moved panes, and unavailable sockets show temporary local
-  feedback without interrupting playback.
-- It shows every agent reported by the plugin invocation's local Herdr
+  feedback without interrupting playback.- It shows every agent reported by the plugin invocation's local Herdr
   socket, across that session's workspaces; it never discovers other Herdr
   sessions or opens another socket.
-- Details render only explicit Herdr `name`, Herdr `agent`, normalized
+- The Agent table renders only explicit Herdr `name`, Herdr `agent`, normalized
   status, and `terminal_title` Activity when non-empty. Pane/workspace/cwd,
   foreground cwd, terminal/tab/session IDs, and raw status never render.
 - It never changes volume, theme, station, playback, search, or the

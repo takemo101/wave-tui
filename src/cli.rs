@@ -854,9 +854,11 @@ fn event_loop(
             while let Ok(result) = monitor.focus_events().try_recv() {
                 apply_agent_focus_result(app, result, Instant::now());
             }
-            // Stale/unavailable thresholds advance every loop, so the
-            // 15-second unavailable state occurs even when no monitor event
-            // arrives (e.g. the socket stays silent).
+            while let Ok(result) = monitor.rename_events().try_recv() {
+                apply_agent_rename_result(app, result, Instant::now());
+            } // Stale/unavailable thresholds advance every loop, so the
+              // 15-second unavailable state occurs even when no monitor event
+              // arrives (e.g. the socket stays silent).
             app.apply(Action::AgentTick {
                 now: Instant::now(),
             });
@@ -935,7 +937,7 @@ fn handle_key_with_monitor(
     let searching = !collage_open && app.focus() == FocusPane::Search;
     let outcome = map_key(key, searching);
     if collage_open {
-        if let Some(flow) = handle_collage_key(outcome.clone(), app, monitor) {
+        if let Some(flow) = handle_collage_key(outcome.clone(), key, app, monitor) {
             return flow;
         }
     }
@@ -1151,10 +1153,42 @@ fn handle_signal_view_key(
 /// shortcuts retain their existing canvas behavior.
 fn handle_collage_key(
     outcome: KeyOutcome,
+    key: KeyEvent,
     app: &mut App,
     monitor: Option<&HerdrMonitor>,
 ) -> Option<Flow> {
+    if app.is_agent_rename_open() {
+        if outcome == KeyOutcome::Quit {
+            return Some(Flow::Quit);
+        }
+        if outcome == KeyOutcome::ExitOrBack {
+            app.apply(Action::CloseAgentRename);
+            return Some(Flow::Continue);
+        }
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return Some(Flow::Continue);
+        }
+        match key.code {
+            KeyCode::Enter => submit_agent_rename(app, monitor),
+            KeyCode::Backspace => app.apply(Action::BackspaceAgentRename),
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                app.apply(Action::AppendAgentRename(character));
+            }
+            _ => {}
+        }
+        return Some(Flow::Continue);
+    }
     if app.is_agent_details_open() {
+        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && matches!(key.code, KeyCode::Char('r' | 'R'))
+        {
+            app.apply(Action::OpenAgentRename);
+            return Some(Flow::Continue);
+        }
         match outcome {
             KeyOutcome::Quit => return Some(Flow::Quit),
             KeyOutcome::ToggleAgentPulse => app.apply(Action::CloseAgentOverlay),
@@ -1230,6 +1264,24 @@ fn apply_agent_focus_result(app: &mut App, result: herdr::FocusResult, now: Inst
     app.apply(Action::AgentFocusResult { result, now });
 }
 
+/// Submit the inline table Name input via the already-eligible monitor. The
+/// target is opaque outside `herdr`, socket work runs on its one-shot worker,
+/// and stale state leaves the user input intact without dispatching anything.
+fn submit_agent_rename(app: &mut App, monitor: Option<&HerdrMonitor>) {
+    let Some((id, name)) = app.agent_rename_request() else {
+        return;
+    };
+    app.apply(Action::SubmitAgentRename);
+    match monitor {
+        Some(monitor) => monitor.rename_agent(id, name),
+        None => apply_agent_rename_result(app, herdr::RenameResult::Unavailable, Instant::now()),
+    }
+}
+
+/// Fold a typed async `agent.rename` result into reducer-owned table state.
+fn apply_agent_rename_result(app: &mut App, result: herdr::RenameResult, now: Instant) {
+    app.apply(Action::AgentRenameResult { result, now });
+}
 /// Fold a typed Herdr monitor event into app state at the current time.
 ///
 /// Poll failures arrive here as recoverable reducer state (stale, then
@@ -2630,6 +2682,125 @@ mod tests {
         );
         assert!(!app.is_agent_details_open());
         assert!(!app.is_agent_overlay_open(), "a closes the whole stage");
+    }
+
+    #[test]
+    fn inline_rename_consumes_table_controls_and_keeps_failed_or_stale_input() {
+        let (audio, command_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        let focus = app.focus();
+        let playback = app.playback().clone();
+        let settings = app.settings().clone();
+
+        handle_key(
+            key(KeyCode::Char('r')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.agent_rename_input(), Some("alpha"));
+        handle_key(
+            key(KeyCode::Char('!')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        handle_key(
+            key(KeyCode::Backspace),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.agent_rename_input(), Some("alpha"));
+
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Char(' '),
+            KeyCode::Char('+'),
+            KeyCode::Char('f'),
+            KeyCode::Char('t'),
+            KeyCode::Char('v'),
+            KeyCode::Char('/'),
+        ] {
+            handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+            assert!(app.is_agent_rename_open(), "{code:?} stays inside rename");
+        }
+        assert_eq!(app.focus(), focus);
+        assert_eq!(app.playback(), &playback);
+        assert_eq!(app.settings(), &settings);
+        assert!(command_rx.try_recv().is_err());
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.agent_rename_input(), Some("alpha +ftv/"));
+        assert_eq!(
+            app.agent_rename_notice(Instant::now()),
+            Some("rename unavailable · retrying")
+        );
+
+        app.apply(Action::AgentPollFailed {
+            now: Instant::now(),
+        });
+        handle_key(
+            key(KeyCode::Char('x')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(app.agent_rename_input(), Some("alpha +ftv/"));
+        assert!(!app.agent_rename_is_submitting());
+    }
+
+    #[test]
+    fn escape_cancels_inline_rename_without_closing_the_table_or_stage() {
+        let (audio, _command_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        handle_key(
+            key(KeyCode::Char('r')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(app.is_agent_rename_open());
+
+        assert_eq!(
+            handle_key(
+                key(KeyCode::Esc),
+                &mut app,
+                &audio,
+                &mut debounce,
+                &mut persistence,
+            ),
+            Flow::Continue
+        );
+        assert!(!app.is_agent_rename_open());
+        assert!(app.is_agent_details_open());
+        assert!(app.is_agent_overlay_open());
     }
 
     #[test]

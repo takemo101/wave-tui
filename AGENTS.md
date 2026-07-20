@@ -103,6 +103,16 @@ Expected responsibility boundaries:
   actions to it and never reaches into its fields, so no Herdr update can
   move audio, search, settings, or station selection.
 - `ui`: Ratatui rendering only; do not put domain mutation logic here.
+  Agent Planets rendering is split behind the `ui::agent_pulse` facade, which
+  exposes only the summary line, `render_canvas`, and `hit_test`. Its private
+  children are `geometry` (the scope trace layers, seed-derived solar orbits,
+  fixed disc masks, and stage partition — no `App`, `Theme`, or clock, so it
+  stays a pure function of its arguments), `surface` (body, identity surface,
+  interior status cells, focus brackets, label candidates), `stage`, and
+  `modal`. Drawing and hit testing must call the same `geometry`/`surface`
+  functions, so a click can only resolve against cells that were drawn, and
+  stale/`--low-power` freezing stays a matter of which frames and orbit
+  seconds the caller hands in rather than a flag threaded through rendering.
 - `cli`: CLI argument parsing, boundary parsing, and key mapping; it must not
   depend on terminal or adapter lifecycle details.
 - `runtime`: the composition root for a run — terminal ownership, adapter

@@ -240,7 +240,24 @@ than the curated catalog: `All Stations` shows all current results, and section
 and category sources filter the full result population (always from the full
 population, not the already-filtered visible list). Category membership for
 Radio Browser stations is inferred from a small, conservative tag/name alias
-dictionary. When no search population exists, Browse keeps its curated fallback:
+dictionary: aliases match primarily against station `tags`, with the station
+`name` as a secondary fallback, and `country`/`language` are never used as
+genre signals. Matching may normalize case, whitespace, punctuation, and
+separators so common Radio Browser tag variations still match. Keep the alias
+set conservative and expand it only from observed misses. The alias
+dictionary is:
+
+| Category | Aliases |
+| --- | --- |
+| `Lofi` | `lofi`, `chillhop`, `beats` |
+| `Ambient` | `ambient`, `drone`, `space`, `atmospheric` |
+| `Jazz` | `jazz`, `smooth jazz` |
+| `Classical` | `classical`, `baroque`, `orchestral` |
+| `Electronic` | `electronic`, `house`, `techno`, `downtempo`, `deep-house` |
+| `News` | `news`, `public radio`, `world news` |
+| `Talk` | `talk`, `spoken`, `community` |
+
+When no search population exists, Browse keeps its curated fallback:
 `All Stations` shows the curated catalog and category sources show curated
 category stations. Browse rail labels stay stable in both modes; the
 search/status strip carries the active filter context (for example
@@ -498,33 +515,14 @@ MVP includes automatic and CLI-controlled low-power behavior.
 `wave-tui` ships as an official Herdr plugin and, only when launched by that
 plugin, shows a **read-only Agent Pulse**: the live status of the AI coding
 agents visible on that Herdr session's local control socket, presented as
-ambient context beside radio playback. The integration design (packaging,
-eligibility, monitoring) is
-`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`. The canvas
-background remains the Dual Phase Scope of
-`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
-(which superseded the interim Kinetic Collage presentation in
-`docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`);
-the agent presentation is the Agent Planets stage of
-`docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`, which
-supersedes the stage layout, shadowed planet geometry, and selected-only
-callout of the Pocket Planets refinement in
-`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`
-(whose surface palette and privacy contracts remain current). The stage's
-permanent Side Tags are superseded by the on-demand Agent details modal of
-`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`,
-and its ring/arc/satellite status language — via the interim status
-atmospheres of
-`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
-as revised (whose selection focus brackets remain current) — by the
-interior-only surface status of
-`docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`.
-The stage's audio-driven planet body motion is superseded by the static
-sun and Working-only invisible orbits of
-`docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`.
-Pocket Planets in turn superseded the planet scale/surface presentation of
-`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`
-(itself superseding the Lissajous design's square agent frames).
+ambient context beside radio playback. The canvas background is the Dual
+Phase Scope and the agent presentation is the Agent Planets stage — the
+centered stage with round disc-mask planets, on-demand Agent details
+modal, interior-only surface status, static central sun with Working-only
+invisible orbits, and selection focus brackets recorded in
+`docs/ui-design-decisions.md`, which also records the superseded
+presentation lineage. The dated per-iteration superpowers design and plan
+documents that tracked that lineage are preserved in git history.
 This section records the product behavior as implemented.
 
 This is an optional Herdr integration, not a plugin system inside `wave-tui`,

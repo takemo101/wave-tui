@@ -24,13 +24,20 @@ blocking loading screen.
 
 Implications:
 
-- Startup shows a short, skippable, left-to-right pixel-art `WAVE` logo reveal.
+- Startup shows a short, skippable, left-to-right pixel-art `WAVE` logo reveal
+  running over about 1.0 to 1.2 seconds.
 - The startup label includes the package version (`wave-tui v...`) and the line
   `settling into the signal`.
 - Startup omits the wave-glyph line; its motion is limited to the logo reveal so
   it stays readable and calm.
 - Shutdown may show the farewell copy `thanks for listening` /
-  `see you next wave` with a small calm wave animation.
+  `see you next wave` with a small calm wave animation for about 0.6 to 0.8
+  seconds.
+- Any key press skips the remaining startup or shutdown splash and continues
+  immediately.
+- Low-power mode keeps the same splash visual language but reduces work —
+  fewer frames or a shorter duration — while the splash stays brief and
+  deterministic.
 - Splash rendering is theme-driven and separate from the audio visualizer. It
   must not change playback, search, settings, layout tiers, or key mappings.
 
@@ -103,6 +110,9 @@ Implications:
 - It hides the Search, Browse, and Stations discovery UI and shows the current
   station (ICY title when available, otherwise station name) with an idle prompt
   when no station is selected.
+- The primary title stays centered and is constrained to at most two lines;
+  a long ICY title or station name is clipped or ellipsized rather than
+  pushing layout regions out of view.
 - The visualizer reuses the currently selected mode and theme and takes the
   largest flexible region, so it is meaningfully larger than the normal Now
   Playing visualizer on medium and large panes. It does not introduce a Signal
@@ -111,7 +121,9 @@ Implications:
   only when the current station is favorited, and non-favorites show no empty
   marker. Volume is shown as a thin, near-full-width bar without attaching the
   visualizer mode label to the volume control.
-- Allowed keys are `z`/`Esc` (back), `q` (quit), `Space`, `+`/`-`, `v`, `t`, and
+- Allowed keys are `z`/`Esc` (back), `q` (quit), `Space`, `+`/`-` (volume, with
+  `=` accepted as an unshifted alias of `+` and `_` as a shifted alias of `-`),
+  `v`, `t`, and
   `f`; `f` favorites the current station, not the hidden station-list selection.
   Discovery, navigation, and focus keys are ignored silently.
 - Signal View adds no playlist, queue, search, or new selection behavior and does
@@ -121,48 +133,31 @@ Implications:
 
 The optional Herdr Agent Pulse uses a one-line **quiet count** in normal
 layouts and a full-screen **Agent Planets** stage as its only rich
-surface. The current agent presentation decisions are
-`docs/superpowers/specs/2026-07-19-agent-planets-stage-design.md`
-(approved 2026-07-19) for the centered stage and disc-mask planets,
-`docs/superpowers/specs/2026-07-19-agent-planets-details-modal-design.md`
-for the on-demand Agent details record that replaced the stage's
-permanent Side Tags,
-`docs/superpowers/specs/2026-07-19-agent-planets-surface-status-design.md`
-for the interior-only surface status,
-`docs/superpowers/specs/2026-07-19-agent-planets-solar-orbit-design.md`
-for the static central sun and Working-only invisible orbits that
-replaced audio-driven planet body motion, and
-`docs/superpowers/specs/2026-07-19-agent-planets-orbiting-particles-focus-design.md`
-as revised (the approved revision removed that design's orbiting
-particles) for the selection focus brackets. That revision's thin status
-atmospheres — which had replaced the status rings, Working arcs, and Done
-satellites — are now historical, superseded by the surface-status
-design's interior treatments. The
-stage design supersedes the stage layout, shadowed planet
-geometry, and selected-only callout of
-`docs/superpowers/specs/2026-07-19-agent-pulse-pocket-planets-design.md`
-(whose Banded Worlds surface palette and privacy contracts remain
-current). Pocket Planets superseded the planet scale/surface presentation
-of
-`docs/superpowers/specs/2026-07-19-agent-pulse-ringed-planets-design.md`
-(whose privacy/selection contracts remain current while its ring state
-language is now historical), which in turn superseded the square
-agent-frame presentation of
-the still-current Dual Phase Scope decision
-`docs/superpowers/specs/2026-07-19-agent-pulse-lissajous-scope-design.md`
-(approved 2026-07-19). The Lissajous Scope design superseded the
-presentation decisions of the
-interim `docs/superpowers/specs/2026-07-18-agent-pulse-kinetic-collage-design.md`
-(Kinetic Collage album-art tiles over a scrolling waveform/FFT trace), which
-in turn superseded the original
-`docs/superpowers/specs/2026-07-16-herdr-agent-pulse-design.md`
-(Quiet Companion summary + Status Constellation overlay), the interim
-`docs/superpowers/specs/2026-07-18-agent-pulse-beat-orbit-design.md` (Beat
-Orbit ring canvas), and the interim
-`docs/superpowers/specs/2026-07-18-agent-pulse-bioluminescent-current-design.md`
-(Bioluminescent Current flow canvas). The earlier
-modal/list/card/completed-history surfaces remain removed; the 2026-07-16
-design's local-only and read-only privacy boundaries remain in force. Agent
+surface. The current agent presentation decisions (approved 2026-07-19)
+are: the centered Agent Planets stage with round disc-mask planets, the
+on-demand Agent details record that replaced the stage's permanent Side
+Tags, the interior-only surface status, the static central sun with
+Working-only invisible orbits that replaced audio-driven planet body
+motion, and the selection focus brackets (approved as a revision that
+dropped the same design's orbiting particles). The Banded Worlds surface
+palette, the Dual Phase Scope canvas (approved 2026-07-19), and the
+original 2026-07-16 integration design's local-only, read-only privacy
+boundaries all remain in force.
+
+Everything else in the presentation lineage is historical, superseded by
+the decisions above: the thin status atmospheres (which had themselves
+replaced the status rings, Working arcs, and Done satellites), the Pocket
+Planets stage layout with shadowed planet geometry and selected-only
+callout, the Ringed Planets scale/surface and ring state language, the
+square agent frames of the first Lissajous Scope presentation, the
+Kinetic Collage album-art tiles over a scrolling waveform/FFT trace, the
+Beat Orbit ring canvas, the Bioluminescent Current flow canvas, the
+original Quiet Companion summary + Status Constellation overlay, and the
+never-implemented drifting-particles proposal. The earlier
+modal/list/card/completed-history surfaces remain removed. The dated
+per-iteration superpowers design and plan records that tracked this
+lineage have been consolidated into this document, `docs/SPEC.md`, and
+`README.md`; the originals are preserved in git history. Agent
 Pulse opens a centered Agent Planets stage: station title and volume
 context around the unchanged Dual Phase Scope's two real-audio Lissajous
 traces, behind a quiet solar system of small round disc-mask planets
@@ -400,4 +395,4 @@ same Quiet Focus Pane constraints.
 These decisions are also reflected in:
 
 - `docs/SPEC.md`
-- `docs/superpowers/plans/2026-06-27-radio-replacement.md`
+- `README.md`

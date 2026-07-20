@@ -193,6 +193,9 @@ Requirements:
 
 - 300–500ms debounce
 - cancel/ignore stale in-flight searches
+- coalesce queued requests to latest-wins: when several debounced queries pile up
+  behind an in-flight search, only the newest one is fetched, so fast typing
+  cannot build an unbounded stale request backlog
 - cache repeated query results
 - search results ranked by playback likelihood and popularity
 - prioritize stations with:
@@ -869,7 +872,7 @@ or interactive resize and is exercised via the manual checklist below, not CI.
 | 2 | First launch / failed previous starts silently with recommendations | Automated (logic) + Manual | `startup_is_silent_*` tests; catalog is the default visible list. |
 | 3 | MP3/AAC streams play via the native path | Manual | Verified by the `audio_spike` tool (`docs/audio-spike.md`); no automated audio. |
 | 4 | Visualizer reacts to real audio via FFT | Automated (helpers) + Manual | analyzer normalization tests; live reaction is manual. |
-| 5 | Online search updates while typing, debounced + cached | Automated | `cli::SearchDebounce` and `search::SearchCache` tests. |
+| 5 | Online search updates while typing, debounced + cached | Automated | `cli::SearchDebounce` and `search::SearchCache` tests; latest-wins coalescing and worker shutdown covered by injected-transport worker tests in `cli`. |
 | 6 | Results ranked toward playable/popular | Automated | `catalog::station_score` / `search` ranking tests. |
 | 7 | Favorites, previous station, volume, theme persist | Automated | `settings` roundtrip + `cli::Persistence` policy tests. |
 | 8 | Failed stations temporarily disabled for the session | Automated | `catalog::SessionStationHealth` + `app::on_failed` tests. |

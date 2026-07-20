@@ -2233,6 +2233,7 @@ dependencies = [
  "serde_json",
  "symphonia",
  "tokio",
+ "url",
 ]
 
 [[package]]

@@ -39,6 +39,7 @@ fn run(url: &str, duration: Duration) -> Result<()> {
     handle
         .command_tx
         .send(AudioCommand::Play {
+            request: handle.next_playback_request(),
             station: Box::new(station),
             volume: VolumePercent::clamped(100),
         })
@@ -55,7 +56,7 @@ fn run(url: &str, duration: Duration) -> Result<()> {
                 failed = true;
                 break;
             }
-            Ok(AudioEvent::Viz(frame)) => print_bars(frame.bands()),
+            Ok(AudioEvent::Viz { frame, .. }) => print_bars(frame.bands()),
             Ok(AudioEvent::IcyTitle { title, .. }) => println!("audio spike: title: {title}"),
             Ok(AudioEvent::Stopped) | Ok(AudioEvent::VolumeChanged(_)) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}

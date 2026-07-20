@@ -39,7 +39,7 @@ use crate::app::{Action, AgentPulseConnection, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioEvent, AudioHandle, AudioRuntime, AudioRuntimeConfig};
 use crate::catalog::Catalog;
 use crate::herdr::{self, HerdrMonitor, MonitorEvent};
-use crate::model::{PlaybackState, SearchQuery, VolumePercent};
+use crate::model::{PlaybackRequestId, PlaybackState, SearchQuery, VolumePercent};
 use crate::search::{
     RadioBrowserClient, RawSearchTransport, SearchCache, SearchError, SearchResults,
 };
@@ -411,7 +411,11 @@ impl SearchDebounce {
 /// On a normal launch the previous station is auto-played at the persisted
 /// volume; `--no-auto-play` or the absence of a previous station starts silently
 /// (the spec's first-launch / failed-previous behavior).
-pub fn startup_play_command(settings: &Settings, no_auto_play: bool) -> Option<AudioCommand> {
+pub fn startup_play_command(
+    settings: &Settings,
+    no_auto_play: bool,
+    request: PlaybackRequestId,
+) -> Option<AudioCommand> {
     if no_auto_play {
         return None;
     }
@@ -419,6 +423,7 @@ pub fn startup_play_command(settings: &Settings, no_auto_play: bool) -> Option<A
         .previous_station
         .clone()
         .map(|station| AudioCommand::Play {
+            request,
             station: Box::new(station),
             volume: settings.volume,
         })
@@ -733,12 +738,16 @@ fn run_app(args: CliArgs) -> Result<()> {
         .send(AudioCommand::SetVolume(app.settings().volume));
 
     // Startup auto-play: reflect Connecting in the UI and ask audio to play.
-    if let Some(command) = startup_play_command(app.settings(), args.no_auto_play) {
-        if let Some(previous) = app.settings().previous_station.clone() {
-            app.apply(Action::Audio(AudioEvent::Connecting {
-                station: previous.id,
-            }));
-        }
+    //
+    // The reducer is driven by the same resume intent `Space` uses (the app
+    // starts Stopped with the previous station as `current`), so the startup
+    // attempt records its request id exactly like every other play path. The
+    // `Connecting` event echoed back by the runtime is then accepted rather
+    // than rejected as unexpected.
+    let startup_request = audio.next_playback_request();
+    if let Some(command) = startup_play_command(app.settings(), args.no_auto_play, startup_request)
+    {
+        app.apply(Action::TogglePlayback(startup_request));
         let _ = audio.command_tx.send(command);
     }
 
@@ -1031,12 +1040,23 @@ fn handle_key_with_monitor(
                 // focus to Stations rather than starting playback.
                 app.apply(Action::ApplyBrowseSelection);
             } else {
-                app.apply(Action::PlaySelected);
-                if let Some(station) = app.current_station().cloned() {
-                    let _ = audio.command_tx.send(AudioCommand::Play {
-                        station: Box::new(station),
-                        volume: app.settings().volume,
-                    });
+                // Allocate the request first so the app expects exactly the
+                // attempt the runtime is about to start.
+                let request = audio.next_playback_request();
+                app.apply(Action::PlaySelected(request));
+                // Send only what the reducer accepted. `PlaySelected` is a
+                // no-op when nothing is selectable (an empty list), and the
+                // still-current station from an earlier play must not be
+                // restarted under a request the app never recorded — that
+                // would make the restarted stream's events look stale forever.
+                if app.playback_request() == Some(request) {
+                    if let Some(station) = app.current_station().cloned() {
+                        let _ = audio.command_tx.send(AudioCommand::Play {
+                            request,
+                            station: Box::new(station),
+                            volume: app.settings().volume,
+                        });
+                    }
                 }
             }
         }
@@ -1045,11 +1065,15 @@ fn handle_key_with_monitor(
         // the search strip `map_key` already routes Space to query text).
         KeyOutcome::TogglePlayback => {
             if app.focus() == FocusPane::Stations {
-                app.apply(Action::TogglePlayback);
+                // The id is allocated up front and only becomes the expected
+                // request if the toggle actually resumes playback.
+                let request = audio.next_playback_request();
+                app.apply(Action::TogglePlayback(request));
                 match app.playback() {
                     PlaybackState::Connecting => {
                         if let Some(station) = app.current_station().cloned() {
                             let _ = audio.command_tx.send(AudioCommand::Play {
+                                request,
                                 station: Box::new(station),
                                 volume: app.settings().volume,
                             });
@@ -1126,11 +1150,13 @@ fn handle_signal_view_key(
             app.apply(Action::LeaveSignalView);
         }
         KeyOutcome::TogglePlayback => {
-            app.apply(Action::TogglePlayback);
+            let request = audio.next_playback_request();
+            app.apply(Action::TogglePlayback(request));
             match app.playback() {
                 PlaybackState::Connecting => {
                     if let Some(station) = app.current_station().cloned() {
                         let _ = audio.command_tx.send(AudioCommand::Play {
+                            request,
                             station: Box::new(station),
                             volume: app.settings().volume,
                         });
@@ -1374,7 +1400,7 @@ fn update_search(app: &mut App, debounce: &mut SearchDebounce, query: String) {
 /// settings (e.g. a newly playing station becomes the persisted previous one).
 /// Visualizer frames are applied without a persistence check to avoid churn.
 fn apply_audio_event(app: &mut App, event: AudioEvent, persistence: &Persistence) {
-    if matches!(event, AudioEvent::Viz(_)) {
+    if matches!(event, AudioEvent::Viz { .. }) {
         app.apply(Action::Audio(event));
         return;
     }
@@ -1428,13 +1454,7 @@ mod tests {
     fn fake_audio() -> (AudioHandle, Receiver<AudioCommand>) {
         let (command_tx, command_rx) = mpsc::channel();
         let (_event_tx, event_rx) = mpsc::channel();
-        (
-            AudioHandle {
-                command_tx,
-                event_rx,
-            },
-            command_rx,
-        )
+        (AudioHandle::new(command_tx, event_rx), command_rx)
     }
 
     /// Controller scaffolding: an app on the curated catalog plus the debounce
@@ -1542,6 +1562,168 @@ mod tests {
             Ok(AudioCommand::Play { station, .. }) => assert_eq!(station.id, expected),
             other => panic!("expected a Play command for the selected station, got {other:?}"),
         }
+    }
+
+    // --- playback request identity (MIK-065) -----------------------------
+
+    /// The request id on the `Play` command the controller just sent.
+    fn sent_play_request(cmd_rx: &Receiver<AudioCommand>) -> PlaybackRequestId {
+        match cmd_rx.try_recv() {
+            Ok(AudioCommand::Play { request, .. }) => request,
+            other => panic!("expected a Play command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_sends_the_request_the_app_is_told_to_expect() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert_eq!(
+            app.playback_request(),
+            Some(sent_play_request(&cmd_rx)),
+            "the command and the reducer must agree on the live request"
+        );
+    }
+
+    #[test]
+    fn replaying_the_same_station_allocates_a_new_request() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let first = sent_play_request(&cmd_rx);
+
+        // Enter again on the very same station: a distinct attempt, so a
+        // distinct request. Station identity is never reused as event identity.
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let second = sent_play_request(&cmd_rx);
+
+        assert_ne!(first, second, "a replay is a new playback request");
+        assert_eq!(app.playback_request(), Some(second));
+    }
+
+    /// Switch to the (empty, on a default profile) Favorites source. Applying
+    /// the Browse selection hands focus back to Stations, so `Enter` is live
+    /// with nothing selectable.
+    fn show_empty_favorites(app: &mut App) {
+        let rail = ListSource::browse_rail();
+        let favorites = rail
+            .iter()
+            .position(|source| *source == ListSource::Favorites)
+            .expect("favorites is on the browse rail");
+        app.apply(Action::SetBrowseSelection(favorites));
+        app.apply(Action::ApplyBrowseSelection);
+    }
+
+    #[test]
+    fn enter_with_nothing_selectable_sends_no_command_and_keeps_the_live_request() {
+        // Regression: the reducer refuses to play when nothing is selected, but
+        // the controller used to send `Play` anyway from the *previous* current
+        // station. That restarted the runtime under a request the app never
+        // recorded, so every event from the restarted stream was rejected as
+        // stale and the UI silently diverged from what was audible.
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let played = sent_play_request(&cmd_rx);
+        let playing_station = app.current_station().cloned().expect("a current station");
+
+        show_empty_favorites(&mut app);
+        assert_eq!(app.focus(), FocusPane::Stations);
+        assert!(
+            app.selected_station().is_none(),
+            "the empty favorites list has nothing to play"
+        );
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a play the reducer refused must not reach the runtime"
+        );
+        assert_eq!(
+            app.playback_request(),
+            Some(played),
+            "the live request is unchanged, so the playing stream's events stay valid"
+        );
+        assert_eq!(
+            app.current_station().map(|station| station.id.clone()),
+            Some(playing_station.id),
+            "the current station is untouched"
+        );
+    }
+
+    #[test]
+    fn space_stop_clears_the_expected_request_and_resume_allocates_a_new_one() {
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+
+        handle_key(
+            key(KeyCode::Enter),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let played = sent_play_request(&cmd_rx);
+
+        // Space stops: nothing is expected, so the stopped session's workers
+        // cannot affect state as they drain.
+        handle_key(
+            key(KeyCode::Char(' ')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::Stop)));
+        assert_eq!(app.playback_request(), None);
+
+        // Space again resumes as a fresh request.
+        handle_key(
+            key(KeyCode::Char(' ')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        let resumed = sent_play_request(&cmd_rx);
+        assert_ne!(played, resumed);
+        assert_eq!(app.playback_request(), Some(resumed));
     }
 
     #[test]
@@ -2978,15 +3160,18 @@ mod tests {
         let mut app = connected_collage_app();
         app.configure_low_power_visuals(true);
         app.apply(Action::ToggleAgentOverlay);
-        app.apply(Action::Audio(AudioEvent::Viz(
-            crate::model::VizFrame::with_phase(
+        let request = crate::model::PlaybackRequestSeq::new().next_id();
+        app.apply(Action::PlaySelected(request));
+        app.apply(Action::Audio(AudioEvent::Viz {
+            request,
+            frame: crate::model::VizFrame::with_phase(
                 vec![0.0; 16],
                 0.1,
                 Vec::<f32>::new(),
                 crate::model::PhaseTrace::new([0.1], [0.1]),
                 crate::model::PhaseTrace::empty(),
             ),
-        )));
+        }));
         let area = canvas_area();
 
         // The audible frame froze the whole solar layout. A discriminating
@@ -3436,10 +3621,19 @@ mod tests {
     #[test]
     fn startup_auto_plays_previous_station_at_persisted_volume() {
         let settings = settings_with_previous();
-        match startup_play_command(&settings, false) {
-            Some(AudioCommand::Play { station, volume }) => {
+        let expected = crate::model::PlaybackRequestSeq::new().next_id();
+        match startup_play_command(&settings, false, expected) {
+            Some(AudioCommand::Play {
+                request,
+                station,
+                volume,
+            }) => {
                 assert_eq!(station.id.as_str(), "demo");
                 assert_eq!(volume.get(), 55);
+                assert_eq!(
+                    request, expected,
+                    "startup auto-play is a normal, identified playback request"
+                );
             }
             other => panic!("expected a Play command, got {other:?}"),
         }
@@ -3448,8 +3642,9 @@ mod tests {
     #[test]
     fn startup_is_silent_with_no_auto_play_or_no_previous_station() {
         let settings = settings_with_previous();
-        assert!(startup_play_command(&settings, true).is_none());
-        assert!(startup_play_command(&Settings::default(), false).is_none());
+        let request = crate::model::PlaybackRequestSeq::new().next_id();
+        assert!(startup_play_command(&settings, true, request).is_none());
+        assert!(startup_play_command(&Settings::default(), false, request).is_none());
     }
 
     // --- CLI volume override vs. persistence -----------------------------

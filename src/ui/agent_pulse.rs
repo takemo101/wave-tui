@@ -1929,8 +1929,18 @@ mod tests {
         app
     }
 
+    /// Feed a visualizer frame to `app`, starting playback first if needed:
+    /// frames are only accepted for the currently expected playback request.
     fn push_frame(app: &mut App, frame: VizFrame) {
-        app.apply(Action::Audio(AudioEvent::Viz(frame)));
+        if app.playback_request().is_none() {
+            app.apply(Action::PlaySelected(
+                crate::model::PlaybackRequestSeq::new().next_id(),
+            ));
+        }
+        let request = app
+            .playback_request()
+            .expect("playback started for the frame fixture");
+        app.apply(Action::Audio(AudioEvent::Viz { request, frame }));
     }
 
     fn render_collage_for(app: &App, low_power: bool, now: Instant) -> Buffer {

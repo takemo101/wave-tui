@@ -67,7 +67,6 @@ The tab owns the audio process: closing the tab exits `wave-tui` and stops
 playback, and detaching/reattaching the Herdr session leaves the process
 under Herdr's normal pane lifecycle.
 
-<<<<<<< New base: docs: use shifted Herdr keybinding
 ## Optional `config.toml` keybinding
 
 No configuration is required for the plugin to install or run. To open the
@@ -90,31 +89,6 @@ Plugin-specific settings are not currently read by `wave-tui`; if they are
 introduced later, they belong in
 `~/.config/herdr/plugins/config/wave-tui.radio/`, not Herdr's main config.
 
-||||||| Common ancestor
-=======
-## Optional `config.toml` keybinding
-
-No configuration is required for the plugin to install or run. To open the
-Agent Planets radio tab with a Herdr command key, add this to
-`~/.config/herdr/config.toml`:
-
-```toml
-[[keys.command]]
-key = "prefix+shift+r"
-type = "plugin_action"
-command = "wave-tui.radio.open"
-description = "Open wave-tui Agent Planets"
-```
-
-Restart or reload Herdr after editing its configuration. The binding invokes
-the same `open` plugin action as the command above and opens a dedicated tab
-in the focused workspace. Change `prefix+shift+r` to any unused command key.
-
-Plugin-specific settings are not currently read by `wave-tui`; if they are
-introduced later, they belong in
-`~/.config/herdr/plugins/config/wave-tui.radio/`, not Herdr's main config.
-
->>>>>>> Current commit: docs: use shifted Herdr keybinding
 ## Local development
 
 From a checkout of this repository:

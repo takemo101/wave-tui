@@ -500,8 +500,8 @@ impl<'de> Deserialize<'de> for VisualizerMode {
 /// concern; this type only guarantees renderer-safe coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhaseTrace {
-    pub x: Vec<f32>,
-    pub y: Vec<f32>,
+    x: Vec<f32>,
+    y: Vec<f32>,
 }
 
 impl PhaseTrace {
@@ -522,6 +522,15 @@ impl PhaseTrace {
             y: Vec::new(),
         }
     }
+
+    /// Renderer-safe paired coordinates in their normalized construction order.
+    pub fn pairs(&self) -> impl ExactSizeIterator<Item = (f32, f32)> + DoubleEndedIterator + '_ {
+        self.x.iter().copied().zip(self.y.iter().copied())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty()
+    }
 }
 
 /// RMS at or below this threshold counts as visual silence: renderers keep
@@ -538,11 +547,11 @@ pub const SILENCE_RMS: f32 = 0.05;
 /// buffers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VizFrame {
-    pub bands: Vec<f32>,
-    pub rms: f32,
-    pub waveform: Vec<f32>,
-    pub primary_phase: PhaseTrace,
-    pub secondary_phase: PhaseTrace,
+    bands: Vec<f32>,
+    rms: f32,
+    waveform: Vec<f32>,
+    primary_phase: PhaseTrace,
+    secondary_phase: PhaseTrace,
 }
 
 impl VizFrame {
@@ -595,13 +604,33 @@ impl VizFrame {
         }
     }
 
+    pub fn bands(&self) -> &[f32] {
+        &self.bands
+    }
+
+    pub fn rms(&self) -> f32 {
+        self.rms
+    }
+
+    pub fn waveform(&self) -> &[f32] {
+        &self.waveform
+    }
+
+    pub fn primary_phase(&self) -> &PhaseTrace {
+        &self.primary_phase
+    }
+
+    pub fn secondary_phase(&self) -> &PhaseTrace {
+        &self.secondary_phase
+    }
+
     /// Whether this frame is visually audible: RMS above [`SILENCE_RMS`]
     /// with at least one non-empty phase trace, so a display capture of it
     /// can actually draw a phase scope. Analyzer silence carries all-zero
     /// traces and zero RMS, so it is never audible.
     pub fn is_audible(&self) -> bool {
         self.rms > SILENCE_RMS
-            && (!self.primary_phase.x.is_empty() || !self.secondary_phase.x.is_empty())
+            && (!self.primary_phase.is_empty() || !self.secondary_phase.is_empty())
     }
 }
 
@@ -833,11 +862,34 @@ mod tests {
     }
 
     #[test]
+    fn viz_frame_read_only_accessors_expose_normalized_constructor_data() {
+        let frame = VizFrame::with_phase(
+            [-1.0, 0.5, 2.0],
+            3.0,
+            [-2.0, 0.25, 2.0],
+            PhaseTrace::new([-2.0, 0.5], [0.25, 2.0]),
+            PhaseTrace::new([0.1], [-0.1]),
+        );
+
+        assert_eq!(frame.bands(), &[0.0, 0.5, 1.0]);
+        assert_eq!(frame.rms(), 1.0);
+        assert_eq!(frame.waveform(), &[-1.0, 0.25, 1.0]);
+        assert_eq!(
+            frame.primary_phase().pairs().collect::<Vec<_>>(),
+            vec![(-1.0, 0.25), (0.5, 1.0)]
+        );
+        assert_eq!(
+            frame.secondary_phase().pairs().collect::<Vec<_>>(),
+            vec![(0.1, -0.1)]
+        );
+    }
+
+    #[test]
     fn viz_frame_clamps_bands_and_rms() {
         let frame = VizFrame::new([-1.0, 0.5, 2.0], 3.0, []);
-        assert_eq!(frame.bands, vec![0.0, 0.5, 1.0]);
-        assert_eq!(frame.rms, 1.0);
-        assert_eq!(VizFrame::silent(4).bands, vec![0.0; 4]);
+        assert_eq!(frame.bands(), &[0.0, 0.5, 1.0]);
+        assert_eq!(frame.rms(), 1.0);
+        assert_eq!(VizFrame::silent(4).bands(), &[0.0; 4]);
     }
 
     #[test]
@@ -845,36 +897,37 @@ mod tests {
         // Waveform is a time-domain series, so it is signed and clamps to
         // -1.0..=1.0 (unlike bands/RMS, which are magnitudes in 0.0..=1.0).
         let frame = VizFrame::new([0.5], 0.5, [-2.0, -0.3, 0.0, 0.4, 2.0]);
-        assert_eq!(frame.waveform, vec![-1.0, -0.3, 0.0, 0.4, 1.0]);
+        assert_eq!(frame.waveform(), &[-1.0, -0.3, 0.0, 0.4, 1.0]);
     }
 
     #[test]
     fn viz_frame_silent_has_valid_empty_waveform() {
         let frame = VizFrame::silent(4);
-        assert_eq!(frame.bands, vec![0.0; 4]);
-        assert_eq!(frame.rms, 0.0);
-        assert!(frame.waveform.is_empty());
+        assert_eq!(frame.bands(), &[0.0; 4]);
+        assert_eq!(frame.rms(), 0.0);
+        assert!(frame.waveform().is_empty());
     }
 
     #[test]
     fn phase_trace_clamps_coordinates_and_truncates_to_paired_length() {
         let trace = PhaseTrace::new([-2.0, -0.25, 2.0], [-0.5, 0.5]);
-        assert_eq!(trace.x, vec![-1.0, -0.25]);
-        assert_eq!(trace.y, vec![-0.5, 0.5]);
+        assert_eq!(
+            trace.pairs().collect::<Vec<_>>(),
+            vec![(-1.0, -0.5), (-0.25, 0.5)]
+        );
     }
 
     #[test]
     fn phase_trace_empty_has_no_points() {
         let trace = PhaseTrace::empty();
-        assert!(trace.x.is_empty());
-        assert!(trace.y.is_empty());
+        assert!(trace.is_empty());
     }
 
     #[test]
     fn legacy_viz_frame_constructor_has_empty_phase_traces() {
         let frame = VizFrame::new([0.2], 0.4, [0.1]);
-        assert!(frame.primary_phase.x.is_empty());
-        assert!(frame.secondary_phase.y.is_empty());
+        assert!(frame.primary_phase().is_empty());
+        assert!(frame.secondary_phase().is_empty());
     }
 
     #[test]
@@ -886,10 +939,14 @@ mod tests {
             PhaseTrace::new([2.0, 0.1], [0.2, -2.0]),
             PhaseTrace::new([0.3], [0.4]),
         );
-        assert_eq!(frame.primary_phase.x, vec![1.0, 0.1]);
-        assert_eq!(frame.primary_phase.y, vec![0.2, -1.0]);
-        assert_eq!(frame.secondary_phase.x, vec![0.3]);
-        assert_eq!(frame.secondary_phase.y, vec![0.4]);
+        assert_eq!(
+            frame.primary_phase().pairs().collect::<Vec<_>>(),
+            vec![(1.0, 0.2), (0.1, -1.0)]
+        );
+        assert_eq!(
+            frame.secondary_phase().pairs().collect::<Vec<_>>(),
+            vec![(0.3, 0.4)]
+        );
     }
 
     #[test]
@@ -924,8 +981,8 @@ mod tests {
     #[test]
     fn viz_frame_silent_has_empty_phase_traces() {
         let frame = VizFrame::silent(4);
-        assert!(frame.primary_phase.x.is_empty());
-        assert!(frame.secondary_phase.x.is_empty());
+        assert!(frame.primary_phase().is_empty());
+        assert!(frame.secondary_phase().is_empty());
     }
 
     #[test]

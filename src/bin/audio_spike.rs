@@ -55,7 +55,7 @@ fn run(url: &str, duration: Duration) -> Result<()> {
                 failed = true;
                 break;
             }
-            Ok(AudioEvent::Viz(frame)) => print_bars(&frame.bands),
+            Ok(AudioEvent::Viz(frame)) => print_bars(frame.bands()),
             Ok(AudioEvent::IcyTitle { title, .. }) => println!("audio spike: title: {title}"),
             Ok(AudioEvent::Stopped) | Ok(AudioEvent::VolumeChanged(_)) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}

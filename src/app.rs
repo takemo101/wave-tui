@@ -2123,7 +2123,7 @@ mod tests {
             ))));
         }
 
-        let history: Vec<f32> = app.viz_history().map(|frame| frame.bands[0]).collect();
+        let history: Vec<f32> = app.viz_history().map(|frame| frame.bands()[0]).collect();
 
         assert_eq!(history.len(), 6, "current plus five trailing frames");
         assert_eq!(history, vec![0.7, 0.6, 0.5, 0.4, 0.3, 0.2]);

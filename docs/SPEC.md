@@ -589,8 +589,8 @@ enabled.
 | Condition | Wide/Medium summary | Agent Planets stage (`a`) |
 | --- | --- | --- |
 | Connected | `● n active` count | Live stage (`agents · none active` in an empty field) |
-| First failed poll | Count dims | Last live composition (traces/persistence/sun/discs at frozen orbit positions/interior status/brackets) frozen, dimmed, a quiet `· reconnecting` note on the stage heading; an open details record stays dimmed with `reconnecting` in its title |
-| ≥ 15 seconds without success | Summary disappears | Details closed and the field hidden behind `agents · unavailable · retrying`; the stage chrome stays |
+| First failed poll | Count dims | Last live composition (traces/persistence/sun/discs at frozen orbit positions/interior status/brackets) frozen and dimmed under a quiet `· reconnecting` stage note; an open Agent table freezes and dims with that snapshot |
+| ≥ 15 seconds without success | Summary disappears | Agent table closed and the field hidden behind `agents · unavailable · retrying`; the stage chrome stays |
 | Fresh snapshot | Live count | Live stage |
 
 Socket errors, malformed replies, and timeouts are recoverable: they never

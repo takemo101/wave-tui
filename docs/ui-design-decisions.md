@@ -135,7 +135,7 @@ The optional Herdr Agent Pulse uses a one-line **quiet count** in normal
 layouts and a full-screen **Agent Planets** stage as its only rich
 surface. The current agent presentation decisions (approved 2026-07-19)
 are: the centered Agent Planets stage with round disc-mask planets, the
-on-demand Agent details record that replaced the stage's permanent Side
+on-demand Agent table modal that replaced the stage's permanent Side
 Tags, the interior-only surface status, the static central sun with
 Working-only invisible orbits that replaced audio-driven planet body
 motion, and the selection focus brackets (approved as a revision that

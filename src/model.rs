@@ -10,6 +10,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 /// Recoverable domain validation errors raised by smart constructors.
 ///
@@ -133,9 +134,24 @@ impl StreamUrl {
     pub fn parse(raw: impl Into<String>) -> Result<Self, DomainError> {
         let raw = raw.into();
         let trimmed = raw.trim();
-        let has_host = |scheme: &str| trimmed.len() > scheme.len();
-        if (trimmed.starts_with("https://") && has_host("https://"))
-            || (trimmed.starts_with("http://") && has_host("http://"))
+        let raw_authority = trimmed
+            .split_once("://")
+            .map(|(_, remainder)| remainder.split(['/', '?', '#']).next().unwrap_or_default());
+        let has_explicit_host = raw_authority.is_some_and(|authority| {
+            !authority.is_empty()
+                && !authority.chars().any(|character| {
+                    character.is_ascii_whitespace() || character.is_ascii_control()
+                })
+        });
+        if !has_explicit_host {
+            return Err(DomainError::InvalidStreamUrl(raw));
+        }
+
+        let parsed = Url::parse(trimmed).map_err(|_| DomainError::InvalidStreamUrl(raw.clone()))?;
+        if matches!(parsed.scheme(), "http" | "https")
+            && parsed
+                .host_str()
+                .is_some_and(|host| !host.trim().is_empty())
         {
             Ok(Self(trimmed.to_string()))
         } else {
@@ -624,6 +640,31 @@ mod tests {
             StreamUrl::parse(""),
             Err(DomainError::InvalidStreamUrl(_))
         ));
+    }
+
+    #[test]
+    fn stream_url_rejects_hostless_and_non_http_values_with_raw_domain_errors() {
+        for raw in [
+            "https:///path",
+            "https://?q=x",
+            "https://   ",
+            "ftp://example.com/stream.mp3",
+        ] {
+            assert_eq!(
+                StreamUrl::parse(raw),
+                Err(DomainError::InvalidStreamUrl(raw.to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn stream_url_rejects_embedded_ascii_whitespace_in_authority() {
+        for raw in ["https://example.com\t/path", "https://example.com\n/path"] {
+            assert_eq!(
+                StreamUrl::parse(raw),
+                Err(DomainError::InvalidStreamUrl(raw.to_string()))
+            );
+        }
     }
 
     #[test]

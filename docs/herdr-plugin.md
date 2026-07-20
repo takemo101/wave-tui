@@ -76,7 +76,7 @@ Agent Planets radio tab with a Herdr command key, add this to
 
 ```toml
 [[keys.command]]
-key = "prefix+r"
+key = "prefix+shift+r"
 type = "plugin_action"
 command = "wave-tui.radio.open"
 description = "Open wave-tui Agent Planets"
@@ -84,7 +84,7 @@ description = "Open wave-tui Agent Planets"
 
 Restart or reload Herdr after editing its configuration. The binding invokes
 the same `open` plugin action as the command above and opens a dedicated tab
-in the focused workspace. Change `prefix+r` to any unused command key.
+in the focused workspace. Change `prefix+shift+r` to any unused command key.
 
 Plugin-specific settings are not currently read by `wave-tui`; if they are
 introduced later, they belong in

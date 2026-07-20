@@ -28,6 +28,8 @@ For `wave-tui`, the expected change boundaries are:
 | `layout` | breakpoint policy changes | width/height threshold logic |
 | `app` | user actions/state transitions change | UI widget details |
 | `ui` | rendering changes | domain mutation logic |
+| `cli` | flags, help text, or key meaning change | terminal/adapter lifecycle |
+| `runtime` | startup, teardown, or event-loop wiring changes | terminal, worker, and channel details |
 
 Rules:
 

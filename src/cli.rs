@@ -481,9 +481,13 @@ impl Persistence {
         }
     }
 
-    /// Persist the app's settings under this policy (best-effort).
-    fn save(&self, app: &App) {
-        let _ = settings::save(&self.settings_to_save(app.settings()));
+    /// Persist the app's settings under this policy.
+    ///
+    /// The save is nonfatal either way: the recoverable outcome is reported to
+    /// the app so the UI can raise (or clear) the settings-save-failure notice.
+    fn save(&self, app: &mut App) {
+        let failed = settings::save(&self.settings_to_save(app.settings())).is_err();
+        app.apply(Action::SettingsSaveResult { failed });
     }
 }
 
@@ -761,7 +765,7 @@ fn run_app(args: CliArgs) -> Result<()> {
     if let Some(monitor) = monitor {
         monitor.stop();
     }
-    persistence.save(&app);
+    persistence.save(&mut app);
     let _ = worker.join();
 
     loop_result

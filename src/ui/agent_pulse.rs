@@ -121,8 +121,6 @@ pub(super) fn summary_line<'a>(app: &App, theme: &Theme) -> Option<Line<'a>> {
 
 // --- shared App adaptation --------------------------------------------------
 
-// --- canvas geometry --------------------------------------------------------
-
 /// Whether the full-screen canvas exists at all: overlay open, integration
 /// visible, and Signal View (which keeps its own input/display contract)
 /// inactive.
@@ -131,8 +129,6 @@ fn canvas_active(app: &App) -> bool {
         && !app.is_signal_view()
         && app.agent_pulse_connection() != AgentPulseConnection::Hidden
 }
-
-// --- hit testing ------------------------------------------------------------
 
 /// The per-agent orbit seconds behind a composition at `now`. Low power
 /// prefers the App-captured frozen layout — every planet, an active Working
@@ -230,8 +226,6 @@ pub(super) fn hit_test(
 
 // --- rendering facade -------------------------------------------------------
 
-// --- canvas rendering -------------------------------------------------------
-
 /// Render the full-screen Agent Planets stage over the composed layout.
 ///
 /// A no-op unless the canvas is active, so normal and standalone output is
@@ -271,9 +265,16 @@ pub(super) fn render_canvas(
 
 #[cfg(test)]
 mod tests {
-    use super::geometry::*;
-    use super::modal::*;
-    use super::surface::*;
+    use super::geometry::{
+        agent_stage_layout, collage_layout, disc_geometry, phase_cells, CollageLayout, CollageTile,
+        DiscMask, PERSISTENCE_GLYPH, PRIMARY_TRACE_GLYPH, SECONDARY_TRACE_GLYPH, SUN_GLYPH,
+        VIGNETTE_BAND, VIGNETTE_BASE,
+    };
+    use super::modal::{agent_table_modal_area, AGENT_TABLE_WIDTHS};
+    use super::surface::{
+        planet_geometry, planet_palette, planet_surface, PlanetGeometry, PlanetSurface,
+        CRATER_GLYPH, PLANET_BODY_GLYPH, WORKING_BAND,
+    };
     use super::*;
     use crate::app::Action;
     use crate::audio::AudioEvent;
@@ -3390,7 +3391,11 @@ mod tests {
     fn characterization_pins_every_layout_tier() {
         let now = Instant::now();
         let app = characterization_statuses(now);
-        let digests: Vec<u64> = [
+        // Both digests per tier, not just the buffer: narrow tiers are where
+        // mask fallthrough and clamping engage, so they are exactly where the
+        // drawn body and the hit cells could silently desynchronize. Pinning
+        // the buffer alone would let that pass as an intentional visual edit.
+        let digests: Vec<(u64, (u64, usize))> = [
             Rect::new(0, 0, 100, 30),
             Rect::new(0, 0, 80, 24),
             Rect::new(0, 0, 60, 20),
@@ -3398,19 +3403,24 @@ mod tests {
             Rect::new(0, 0, 24, 8),
         ]
         .into_iter()
-        .map(|area| buffer_digest(&render_collage_in(&app, false, now, area)))
+        .map(|area| {
+            (
+                buffer_digest(&render_collage_in(&app, false, now, area)),
+                hit_map_digest(&app, area, false, now),
+            )
+        })
         .collect();
 
         assert_eq!(
             digests,
             vec![
-                4_134_155_508_641_885_490,
-                1_856_660_865_147_035_786,
-                16_766_417_207_939_638_788,
-                5_724_836_692_193_432_250,
-                3_410_854_746_564_216_135,
+                (4_134_155_508_641_885_490, (5_223_541_943_661_906_365, 113)),
+                (1_856_660_865_147_035_786, (6_886_043_681_781_501_908, 105)),
+                (16_766_417_207_939_638_788, (10_069_271_558_196_335_542, 53)),
+                (5_724_836_692_193_432_250, (6_305_808_145_671_547_361, 5)),
+                (3_410_854_746_564_216_135, (6_954_891_355_991_016_997, 0)),
             ],
-            "a layout tier's composed stage changed"
+            "a layout tier's composed stage or hit map changed"
         );
     }
 

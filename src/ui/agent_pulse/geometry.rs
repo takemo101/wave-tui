@@ -23,19 +23,19 @@ use crate::model::{PhaseTrace, VizFrame};
 pub(super) const SILENCE_ENERGY: f32 = crate::model::SILENCE_RMS;
 /// Above this energy a working frame's edge glow brightens to bold and the
 /// live traces shed their dim modifier.
-pub(super) const BRIGHT_ENERGY: f32 = 0.6;
+const BRIGHT_ENERGY: f32 = 0.6;
 /// Maximum dim phosphor-persistence layers taken from recent history frames.
-pub(super) const PERSISTENCE_LAYERS: usize = 2;
+const PERSISTENCE_LAYERS: usize = 2;
 /// Upper bound on a frame's base width so sparse canvases stay tile-like.
-pub(super) const TILE_MAX_W: u16 = 18;
+const TILE_MAX_W: u16 = 18;
 /// Upper bound on a frame's base height so sparse canvases stay tile-like.
-pub(super) const TILE_MAX_H: u16 = 9;
+const TILE_MAX_H: u16 = 9;
 /// Spectrum-gradient position of the primary phase trace: the theme's main
 /// visualizer color.
-pub(super) const PRIMARY_TRACE_POSITION: f32 = 0.85;
+const PRIMARY_TRACE_POSITION: f32 = 0.85;
 /// Spectrum-gradient position of the secondary trace: the complementary
 /// visualizer color.
-pub(super) const SECONDARY_TRACE_POSITION: f32 = 0.3;
+const SECONDARY_TRACE_POSITION: f32 = 0.3;
 /// Glyph plotting one primary-trace phase point.
 pub(super) const PRIMARY_TRACE_GLYPH: &str = "•";
 /// Glyph plotting one secondary-trace phase point.
@@ -46,19 +46,19 @@ pub(super) const PERSISTENCE_GLYPH: &str = "·";
 /// Glyph of the single static, theme-derived sun at the field center.
 pub(super) const SUN_GLYPH: &str = "☀";
 /// Slowest seed-derived orbit period, in seconds per full turn.
-pub(super) const ORBIT_SLOWEST_SECS_PER_TURN: u64 = 240;
+const ORBIT_SLOWEST_SECS_PER_TURN: u64 = 240;
 /// Fastest seed-derived orbit period, in seconds per full turn.
-pub(super) const ORBIT_FASTEST_SECS_PER_TURN: u64 = 90;
+const ORBIT_FASTEST_SECS_PER_TURN: u64 = 90;
 /// Cells kept clear between the sun and a planet body's nearest cell.
-pub(super) const SUN_BODY_GAP: u16 = 2;
+const SUN_BODY_GAP: u16 = 2;
 /// Margin around a planet's disc mask forming its tile: the corner focus
 /// brackets sit on this frame, gapped off the body.
-pub(super) const PLANET_FRAME_MARGIN: u16 = 2;
+const PLANET_FRAME_MARGIN: u16 = 2;
 
 /// Normalized breathing vignette ring radius at silence.
 pub(super) const VIGNETTE_BASE: f32 = 0.62;
 /// How far full RMS pushes the vignette ring outward.
-pub(super) const VIGNETTE_SWING: f32 = 0.3;
+const VIGNETTE_SWING: f32 = 0.3;
 /// Half-thickness of the vignette ring in normalized distance.
 pub(super) const VIGNETTE_BAND: f32 = 0.05;
 
@@ -111,14 +111,14 @@ pub(super) struct CollageLayout {
 
 /// Stable placement seed for an agent: a hash of its private identity, so a
 /// status change never moves a frame and no pane detail is exposed.
-pub(super) fn seed_of(view: &AgentView) -> u64 {
+fn seed_of(view: &AgentView) -> u64 {
     let mut hasher = DefaultHasher::new();
     view.id.hash(&mut hasher);
     hasher.finish()
 }
 
 /// The agent's assigned FFT band, by identity; zero when the frame is empty.
-pub(super) fn band_of(seed: u64, bands: &[f32]) -> f32 {
+fn band_of(seed: u64, bands: &[f32]) -> f32 {
     if bands.is_empty() {
         0.0
     } else {
@@ -128,24 +128,24 @@ pub(super) fn band_of(seed: u64, bands: &[f32]) -> f32 {
 
 /// The seed-derived orbit period in seconds per full turn: deliberately
 /// slow and bounded, so planets drift rather than spin.
-pub(super) fn orbit_secs_per_turn(seed: u64) -> f32 {
+fn orbit_secs_per_turn(seed: u64) -> f32 {
     let span = ORBIT_SLOWEST_SECS_PER_TURN - ORBIT_FASTEST_SECS_PER_TURN + 1;
     (ORBIT_FASTEST_SECS_PER_TURN + (seed >> 7) % span) as f32
 }
 
 /// The seed-derived initial orbit angle, in turns.
-pub(super) fn orbit_initial_turns(seed: u64) -> f32 {
+fn orbit_initial_turns(seed: u64) -> f32 {
     ((seed >> 17) % 1024) as f32 / 1024.0
 }
 
 /// The seed-derived position between the smallest and largest orbit radius
 /// the field can offer.
-pub(super) fn orbit_radius_fraction(seed: u64) -> f32 {
+fn orbit_radius_fraction(seed: u64) -> f32 {
     ((seed >> 33) % 997) as f32 / 996.0
 }
 
 /// Clamp a proposed rectangle into `area`, keeping at least one cell.
-pub(super) fn clamp_rect(x: i32, y: i32, width: u16, height: u16, area: Rect) -> Rect {
+fn clamp_rect(x: i32, y: i32, width: u16, height: u16, area: Rect) -> Rect {
     let width = width.clamp(1, area.width);
     let height = height.clamp(1, area.height);
     let x = x.clamp(area.x as i32, (area.x + area.width - width) as i32) as u16;
@@ -155,7 +155,7 @@ pub(super) fn clamp_rect(x: i32, y: i32, width: u16, height: u16, area: Rect) ->
 
 /// Map a normalized phase coordinate in `-1.0..=1.0` to a centered column:
 /// zero is exactly the horizontal middle of `area`.
-pub(super) fn phase_x(area: Rect, value: f32) -> u16 {
+fn phase_x(area: Rect, value: f32) -> u16 {
     let half = area.width.saturating_sub(1) as f32 / 2.0;
     let x = (area.x as f32 + half + value * half).round() as i32;
     x.clamp(
@@ -166,7 +166,7 @@ pub(super) fn phase_x(area: Rect, value: f32) -> u16 {
 
 /// Map a normalized phase coordinate in `-1.0..=1.0` to a centered row,
 /// inverted so positive values plot upward like an oscilloscope.
-pub(super) fn phase_y(area: Rect, value: f32) -> u16 {
+fn phase_y(area: Rect, value: f32) -> u16 {
     let half = area.height.saturating_sub(1) as f32 / 2.0;
     let y = (area.y as f32 + half - value * half).round() as i32;
     y.clamp(
@@ -197,7 +197,7 @@ pub(super) fn phase_cells(trace: &PhaseTrace, area: Rect) -> Vec<PhaseCell> {
 /// them would pile a point cluster at the canvas center. Skipping the frame
 /// keeps silence calm, dim, and still by construction, with no FFT-ripple or
 /// waveform substitute.
-pub(super) fn phase_layers(frame: &VizFrame, history: &[VizFrame], area: Rect) -> Vec<PhaseLayer> {
+fn phase_layers(frame: &VizFrame, history: &[VizFrame], area: Rect) -> Vec<PhaseLayer> {
     let mut layers = Vec::new();
     for old in history.iter().take(PERSISTENCE_LAYERS).rev() {
         if old.rms() <= SILENCE_ENERGY {
@@ -377,13 +377,13 @@ pub(super) enum DiscMask {
 }
 
 /// Explicit 7×5 disc rows; only non-space characters become body cells.
-pub(super) const LARGE_DISC: [&str; 5] = ["  ███  ", " █████ ", "███████", " █████ ", "  ███  "];
+const LARGE_DISC: [&str; 5] = ["  ███  ", " █████ ", "███████", " █████ ", "  ███  "];
 /// Explicit 5×3 disc rows.
-pub(super) const MEDIUM_DISC: [&str; 3] = [" ███ ", "█████", " ███ "];
+const MEDIUM_DISC: [&str; 3] = [" ███ ", "█████", " ███ "];
 /// Explicit 3×3 disc rows.
-pub(super) const SMALL_DISC: [&str; 3] = [" █ ", "███", " █ "];
+const SMALL_DISC: [&str; 3] = [" █ ", "███", " █ "];
 /// The one-cell fallback disc for the densest fields.
-pub(super) const DOT_DISC: [&str; 1] = ["█"];
+const DOT_DISC: [&str; 1] = ["█"];
 
 impl DiscMask {
     /// The largest mask whose fixed footprint fits a `width`×`height` slot:
@@ -401,7 +401,7 @@ impl DiscMask {
     }
 
     /// The next smaller fixed mask, down to the one-cell disc.
-    pub(super) fn smaller(self) -> Option<DiscMask> {
+    fn smaller(self) -> Option<DiscMask> {
         match self {
             DiscMask::Large7x5 => Some(DiscMask::Medium5x3),
             DiscMask::Medium5x3 => Some(DiscMask::Small3x3),
@@ -410,7 +410,7 @@ impl DiscMask {
         }
     }
 
-    pub(super) fn rows(self) -> &'static [&'static str] {
+    fn rows(self) -> &'static [&'static str] {
         match self {
             DiscMask::Large7x5 => &LARGE_DISC,
             DiscMask::Medium5x3 => &MEDIUM_DISC,

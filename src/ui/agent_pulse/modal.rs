@@ -24,7 +24,7 @@ use crate::theme::Theme;
 // --- status presentation helpers -------------------------------------------
 
 /// Short lowercase state label for the selected-frame line.
-pub(super) fn status_label(status: AgentStatus) -> &'static str {
+fn status_label(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "working",
         AgentStatus::Blocked => "blocked",
@@ -35,7 +35,7 @@ pub(super) fn status_label(status: AgentStatus) -> &'static str {
 }
 
 /// Truncate one table cell without dropping a column at narrow widths.
-pub(super) fn ellipsize_cell(value: &str, width: usize) -> String {
+fn ellipsize_cell(value: &str, width: usize) -> String {
     let count = value.chars().count();
     if count <= width {
         value.to_string()
@@ -56,11 +56,11 @@ pub(super) const AGENT_TABLE_WIDTHS: [Constraint; 4] = [
     Constraint::Percentage(15),
     Constraint::Percentage(40),
 ];
-pub(super) const AGENT_TABLE_MAX_ROWS: usize = 10;
+const AGENT_TABLE_MAX_ROWS: usize = 10;
 
 /// Resolve the actual Ratatui column widths so cell text can ellipsize before
 /// rendering. This uses the exact constraints and spacing passed to `Table`.
-pub(super) fn agent_table_widths(inner_width: u16) -> [usize; 4] {
+fn agent_table_widths(inner_width: u16) -> [usize; 4] {
     let columns = Layout::horizontal(AGENT_TABLE_WIDTHS)
         .spacing(1)
         .split(Rect::new(0, 0, inner_width, 1));
@@ -68,7 +68,7 @@ pub(super) fn agent_table_widths(inner_width: u16) -> [usize; 4] {
 }
 
 /// One data or header row, clipped to its responsive Ratatui column width.
-pub(super) fn agent_table_row(cells: [&str; 4], widths: [usize; 4]) -> Row<'static> {
+fn agent_table_row(cells: [&str; 4], widths: [usize; 4]) -> Row<'static> {
     Row::new(
         cells
             .into_iter()

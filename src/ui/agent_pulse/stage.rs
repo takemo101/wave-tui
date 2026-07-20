@@ -182,13 +182,7 @@ pub(super) fn render_agent_planets_stage(
 /// Centered stage heading: `Agent Planets · n active` in the same Title
 /// Case presentation as Single View, with the quiet reconnect note appended
 /// while the connection is stale.
-pub(super) fn render_stage_heading(
-    theme: &Theme,
-    count: usize,
-    stale: bool,
-    area: Rect,
-    buf: &mut Buffer,
-) {
+fn render_stage_heading(theme: &Theme, count: usize, stale: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -217,7 +211,7 @@ pub(super) fn render_stage_heading(
 /// The stage's primary title: ICY now-playing title, then station name, then
 /// calm no-station copy. Mirrors the Signal View priority without exposing
 /// any agent data.
-pub(super) fn stage_primary_title(app: &App) -> String {
+fn stage_primary_title(app: &App) -> String {
     if let Some(title) = app.now_playing_title() {
         title.to_string()
     } else if let Some(station) = app.current_station() {
@@ -232,13 +226,7 @@ pub(super) fn stage_primary_title(app: &App) -> String {
 /// View volume line as the lowest title-metadata row — the same placement it
 /// has in Signal View. The line is reused verbatim, so it is never restyled
 /// here.
-pub(super) fn render_stage_title_block(
-    app: &App,
-    theme: &Theme,
-    stale: bool,
-    area: Rect,
-    buf: &mut Buffer,
-) {
+fn render_stage_title_block(app: &App, theme: &Theme, stale: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -267,7 +255,7 @@ pub(super) fn render_stage_title_block(
 /// deliberately not advertised — Single View is not a stage action. Pane
 /// focus belongs to the agent table while it is open, so its `O` hint never
 /// competes with the modal-local control.
-pub(super) fn render_stage_footer(theme: &Theme, table_open: bool, area: Rect, buf: &mut Buffer) {
+fn render_stage_footer(theme: &Theme, table_open: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -295,7 +283,7 @@ pub(super) fn render_stage_footer(theme: &Theme, table_open: bool, area: Rect, b
 /// derives from that frame, so the band stays bright and the pulse holds
 /// its half instead of resting or dimming away. Selection never restyles
 /// the body; the brackets are the only focus treatment.
-pub(super) fn render_planet(
+fn render_planet(
     buf: &mut Buffer,
     tile: &CollageTile,
     geometry: &PlanetGeometry,
@@ -406,7 +394,7 @@ pub(super) fn render_planet(
 /// Candidates stay within the planet tile and stage field. A candidate that
 /// would overwrite a sun, any planet body/focus bracket, or an earlier label
 /// is omitted; that never removes or changes a planet body.
-pub(super) fn render_planet_labels(
+fn render_planet_labels(
     buf: &mut Buffer,
     layout: &CollageLayout,
     geometries: &[PlanetGeometry],
@@ -468,18 +456,12 @@ pub(super) fn render_planet_labels(
 /// (vignette, phosphor persistence) must not inherit its modifiers, because
 /// Ratatui merges styles per cell. Subtract exactly the emphasis modifiers
 /// the composed style did not add itself.
-pub(super) fn own_emphasis(style: Style) -> Style {
+fn own_emphasis(style: Style) -> Style {
     style.remove_modifier((Modifier::DIM | Modifier::BOLD).difference(style.add_modifier))
 }
 
 /// Draw the breathing theme-phosphor vignette ring for a normalized radius.
-pub(super) fn render_vignette(
-    buf: &mut Buffer,
-    area: Rect,
-    radius: f32,
-    theme: &Theme,
-    stale: bool,
-) {
+fn render_vignette(buf: &mut Buffer, area: Rect, radius: f32, theme: &Theme, stale: bool) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -505,7 +487,7 @@ pub(super) fn render_vignette(
     }
 }
 
-pub(super) fn with_stale(style: Style, stale: bool) -> Style {
+fn with_stale(style: Style, stale: bool) -> Style {
     if stale {
         style.add_modifier(Modifier::DIM)
     } else {
@@ -514,7 +496,7 @@ pub(super) fn with_stale(style: Style, stale: bool) -> Style {
 }
 
 /// Centered single-line copy for the empty/unavailable states.
-pub(super) fn center_copy(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
+fn center_copy(buf: &mut Buffer, area: Rect, text: &str, style: Style) {
     let width = text.chars().count() as u16;
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height / 2;

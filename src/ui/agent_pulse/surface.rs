@@ -26,13 +26,13 @@ pub(super) const CRATER_GLYPH: &str = "░";
 pub(super) const WORKING_BAND: usize = 3;
 /// Minimum body cells before an interior status cell may appear: the
 /// one-cell disc keeps its body but no status detail.
-pub(super) const STATUS_MIN_BODY: usize = 2;
+const STATUS_MIN_BODY: usize = 2;
 /// Minimum body cells before optional crater detail appears.
-pub(super) const CRATER_MIN_BODY: usize = 6;
+const CRATER_MIN_BODY: usize = 6;
 
 /// Deterministic quantization of the primary-phase coordinates: identical
 /// frames yield identical signatures, and elapsed time never contributes.
-pub(super) fn phase_signature(trace: &PhaseTrace) -> u64 {
+fn phase_signature(trace: &PhaseTrace) -> u64 {
     trace.pairs().fold(0u64, |acc, (x, y)| {
         let qx = ((x + 1.0) * 127.0).round() as u64;
         let qy = ((y + 1.0) * 127.0).round() as u64;
@@ -168,7 +168,7 @@ pub(super) fn surface_cells(
 /// the planet's tile and keep at least a one-cell gap off every body cell.
 /// Offsets that fail are dropped rather than moved, so decoration never
 /// crowds the disc or leaks outside its tile.
-pub(super) fn decorative_cell(
+fn decorative_cell(
     disc: &DiscGeometry,
     tile: &CollageTile,
     area: Rect,
@@ -191,10 +191,10 @@ pub(super) fn decorative_cell(
 }
 
 /// The interior surface-status cells of one planet for the current frame.
-pub(super) struct SurfaceStatus {
-    pub(super) band: Vec<(u16, u16)>,
-    pub(super) error_cell: Option<(u16, u16)>,
-    pub(super) error_lift: bool,
+struct SurfaceStatus {
+    band: Vec<(u16, u16)>,
+    error_cell: Option<(u16, u16)>,
+    error_lift: bool,
 }
 
 /// The played frame that drives interior status treatment for a captured
@@ -224,7 +224,7 @@ pub(super) fn status_frame<'a>(frame: &'a VizFrame, history: &'a [VizFrame]) -> 
 /// crater/surface cell in the error color; Idle, Done, and Unknown keep no
 /// status cells at all. Bodies under [`STATUS_MIN_BODY`] cells — the
 /// one-cell disc — keep no status detail.
-pub(super) fn surface_status(
+fn surface_status(
     tile: &CollageTile,
     body: &[(u16, u16)],
     status: AgentStatus,
@@ -260,11 +260,7 @@ pub(super) fn surface_status(
 /// cells, so the brackets surround the allocated disc area, bounded to the
 /// tile by construction. A corner that would crowd the body gap or leave
 /// the field is dropped.
-pub(super) fn focus_brackets(
-    tile: &CollageTile,
-    disc: &DiscGeometry,
-    area: Rect,
-) -> Vec<FocusBracket> {
+fn focus_brackets(tile: &CollageTile, disc: &DiscGeometry, area: Rect) -> Vec<FocusBracket> {
     let right = (tile.rect.x + tile.rect.width - 1) as i32;
     let bottom = (tile.rect.y + tile.rect.height - 1) as i32;
     let corners = [

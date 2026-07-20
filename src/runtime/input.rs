@@ -1,27 +1,36 @@
-//! Input routing: keys and mouse clicks to app actions and runtime effects.
+//! Input effects: the single adapter boundary a routed key passes through.
 //!
-//! Key *interpretation* stays in [`crate::cli::map_key`]; this module owns what
-//! a mapped outcome does — which reducer [`Action`] it dispatches and which
-//! audio, search, or Herdr effect it triggers. Each mode (normal, Signal View,
-//! the Agent Planets stage, and its details/rename modals) routes a key at most
-//! once, so no key is dispatched twice.
+//! Key *interpretation* stays in [`crate::cli::map_key`] and mode *policy* in
+//! [`super::key_policy`], which decides — as data — what a mapped outcome means
+//! in the active mode. This module owns the other half: it selects the mode,
+//! runs exactly one policy, and applies the resulting [`Route`] against audio,
+//! search, persistence, and Herdr.
+//!
+//! Two properties are structural rather than incidental here:
+//!
+//! - **Routed once.** A key is classified by exactly one mode policy. Only the
+//!   Agent Planets stage may return [`Route::FallThrough`], and it falls
+//!   through to normal-mode policy once; normal mode never falls through, so
+//!   no key can reach two handlers and issue duplicate adapter commands.
+//! - **Saved once.** Settings are snapshotted once per key and compared once
+//!   after routing, so a key produces at most one persistence write regardless
+//!   of which mode handled it.
 //!
 //! Every handler is driven in tests with a fake audio handle and no terminal.
 
 use std::time::Instant;
 
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::app::{Action, AgentPulseConnection, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioHandle};
-use crate::cli::{map_key, KeyOutcome};
+use crate::cli::map_key;
 use crate::herdr::{self, HerdrMonitor, MonitorEvent};
 use crate::model::PlaybackState;
 
 use super::debounce::{QueryChange, SearchDebounce};
+use super::key_policy::{self, Effect, Route};
 use super::persistence::Persistence;
 
 /// Whether the event loop should keep running.
@@ -29,32 +38,6 @@ use super::persistence::Persistence;
 pub(super) enum Flow {
     Continue,
     Quit,
-}
-
-/// Whether the Browse source rail currently holds focus, so list-navigation and
-/// `Enter` act on the source picker instead of the station list.
-fn browse_focused(app: &App) -> bool {
-    app.focus() == FocusPane::Sections
-}
-
-/// Which list (if any) the focused pane navigates with list-navigation keys.
-///
-/// Only the Stations and Browse rail panes are navigable lists; the search strip
-/// and Now Playing are not, so list-navigation keys must do nothing there rather
-/// than leaking into the hidden station cursor.
-enum NavTarget {
-    Stations,
-    Browse,
-    None,
-}
-
-/// Resolve which list the current focus navigates.
-fn nav_target(app: &App) -> NavTarget {
-    match app.focus() {
-        FocusPane::Stations => NavTarget::Stations,
-        FocusPane::Sections => NavTarget::Browse,
-        FocusPane::Search | FocusPane::NowPlaying => NavTarget::None,
-    }
 }
 
 /// Translate a key event into app actions and audio/search side effects.
@@ -80,346 +63,172 @@ pub(super) fn handle_key_with_monitor(
     persistence: &mut Persistence,
     monitor: Option<&HerdrMonitor>,
 ) -> Flow {
-    // Signal View gates input to a small allowed subset. Route it first, before
-    // the normal focus-aware handling, so discovery/navigation keys are ignored
-    // silently while the mode is active. Keys are mapped as navigation (the
-    // search strip is hidden) so allowed controls work regardless of the
-    // background focus that is preserved underneath Signal View.
-    if app.is_signal_view() {
-        return handle_signal_view_key(map_key(key, false), app, audio, persistence);
-    }
-
-    // The Kinetic Collage canvas gate is routed after Signal View
-    // (which never shows Agent Pulse) and before the normal focus-aware
-    // handling. Keys are mapped as navigation — the canvas only opens from
-    // navigation mode and never moves focus into the search strip — so
-    // canvas-local keys (tile selection, close) are consumed before station
-    // navigation, while every unconsumed outcome falls through to the normal
-    // handling below exactly once. That keeps the documented global player
-    // controls (playback, volume, theme, favorite, visualizer) available with
-    // their normal semantics and side effects, without recursive dispatch.
-    let collage_open = app.is_agent_overlay_open();
-    let searching = !collage_open && app.focus() == FocusPane::Search;
-    let outcome = map_key(key, searching);
-    if collage_open {
-        if let Some(flow) = handle_collage_key(outcome.clone(), key, app, monitor) {
-            return flow;
-        }
-    }
-
+    // Snapshot settings once, before any routing, and compare once after: a
+    // key produces at most one persistence write no matter which mode ran.
     let before = app.settings().clone();
+    let flow = apply_route(
+        route_key(key, app),
+        app,
+        audio,
+        debounce,
+        persistence,
+        monitor,
+    );
 
-    match outcome {
-        KeyOutcome::Quit | KeyOutcome::ExitOrBack => return Flow::Quit,
-        KeyOutcome::ToggleSignalView => app.apply(Action::ToggleSignalView),
-        // The reducer keeps this a no-op for standalone/ineligible launches,
-        // so `a` stays harmless when no monitor was ever created.
-        KeyOutcome::ToggleAgentPulse => app.apply(Action::ToggleAgentOverlay),
-        // `o`/`O` are stage-local. Outside Agent Planets they are inert.
-        KeyOutcome::FocusAgentPane | KeyOutcome::Ignore => {}
-        KeyOutcome::FocusNext => app.apply(Action::FocusNext),
-        KeyOutcome::FocusPrevious => app.apply(Action::FocusPrevious),
-        // List-navigation keys act only on the focused navigable list: the Browse
-        // source rail moves its source cursor, the station list moves its
-        // selection, and non-list panes (search strip, Now Playing) ignore them so
-        // navigation never leaks into the hidden station cursor. `map_key` stays
-        // focus-agnostic; the focus-aware split lives here in the controller.
-        KeyOutcome::SelectNext => match nav_target(app) {
-            NavTarget::Stations => app.apply(Action::SelectNext),
-            NavTarget::Browse => app.apply(Action::BrowseSelectNext),
-            NavTarget::None => {}
-        },
-        KeyOutcome::SelectPrevious => match nav_target(app) {
-            NavTarget::Stations => app.apply(Action::SelectPrevious),
-            NavTarget::Browse => app.apply(Action::BrowseSelectPrevious),
-            NavTarget::None => {}
-        },
-        KeyOutcome::SelectFirst => match nav_target(app) {
-            NavTarget::Stations => app.apply(Action::SelectFirst),
-            NavTarget::Browse => app.apply(Action::BrowseSelectFirst),
-            NavTarget::None => {}
-        },
-        KeyOutcome::SelectLast => match nav_target(app) {
-            NavTarget::Stations => app.apply(Action::SelectLast),
-            NavTarget::Browse => app.apply(Action::BrowseSelectLast),
-            NavTarget::None => {}
-        },
-        KeyOutcome::Play => {
-            if browse_focused(app) {
-                // Browse focused: Enter applies the selected source and hands
-                // focus to Stations rather than starting playback.
-                app.apply(Action::ApplyBrowseSelection);
-            } else {
-                // Allocate the request first so the app expects exactly the
-                // attempt the runtime is about to start.
-                let request = audio.next_playback_request();
-                app.apply(Action::PlaySelected(request));
-                // Send only what the reducer accepted. `PlaySelected` is a
-                // no-op when nothing is selectable (an empty list), and the
-                // still-current station from an earlier play must not be
-                // restarted under a request the app never recorded — that
-                // would make the restarted stream's events look stale forever.
-                if app.playback_request() == Some(request) {
-                    if let Some(station) = app.current_station().cloned() {
-                        let _ = audio.command_tx.send(AudioCommand::Play {
-                            request,
-                            station: Box::new(station),
-                            volume: app.settings().volume,
-                        });
-                    }
-                }
-            }
-        }
-        // `Space` is the Stations transport toggle. It only acts while the station
-        // list is focused; in other panes it must not move or toggle playback (in
-        // the search strip `map_key` already routes Space to query text).
-        KeyOutcome::TogglePlayback => {
-            if app.focus() == FocusPane::Stations {
-                // The id is allocated up front and only becomes the expected
-                // request if the toggle actually resumes playback.
-                let request = audio.next_playback_request();
-                app.apply(Action::TogglePlayback(request));
-                match app.playback() {
-                    PlaybackState::Connecting => {
-                        if let Some(station) = app.current_station().cloned() {
-                            let _ = audio.command_tx.send(AudioCommand::Play {
-                                request,
-                                station: Box::new(station),
-                                volume: app.settings().volume,
-                            });
-                        }
-                    }
-                    PlaybackState::Stopped => {
-                        let _ = audio.command_tx.send(AudioCommand::Stop);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        KeyOutcome::ToggleFavorite => app.apply(Action::ToggleFavorite),
-        KeyOutcome::CycleTheme => app.apply(Action::CycleTheme),
-        KeyOutcome::CycleVisualizerMode => app.apply(Action::CycleVisualizerMode),
-        KeyOutcome::VolumeUp => {
-            app.apply(Action::VolumeUp);
-            persistence.mark_user_changed_volume();
-            let _ = audio
-                .command_tx
-                .send(AudioCommand::SetVolume(app.settings().volume));
-        }
-        KeyOutcome::VolumeDown => {
-            app.apply(Action::VolumeDown);
-            persistence.mark_user_changed_volume();
-            let _ = audio
-                .command_tx
-                .send(AudioCommand::SetVolume(app.settings().volume));
-        }
-        KeyOutcome::BeginSearch => app.apply(Action::SetFocus(FocusPane::Search)),
-        KeyOutcome::SearchChar(c) => {
-            let mut query = app.search_query().to_string();
-            query.push(c);
-            update_search(app, debounce, query);
-        }
-        KeyOutcome::SearchBackspace => {
-            let mut query = app.search_query().to_string();
-            query.pop();
-            update_search(app, debounce, query);
-        }
-        KeyOutcome::ClearSearch => {
-            debounce.note_query("", Instant::now());
-            app.apply(Action::SetSearchQuery(String::new()));
-            app.apply(Action::SetSearchStatus(SearchStatus::Idle));
-            app.apply(Action::ClearSearch);
-            app.apply(Action::SetFocus(FocusPane::Stations));
-        }
-    }
-
-    if app.settings() != &before {
+    // Quitting skips the save, exactly as before: teardown owns the final write.
+    if flow == Flow::Continue && app.settings() != &before {
         persistence.save(app);
     }
-    Flow::Continue
+    flow
 }
 
-/// Route a key while Signal View is active.
+/// Pick the mode that owns this key and return its single routing decision.
 ///
-/// Only the spec's allowed subset acts: `z`/`Esc` leave the mode, `q` quits,
-/// `Space` toggles playback, `+`/`-` adjust volume, `v`/`t` cycle visualizer and
-/// theme, and `f` favorites the *current* station (not the hidden station-list
-/// selection). Every other key — search, focus movement, station navigation, and
-/// station selection — is ignored silently. Background search/list state is left
-/// untouched.
-fn handle_signal_view_key(
-    outcome: KeyOutcome,
+/// Mode precedence is unchanged: Signal View first (it never shows Agent
+/// Pulse), then the Agent Planets stage and its modals, then normal mode. The
+/// stage is the only mode that may defer, and it defers exactly once — to
+/// normal-mode policy — so the documented global player controls (playback,
+/// volume, theme, favorite, visualizer) keep their normal semantics over the
+/// stage without any recursive dispatch.
+fn route_key(key: KeyEvent, app: &App) -> Route {
+    // Signal View maps keys as navigation: the search strip is hidden, so
+    // allowed controls work regardless of the background focus preserved
+    // underneath the mode.
+    if app.is_signal_view() {
+        return key_policy::signal_view(&map_key(key, false));
+    }
+
+    // The stage also maps as navigation — it only opens from navigation mode
+    // and never moves focus into the search strip.
+    let stage_open = app.is_agent_overlay_open();
+    let searching = !stage_open && app.focus() == FocusPane::Search;
+    let outcome = map_key(key, searching);
+
+    if stage_open {
+        let route = if app.is_agent_rename_open() {
+            key_policy::rename(key, &outcome)
+        } else if app.is_agent_details_open() {
+            key_policy::details(key, &outcome)
+        } else {
+            key_policy::stage(&outcome)
+        };
+        // Only the stage (never a modal) can defer, and only to normal mode.
+        if !matches!(route, Route::FallThrough) {
+            return route;
+        }
+    }
+
+    key_policy::normal(&outcome, app.focus())
+}
+
+/// Apply one routing decision. This is the only place a key reaches an adapter.
+fn apply_route(
+    route: Route,
     app: &mut App,
     audio: &AudioHandle,
+    debounce: &mut SearchDebounce,
     persistence: &mut Persistence,
+    monitor: Option<&HerdrMonitor>,
 ) -> Flow {
-    let before = app.settings().clone();
-    match outcome {
-        KeyOutcome::Quit => return Flow::Quit,
-        KeyOutcome::ExitOrBack | KeyOutcome::ToggleSignalView => {
-            app.apply(Action::LeaveSignalView);
+    match route {
+        Route::Quit => Flow::Quit,
+        // `FallThrough` is resolved in `route_key`; normal mode never emits it.
+        Route::Consumed | Route::FallThrough => Flow::Continue,
+        Route::Act(action) => {
+            app.apply(action);
+            Flow::Continue
         }
-        KeyOutcome::TogglePlayback => {
+        Route::Effect(effect) => {
+            apply_effect(effect, app, audio, debounce, persistence, monitor);
+            Flow::Continue
+        }
+    }
+}
+
+/// Perform the adapter work a routed key asked for.
+///
+/// Each effect appears exactly once, so a given key can issue at most one audio
+/// command, one debounce update, or one Herdr request — the property the
+/// duplicated per-mode handlers used to leave to inspection.
+fn apply_effect(
+    effect: Effect,
+    app: &mut App,
+    audio: &AudioHandle,
+    debounce: &mut SearchDebounce,
+    persistence: &mut Persistence,
+    monitor: Option<&HerdrMonitor>,
+) {
+    match effect {
+        Effect::PlaySelected => {
+            // Allocate the request first so the app expects exactly the attempt
+            // the runtime is about to start.
+            let request = audio.next_playback_request();
+            app.apply(Action::PlaySelected(request));
+            // Send only what the reducer accepted. `PlaySelected` is a no-op
+            // when nothing is selectable (an empty list), and the still-current
+            // station from an earlier play must not be restarted under a request
+            // the app never recorded — that would make the restarted stream's
+            // events look stale forever.
+            if app.playback_request() == Some(request) {
+                send_play(app, audio, request);
+            }
+        }
+        Effect::TogglePlayback => {
+            // The id is allocated up front and only becomes the expected request
+            // if the toggle actually resumes playback.
             let request = audio.next_playback_request();
             app.apply(Action::TogglePlayback(request));
             match app.playback() {
-                PlaybackState::Connecting => {
-                    if let Some(station) = app.current_station().cloned() {
-                        let _ = audio.command_tx.send(AudioCommand::Play {
-                            request,
-                            station: Box::new(station),
-                            volume: app.settings().volume,
-                        });
-                    }
-                }
+                PlaybackState::Connecting => send_play(app, audio, request),
                 PlaybackState::Stopped => {
                     let _ = audio.command_tx.send(AudioCommand::Stop);
                 }
                 _ => {}
             }
         }
-        // In Signal View `f` targets the current station shown on screen, not the
-        // hidden station-list selection.
-        KeyOutcome::ToggleFavorite => app.apply(Action::ToggleCurrentFavorite),
-        KeyOutcome::CycleTheme => app.apply(Action::CycleTheme),
-        KeyOutcome::CycleVisualizerMode => app.apply(Action::CycleVisualizerMode),
-        KeyOutcome::VolumeUp => {
-            app.apply(Action::VolumeUp);
-            persistence.mark_user_changed_volume();
-            let _ = audio
-                .command_tx
-                .send(AudioCommand::SetVolume(app.settings().volume));
+        Effect::VolumeUp => set_volume(Action::VolumeUp, app, audio, persistence),
+        Effect::VolumeDown => set_volume(Action::VolumeDown, app, audio, persistence),
+        Effect::SearchChar(character) => {
+            let mut query = app.search_query().to_string();
+            query.push(character);
+            update_search(app, debounce, query);
         }
-        KeyOutcome::VolumeDown => {
-            app.apply(Action::VolumeDown);
-            persistence.mark_user_changed_volume();
-            let _ = audio
-                .command_tx
-                .send(AudioCommand::SetVolume(app.settings().volume));
+        Effect::SearchBackspace => {
+            let mut query = app.search_query().to_string();
+            query.pop();
+            update_search(app, debounce, query);
         }
-        // Disabled keys are silent no-ops: search, focus movement, station
-        // navigation, station selection, and Agent Pulse do nothing while
-        // Signal View is active.
-        KeyOutcome::Ignore
-        | KeyOutcome::ToggleAgentPulse
-        | KeyOutcome::FocusAgentPane
-        | KeyOutcome::FocusNext
-        | KeyOutcome::FocusPrevious
-        | KeyOutcome::SelectNext
-        | KeyOutcome::SelectPrevious
-        | KeyOutcome::SelectFirst
-        | KeyOutcome::SelectLast
-        | KeyOutcome::Play
-        | KeyOutcome::BeginSearch
-        | KeyOutcome::SearchChar(_)
-        | KeyOutcome::SearchBackspace
-        | KeyOutcome::ClearSearch => {}
+        Effect::ClearSearch => {
+            debounce.note_query("", Instant::now());
+            app.apply(Action::SetSearchQuery(String::new()));
+            app.apply(Action::SetSearchStatus(SearchStatus::Idle));
+            app.apply(Action::ClearSearch);
+            app.apply(Action::SetFocus(FocusPane::Stations));
+        }
+        Effect::FocusAgentPane => focus_selected_agent(app, monitor),
+        Effect::SubmitRename => submit_agent_rename(app, monitor),
     }
-
-    if app.settings() != &before {
-        persistence.save(app);
-    }
-    Flow::Continue
 }
 
-/// Route a canvas-local key while the Kinetic Collage canvas is open,
-/// or return `None` to delegate the outcome to the normal handling path.
-///
-/// Canvas-local: `Tab`/arrows (and their `j`/`k` synonyms) move the tile
-/// selection, and `a`/`Esc` close the canvas; `q`/`Ctrl+C` still quit.
-/// `Enter` opens details for a selected planet without playing a station;
-/// `z` stays a canvas-local no-op. While details are open, every non-quit
-/// key is modal-local: Enter/Esc close details, `a` closes the whole stage,
-/// and `Tab`/arrows (with their `j`/`k` synonyms) cycle the planet selection
-/// with the modal following. Outside the modal, the documented player
-/// shortcuts retain their existing canvas behavior.
-fn handle_collage_key(
-    outcome: KeyOutcome,
-    key: KeyEvent,
-    app: &mut App,
-    monitor: Option<&HerdrMonitor>,
-) -> Option<Flow> {
-    if app.is_agent_rename_open() {
-        if outcome == KeyOutcome::Quit {
-            return Some(Flow::Quit);
-        }
-        if outcome == KeyOutcome::ExitOrBack {
-            app.apply(Action::CloseAgentRename);
-            return Some(Flow::Continue);
-        }
-        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-            return Some(Flow::Continue);
-        }
-        match key.code {
-            KeyCode::Enter => submit_agent_rename(app, monitor),
-            KeyCode::Backspace => app.apply(Action::BackspaceAgentRename),
-            KeyCode::Char(character)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                app.apply(Action::AppendAgentRename(character));
-            }
-            _ => {}
-        }
-        return Some(Flow::Continue);
+/// Start the current station under `request`, if there is one to start.
+fn send_play(app: &App, audio: &AudioHandle, request: crate::model::PlaybackRequestId) {
+    if let Some(station) = app.current_station().cloned() {
+        let _ = audio.command_tx.send(AudioCommand::Play {
+            request,
+            station: Box::new(station),
+            volume: app.settings().volume,
+        });
     }
-    if app.is_agent_details_open() {
-        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-            && matches!(key.code, KeyCode::Char('r' | 'R'))
-        {
-            app.apply(Action::OpenAgentRename);
-            return Some(Flow::Continue);
-        }
-        match outcome {
-            KeyOutcome::Quit => return Some(Flow::Quit),
-            KeyOutcome::ToggleAgentPulse => app.apply(Action::CloseAgentOverlay),
-            KeyOutcome::FocusAgentPane => focus_selected_agent(app, monitor),
-            KeyOutcome::ExitOrBack | KeyOutcome::Play => app.apply(Action::CloseAgentDetails),
-            KeyOutcome::FocusNext | KeyOutcome::SelectNext => {
-                app.apply(Action::SelectNextAgent);
-            }
-            KeyOutcome::FocusPrevious | KeyOutcome::SelectPrevious => {
-                app.apply(Action::SelectPreviousAgent);
-            }
-            _ => {}
-        }
-        return Some(Flow::Continue);
-    }
+}
 
-    match outcome {
-        KeyOutcome::Quit => Some(Flow::Quit),
-        KeyOutcome::FocusAgentPane => {
-            focus_selected_agent(app, monitor);
-            Some(Flow::Continue)
-        }
-        KeyOutcome::ToggleAgentPulse | KeyOutcome::ExitOrBack => {
-            app.apply(Action::CloseAgentOverlay);
-            Some(Flow::Continue)
-        }
-        KeyOutcome::FocusNext | KeyOutcome::SelectNext => {
-            app.apply(Action::SelectNextAgent);
-            Some(Flow::Continue)
-        }
-        KeyOutcome::FocusPrevious | KeyOutcome::SelectPrevious => {
-            app.apply(Action::SelectPreviousAgent);
-            Some(Flow::Continue)
-        }
-        // Consumed: the station list and search surfaces stay suppressed
-        // behind the canvas.
-        KeyOutcome::BeginSearch
-        | KeyOutcome::SearchChar(_)
-        | KeyOutcome::SearchBackspace
-        | KeyOutcome::ClearSearch
-        | KeyOutcome::SelectFirst
-        | KeyOutcome::SelectLast
-        | KeyOutcome::ToggleSignalView => Some(Flow::Continue),
-        KeyOutcome::Play => {
-            app.apply(Action::OpenAgentDetails);
-            Some(Flow::Continue)
-        }
-        _ => None,
-    }
+/// Fold a volume step through the reducer, mark it user-changed for the save
+/// policy, and push the resulting level to the audio runtime.
+fn set_volume(action: Action, app: &mut App, audio: &AudioHandle, persistence: &mut Persistence) {
+    app.apply(action);
+    persistence.mark_user_changed_volume();
+    let _ = audio
+        .command_tx
+        .send(AudioCommand::SetVolume(app.settings().volume));
 }
 
 /// Explicitly focus the selected pane through the already-eligible monitor.
@@ -516,6 +325,12 @@ fn update_search(app: &mut App, debounce: &mut SearchDebounce, query: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The routing half now lives in `key_policy`, so these behavior tests name
+    // the key vocabulary they drive directly instead of inheriting it.
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    use crate::cli::{map_key, KeyOutcome};
+
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::sync::mpsc::{self, Receiver};
@@ -2297,5 +2112,94 @@ mod tests {
         handle_mouse(moved, area, false, Instant::now(), &mut app);
         assert_eq!(app.selected_index(), station_before);
         assert!(app.selected_agent().is_none());
+    }
+
+    /// Drain the audio channel into a list of command labels.
+    fn drained(cmd_rx: &Receiver<AudioCommand>) -> Vec<&'static str> {
+        let mut commands = Vec::new();
+        while let Ok(command) = cmd_rx.try_recv() {
+            commands.push(match command {
+                AudioCommand::Play { .. } => "Play",
+                AudioCommand::Stop => "Stop",
+                AudioCommand::SetVolume(_) => "SetVolume",
+                _ => "other",
+            });
+        }
+        commands
+    }
+
+    #[test]
+    fn one_key_issues_at_most_one_audio_command_in_every_mode() {
+        // The acceptance criterion the policy/effect split exists to guarantee:
+        // whichever mode claims a key, the key reaches the adapter boundary
+        // once. The stage fall-through is the interesting case — `+` is routed
+        // by the stage policy *and* by normal policy, so a double dispatch
+        // would surface here as two SetVolume commands.
+        let (audio, cmd_rx) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        connect_agent_pulse(&mut app, &["alpha"]);
+
+        // Normal mode.
+        handle_key(
+            key(KeyCode::Char('+')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(drained(&cmd_rx), ["SetVolume"], "normal mode volume");
+
+        // Agent Planets stage: `+` falls through to normal mode exactly once.
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(app.is_agent_overlay_open());
+        handle_key(
+            key(KeyCode::Char('+')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(
+            drained(&cmd_rx),
+            ["SetVolume"],
+            "the stage must not dispatch a fallen-through key twice"
+        );
+
+        // Stage-consumed keys reach no adapter at all.
+        for code in [KeyCode::Enter, KeyCode::Char('/'), KeyCode::Home] {
+            handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+        }
+        assert!(
+            drained(&cmd_rx).is_empty(),
+            "stage-consumed keys issue no audio command"
+        );
+
+        // Details modal consumes `+` entirely: no volume command escapes.
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        handle_key(
+            key(KeyCode::Char('+')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert!(
+            drained(&cmd_rx).is_empty(),
+            "the details modal consumes player controls"
+        );
+
+        // Signal View: allowed, and still exactly one command.
+        app.apply(Action::CloseAgentOverlay);
+        app.apply(Action::ToggleSignalView);
+        assert!(app.is_signal_view());
+        handle_key(
+            key(KeyCode::Char('+')),
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+        );
+        assert_eq!(drained(&cmd_rx), ["SetVolume"], "Signal View volume");
     }
 }

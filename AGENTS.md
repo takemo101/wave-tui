@@ -102,8 +102,14 @@ Expected responsibility boundaries:
 - `runtime`: the composition root for a run — terminal ownership, adapter
   construction, splash, event-loop ownership, channel draining, and teardown
   ordering — behind private child modules (`debounce`, `persistence`,
-  `search_worker`, `terminal`, `splash`, `input`, `event_loop`). It depends on
-  `cli`; `cli` never depends back on it.
+  `search_worker`, `terminal`, `splash`, `key_policy`, `input`, `event_loop`).
+  It depends on `cli`; `cli` never depends back on it.
+  Key handling is split in two: `cli` maps a terminal event to a focus-agnostic
+  outcome, `runtime::key_policy` decides as pure data what that outcome means in
+  the active mode (normal, Signal View, Agent Planets stage, details modal,
+  rename input), and `runtime::input` applies that decision at the single
+  adapter boundary. Only the Agent Planets stage may defer to normal-mode
+  policy, and only once, so a key reaches the adapters at most once.
 
 ## Domain and parsing rules
 

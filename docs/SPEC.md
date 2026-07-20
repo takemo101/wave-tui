@@ -559,8 +559,9 @@ enabled.
 #### Monitoring and data flow
 
 - A focused `herdr` adapter module owns environment parsing, the Unix socket
-  transport, newline-delimited JSON-RPC framing, and `agent.list` payload
-  normalization; nothing else in the app sees raw JSON or sockets.
+  transport, newline-delimited JSON-RPC framing, `agent.list` payload
+  normalization, and the explicit `agent.focus` request; nothing else in the
+  app sees raw JSON, sockets, pane ids, or server-error text.
 - A background thread polls `agent.list` every 5 seconds with a 3-second
   socket I/O timeout and forwards typed snapshot/failure events into the
   existing event loop; the reducer in `app` owns all lifecycle state.
@@ -688,9 +689,17 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   centered
   **Agent details** record for the selected live planet (no-op without
   one), showing non-empty `name`, `agent`, normalized `status`, and
-  `activity` (`terminal_title`) rows in that order; `Enter`/`Esc` close
-  only the record, `a` closes the record and the stage, and while it is
-  open selection, player, theme, favorite, visualizer, search, and Signal
+  `activity` (`terminal_title`) rows in that order. Its modal footer shows
+  `O open pane`; the stage footer shows that focus hint only while details
+  are closed. `o`/`O` explicitly focuses the selected existing pane through
+  `agent.focus` asynchronously while preserving the stage, record,
+  selection, and playback; it is allowed only for a
+  selected `Connected` snapshot. Unsupported Herdr (requiring 0.7.0+), a
+  missing/moved pane, unavailable socket, or no selection yields a short
+  modal-local notification without retrying, creating a pane, sending input,
+  or exposing identifiers. `Enter`/`Esc` close only the record, `a` closes
+  the record and the stage, and while it is open selection, player, theme,
+  favorite, visualizer, search, and Signal
   View input is consumed (`q`/`Ctrl+C` still quit). Normal-layout
   navigation keys keep their non-wrapping behavior outside the stage.
   Search (`/`) and
@@ -716,9 +725,10 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 
 #### Privacy and read-only guarantees
 
-- Only `agent.list` is ever called. Pane output, prompts, files, and
-  scrollback are never read; panes are never focused, created, closed, sent
-  text, or otherwise controlled.
+- Monitoring calls only `agent.list`. The sole control exception is an
+  explicit user `o`/`O` request for `agent.focus` on the selected current pane;
+  it never creates/restarts/closes panes or sends text. Pane output, prompts,
+  files, and scrollback are never read.
 - Every agent reported by the plugin invocation's local Herdr socket is
   shown, across that session's workspaces; other Herdr sessions are never
   discovered.
@@ -797,8 +807,9 @@ Use manual verification for:
 
 The optional Herdr Agent Pulse integration does not change these non-goals:
 `wave-tui` ships *as* a Herdr plugin but has no plugin system of its own, runs
-no daemon, and accepts no remote control — its Herdr socket use is outbound,
-read-only `agent.list` monitoring only.
+no daemon, and accepts no remote control service — its Herdr socket use is
+outbound `agent.list` monitoring plus the user's explicit `agent.focus` request
+for a selected existing live agent pane only.
 
 ## Success Criteria
 

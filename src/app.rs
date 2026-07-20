@@ -18,7 +18,7 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::herdr::{self, AgentDetails, AgentId, AgentSnapshot, AgentStatus};
+use crate::herdr::{self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult};
 use crate::model::{PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent};
 use crate::search::SearchResults;
 use crate::settings::Settings;
@@ -38,6 +38,9 @@ const VIZ_TRAIL_FRAMES: usize = 5;
 
 /// Current visualizer frame plus the trailing frames.
 const VIZ_HISTORY_FRAMES: usize = VIZ_TRAIL_FRAMES + 1;
+
+/// How long a recoverable pane-focus result remains visible in the stage.
+const AGENT_FOCUS_NOTICE_FOR: Duration = Duration::from_secs(4);
 
 /// A focusable region of the UI.
 ///
@@ -160,6 +163,14 @@ enum AgentDetailsOverlay {
     Open(AgentId),
 }
 
+/// A short, process-local feedback record for the explicit pane-focus action.
+/// It holds no pane, workspace, or server-error text.
+#[derive(Debug)]
+struct AgentFocusNotice {
+    result: FocusResult,
+    shown_at: Instant,
+}
+
 /// The visualizer display frozen at the Connected→Stale edge: the
 /// then-current frame plus the prior frames behind it (most recent first),
 /// so the canvas can keep drawing the exact last live current and trails.
@@ -201,6 +212,7 @@ struct AgentPulse {
     selected: Option<AgentId>,
     overlay: AgentOverlay,
     details: AgentDetailsOverlay,
+    focus_notice: Option<AgentFocusNotice>,
     /// When the last successful snapshot arrived.
     last_success: Option<Instant>,
     /// When the current failure streak began; cleared by any success.
@@ -222,6 +234,7 @@ impl AgentPulse {
             selected: None,
             overlay: AgentOverlay::Closed,
             details: AgentDetailsOverlay::Closed,
+            focus_notice: None,
             last_success: None,
             first_failure: None,
             stale_viz: None,
@@ -444,6 +457,8 @@ pub enum Action {
     AgentPollFailed { now: Instant },
     /// Re-evaluate the stale/unavailable threshold without a monitor event.
     AgentTick { now: Instant },
+    /// Record the recoverable outcome of an explicit `agent.focus` request.
+    AgentFocusResult { result: FocusResult, now: Instant },
     /// Toggle the Agent Pulse overlay (`a`); a no-op while the integration is
     /// hidden or Signal View is active.
     ToggleAgentOverlay,
@@ -592,6 +607,7 @@ impl App {
             Action::AgentSnapshot { agents, now } => self.apply_agent_snapshot(agents, now),
             Action::AgentPollFailed { now } => self.mark_agent_poll_failed(now),
             Action::AgentTick { now } => self.refresh_agent_staleness(now),
+            Action::AgentFocusResult { result, now } => self.record_agent_focus_result(result, now),
             Action::ToggleAgentOverlay => self.toggle_agent_overlay(),
             Action::CloseAgentOverlay => self.close_agent_overlay(),
             Action::SelectNextAgent => self.select_next_agent(),
@@ -1087,6 +1103,16 @@ impl App {
     /// without a successful snapshot. Called on a timer by the controller so
     /// the threshold applies even when no further monitor event arrives; it
     /// never upgrades state and never reveals a hidden integration.
+    fn record_agent_focus_result(&mut self, result: FocusResult, now: Instant) {
+        self.agent_pulse.focus_notice = match result {
+            FocusResult::Focused => None,
+            _ => Some(AgentFocusNotice {
+                result,
+                shown_at: now,
+            }),
+        };
+    }
+
     fn refresh_agent_staleness(&mut self, now: Instant) {
         let pulse = &mut self.agent_pulse;
         if pulse.connection == AgentPulseConnection::Hidden {
@@ -1398,6 +1424,30 @@ impl App {
         self.agent_pulse.active.get(index)
     }
 
+    /// The opaque selected-pane target only while the open stage has a fresh
+    /// snapshot. The controller passes it straight back to the Herdr adapter;
+    /// UI and persistence never receive a text representation.
+    pub(crate) fn agent_focus_target(&self) -> Option<AgentId> {
+        self.agent_selection_interactive()
+            .then(|| self.selected_agent().map(|agent| agent.id.clone()))
+            .flatten()
+    }
+
+    /// Short modal-local feedback for an explicit pane-focus attempt.
+    pub(crate) fn agent_focus_notice(&self, now: Instant) -> Option<&'static str> {
+        let notice = self.agent_pulse.focus_notice.as_ref()?;
+        if now.saturating_duration_since(notice.shown_at) >= AGENT_FOCUS_NOTICE_FOR {
+            return None;
+        }
+        match notice.result {
+            FocusResult::Focused => None,
+            FocusResult::Unsupported => Some("pane focus requires Herdr 0.7.0+"),
+            FocusResult::Missing => Some("pane is no longer available"),
+            FocusResult::Unavailable => Some("pane focus unavailable · retrying"),
+            FocusResult::NoSelection => Some("select a live planet first"),
+        }
+    }
+
     /// Whether the Agent Pulse overlay is open.
     pub(crate) fn is_agent_overlay_open(&self) -> bool {
         self.agent_pulse.overlay == AgentOverlay::Open
@@ -1483,7 +1533,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus};
+    use crate::herdr::{AgentId, AgentSnapshot, AgentStatus, FocusResult};
     use crate::model::{
         BitrateKbps, CodecKind, PhaseTrace, StationId, StationName, StationSource, StreamUrl,
         VisualizerMode, VolumePercent,
@@ -2644,6 +2694,51 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(agents, Instant::now()));
         app
+    }
+
+    #[test]
+    fn focus_target_is_available_only_for_the_selected_connected_agent_and_errors_keep_details() {
+        let now = Instant::now();
+        let mut app = app_with_agents(vec![agent(
+            "other-workspace",
+            "pane-private",
+            None,
+            AgentStatus::Working,
+        )]);
+        app.apply(Action::ToggleAgentOverlay);
+        assert!(
+            app.agent_focus_target().is_none(),
+            "a selection is required"
+        );
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        let target = app
+            .agent_focus_target()
+            .expect("connected selection targets its pane");
+        assert_eq!(target, agent_id("other-workspace", "pane-private"));
+
+        app.apply(Action::AgentFocusResult {
+            result: FocusResult::Unsupported,
+            now,
+        });
+        assert!(
+            app.is_agent_details_open(),
+            "notification must not close details"
+        );
+        assert_eq!(
+            app.agent_focus_notice(now),
+            Some("pane focus requires Herdr 0.7.0+")
+        );
+
+        app.apply(Action::AgentPollFailed { now });
+        assert!(
+            app.agent_focus_target().is_none(),
+            "stale data cannot focus a pane"
+        );
+        assert!(
+            app.is_agent_details_open(),
+            "stale preserves the open details record"
+        );
     }
 
     #[test]

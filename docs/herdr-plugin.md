@@ -146,11 +146,15 @@ without plugin context, or an explicit `--no-agent-pulse` — `wave-tui` keeps
 its exact pre-integration appearance: no reserved rows, no hints, and `a`
 does nothing.
 
-When active, the integration polls the read-only `agent.list` API on the
-session's local Unix socket every 5 seconds and shows every agent that
-session reports, across its workspaces. It never reads pane output, never
-controls panes, and persists nothing. Disable it for one run with
-`--no-agent-pulse` (never written to settings).
+When active, the integration polls the `agent.list` API on the session's
+local Unix socket every 5 seconds and shows every agent that session reports,
+across its workspaces. It never reads pane output and persists nothing. The
+sole explicit control is `o`/`O` from Agent Planets: for a selected current
+agent, it may request `agent.focus` for that existing pane. Missing/moved
+panes, socket failures, and unsupported Herdr (update to 0.7.0+) remain local
+recoverable notices; it never creates, restarts, closes, or sends text to a
+pane. Disable it for one run with `--no-agent-pulse` (never written to
+settings).
 
 ## Troubleshooting
 
@@ -177,6 +181,11 @@ Pulse.
 
 **`a` does nothing.** The launch was standalone or ineligible; Agent Planets
 exists only for eligible plugin launches.
+
+**`O` cannot open a pane.** Select a planet from a live (`Connected`) snapshot
+first. If a selected live pane still cannot focus, the stage shows a temporary
+notice: update Herdr to 0.7.0+ for unsupported `agent.focus`, or wait for the
+local socket/pane to recover. No pane is created or restarted.
 
 **The stage shows `· reconnecting` or `agents · unavailable · retrying`.**
 Socket polls are failing; playback is unaffected. Polling continues and a

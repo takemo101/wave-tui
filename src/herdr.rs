@@ -52,6 +52,23 @@ impl AgentId {
             pane_id: pane_id.into(),
         }
     }
+
+    /// Private transport-only pane target. The opaque value never leaves this
+    /// adapter as text; it is used only in an explicit `agent.focus` request.
+    fn pane_target(&self) -> &str {
+        &self.pane_id
+    }
+}
+
+/// Recoverable outcome of an explicit request to focus the selected live pane.
+/// No outcome contains raw Herdr identifiers or server messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusResult {
+    Focused,
+    Unsupported,
+    Missing,
+    Unavailable,
+    NoSelection,
 }
 
 /// The only agent-list fields that may reach the read-only details modal.
@@ -185,6 +202,42 @@ fn agent_list_request(request_id: u64) -> String {
     format!("{request}\n")
 }
 
+/// The sole pane-control request. Its target is an opaque pane id retained
+/// only in memory from the current `agent.list` snapshot.
+fn agent_focus_request(request_id: u64, id: &AgentId) -> String {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id.to_string(),
+        "method": "agent.focus",
+        "params": { "target": id.pane_target() },
+    });
+    format!("{request}\n")
+}
+
+/// Normalize a focus reply without passing raw JSON, server messages, or
+/// identifiers beyond this adapter boundary. The official protocol uses a
+/// JSON-RPC success result; an absent/moved target is any other server error.
+fn parse_agent_focus(line: &str) -> FocusResult {
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(line) else {
+        return FocusResult::Unavailable;
+    };
+    if response.get("result").is_some() {
+        return FocusResult::Focused;
+    }
+    if response
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(serde_json::Value::as_i64)
+        == Some(-32601)
+    {
+        FocusResult::Unsupported
+    } else if response.get("error").is_some() {
+        FocusResult::Missing
+    } else {
+        FocusResult::Unavailable
+    }
+}
+
 fn request_agent_list(context: &HerdrContext, request_id: u64) -> Option<Vec<AgentSnapshot>> {
     let mut stream = UnixStream::connect(&context.socket_path).ok()?;
     stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT)).ok()?;
@@ -208,10 +261,33 @@ fn poll_once(context: &HerdrContext, request_id: u64) -> MonitorEvent {
     }
 }
 
+fn request_agent_focus(context: &HerdrContext, id: &AgentId) -> FocusResult {
+    let Ok(mut stream) = UnixStream::connect(&context.socket_path) else {
+        return FocusResult::Unavailable;
+    };
+    if stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT)).is_err()
+        || stream.set_write_timeout(Some(SOCKET_IO_TIMEOUT)).is_err()
+        || stream
+            .write_all(agent_focus_request(0, id).as_bytes())
+            .is_err()
+    {
+        return FocusResult::Unavailable;
+    }
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    match reader.read_line(&mut line) {
+        Ok(0) | Err(_) => FocusResult::Unavailable,
+        Ok(_) => parse_agent_focus(line.trim_end()),
+    }
+}
+
 /// Handle for the background polling thread. Dropping it (or calling
 /// [`HerdrMonitor::stop`]) wakes the thread and joins it.
 pub(crate) struct HerdrMonitor {
+    context: HerdrContext,
     events: mpsc::Receiver<MonitorEvent>,
+    focus_events: mpsc::Receiver<FocusResult>,
+    focus_event_tx: mpsc::Sender<FocusResult>,
     stop: Option<mpsc::Sender<()>>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -219,6 +295,25 @@ pub(crate) struct HerdrMonitor {
 impl HerdrMonitor {
     pub(crate) fn events(&self) -> &mpsc::Receiver<MonitorEvent> {
         &self.events
+    }
+
+    /// Typed results of explicit background pane-focus requests. This stays
+    /// separate from monitor polling: a focus timeout cannot delay or change
+    /// the `agent.list` recovery ladder.
+    pub(crate) fn focus_events(&self) -> &mpsc::Receiver<FocusResult> {
+        &self.focus_events
+    }
+
+    /// Dispatch a focus request through the local socket without blocking the
+    /// UI event loop. The one-shot worker keeps the same bounded I/O and
+    /// recoverable result semantics as polling, then returns only a typed
+    /// result to the controller.
+    pub(crate) fn focus_agent(&self, id: AgentId) {
+        let context = self.context.clone();
+        let result_tx = self.focus_event_tx.clone();
+        thread::spawn(move || {
+            let _ = result_tx.send(request_agent_focus(&context, &id));
+        });
     }
 
     pub(crate) fn stop(mut self) {
@@ -244,7 +339,9 @@ impl Drop for HerdrMonitor {
 /// [`POLL_INTERVAL`] unless the stop sender is dropped first.
 pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
     let (event_tx, event_rx) = mpsc::channel();
+    let (focus_event_tx, focus_events) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let monitor_context = context.clone();
     let handle = thread::spawn(move || {
         let mut request_id: u64 = 0;
         loop {
@@ -259,7 +356,10 @@ pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
         }
     });
     HerdrMonitor {
+        context: monitor_context,
         events: event_rx,
+        focus_events,
+        focus_event_tx,
         stop: Some(stop_tx),
         handle: Some(handle),
     }
@@ -534,5 +634,36 @@ mod tests {
             .expect("monitor must report an event");
         assert!(matches!(event, MonitorEvent::Failed));
         monitor.stop();
+    }
+
+    #[test]
+    fn focus_request_targets_only_the_opaque_pane_id() {
+        let request = agent_focus_request(9, &AgentId::new("other-workspace", "pane-7"));
+        let body = request.trim_end();
+        let value: serde_json::Value = serde_json::from_str(body).expect("request must be JSON");
+        assert_eq!(value["method"], "agent.focus");
+        assert_eq!(value["params"], serde_json::json!({ "target": "pane-7" }));
+        assert!(!body.contains("other-workspace"));
+    }
+
+    #[test]
+    fn focus_response_distinguishes_success_unsupported_missing_and_transport_failures() {
+        assert_eq!(
+            parse_agent_focus(r#"{"jsonrpc":"2.0","id":"1","result":{}}"#),
+            FocusResult::Focused
+        );
+        assert_eq!(
+            parse_agent_focus(
+                r#"{"jsonrpc":"2.0","id":"1","error":{"code":-32601,"message":"method not found"}}"#
+            ),
+            FocusResult::Unsupported
+        );
+        assert_eq!(
+            parse_agent_focus(
+                r#"{"jsonrpc":"2.0","id":"1","error":{"code":-32000,"message":"pane not found"}}"#
+            ),
+            FocusResult::Missing
+        );
+        assert_eq!(parse_agent_focus("not json"), FocusResult::Unavailable);
     }
 }

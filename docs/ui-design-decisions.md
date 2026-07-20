@@ -141,8 +141,9 @@ Working-only invisible orbits that replaced audio-driven planet body
 motion, and the selection focus brackets (approved as a revision that
 dropped the same design's orbiting particles). The Banded Worlds surface
 palette, the Dual Phase Scope canvas (approved 2026-07-19), and the
-original 2026-07-16 integration design's local-only, read-only privacy
-boundaries all remain in force.
+original 2026-07-16 integration design's local-only, observational privacy
+boundaries all remain in force, except for the explicit selected-pane focus
+control described below.
 
 Everything else in the presentation lineage is historical, superseded by
 the decisions above: the thin status atmospheres (which had themselves
@@ -264,9 +265,14 @@ Implications:
   hit target, and the identity surface is never restyled by selection. `Enter`
   opens a centered read-only Agent details record for the selected live
   planet showing only non-empty `name`, `agent`, normalized `status`, and
-  `activity` (`terminal_title`) rows; `Enter`/`Esc` close only the record
-  and `a` closes the record and the stage. Pane ids, workspace ids,
-  working directories, terminal/session ids, and raw status never render.
+  `activity` (`terminal_title`) rows; its modal footer shows `O open pane`,
+  while the stage footer shows that focus hint only when the record is closed.
+  `o`/`O` focuses that selected current pane without closing the record or
+  changing selection. Unsupported,
+  missing/moved, unavailable, and no-selection attempts show only short
+  modal-local feedback. `Enter`/`Esc` close only the record and `a` closes
+  the record and the stage. Pane ids, workspace ids, working directories,
+  terminal/session ids, and raw status never render.
 - **Player-first input.** The stage consumes search and station
   navigation/selection keys, but the documented global player shortcuts —
   `Space`, `+`/`-`, `f`, `t`, and `v` — fall through with their exact

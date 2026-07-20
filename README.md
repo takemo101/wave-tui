@@ -51,9 +51,9 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   real-audio Dual Phase Scope, with small round disc-mask planets slowly
   orbiting a static central sun on invisible paths while quiet status
   changes stay inside each disc; selecting one and pressing `Enter`
-  opens a read-only Agent details record. It never reads
-  agent output, never controls panes, and standalone launches are completely
-  unchanged (see [Herdr Agent Planets](#herdr-agent-planets-optional)).
+  opens a read-only Agent details record. It never reads agent output; an
+  explicit `o`/`O` may focus the selected live agent pane, and standalone
+  launches are completely unchanged (see [Herdr Agent Planets](#herdr-agent-planets-optional)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
@@ -388,6 +388,7 @@ agent reported by the session's socket is shown.
 | `Shift+Tab` / `↑` / `k` | select the previous planet (wraps first → last) |
 | mouse click        | select a planet (its body cells only) when details are closed |
 | `Enter`            | open details for the selected live planet; close details when open |
+| `o` / `O`          | focus the selected current pane; errors stay as temporary stage/modal feedback |
 | `Esc`              | close details when open; otherwise close the stage |
 | `Space`, `+`/`-`, `f`, `t`, `v`, `z` | consumed while details are open |
 | `q` / `Ctrl+C`     | quit the app                             |
@@ -425,12 +426,15 @@ socket. Failures are recoverable and never interrupt playback:
 
 ### Privacy and read-only limits
 
-The Agent Planets companion is strictly observational:
+The Agent Planets companion is observational except for one explicit focus action:
 
-- It only calls `agent.list`; it never reads pane output, prompts, files, or
-  terminal scrollback.
-- It cannot focus, create, close, send text to, or otherwise control Herdr
-  panes.
+- It polls only `agent.list`, and an `o`/`O` press for a selected current
+  planet may call `agent.focus` for that existing pane. It never reads pane
+  output, prompts, files, or terminal scrollback.
+- It never creates, restarts, closes, sends text to, or otherwise controls
+  Herdr panes beyond that explicit focus request. Unsupported Herdr (update to
+  0.7.0+), missing/moved panes, and unavailable sockets show temporary local
+  feedback without interrupting playback.
 - It shows every agent reported by the plugin invocation's local Herdr
   socket, across that session's workspaces; it never discovers other Herdr
   sessions or opens another socket.

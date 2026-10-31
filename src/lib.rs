@@ -7,6 +7,7 @@ pub mod audio;
 pub mod catalog;
 pub mod cli;
 pub mod herdr;
+pub(crate) mod herdr_core;
 pub mod layout;
 pub mod model;
 pub mod runtime;

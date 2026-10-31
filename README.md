@@ -281,7 +281,8 @@ Herdr's normal pane lifecycle.
 
 The Agent Planets companion enables itself only when **all** of the following hold:
 
-1. `--no-agent-pulse` was not passed.
+1. `--no-agent-pulse` was not passed and `--agent-host` is `auto` (the default)
+   or `herdr`.
 2. `HERDR_ENV` is exactly `1`.
 3. `HERDR_SOCKET_PATH` is set and non-empty.
 4. `HERDR_WORKSPACE_ID` is set and non-empty.
@@ -459,16 +460,54 @@ explicit-name rename actions:
 - Nothing is persisted: agent state lives only in process memory for the
   current run, and there is no completed-agent history.
 
-Disable the integration for one launch with `--no-agent-pulse` (never written
-to settings).
+Disable the integration for one launch with `--no-agent-pulse` or
+`--agent-host off` (never written to settings).
 
-### Roadmap: herdr-core host (not yet implemented)
+### Using herdr-core instead of Herdr
 
-An optional second source of agents, [herdr-core](https://github.com/herdrdev/herdr-core)
-terminals, is an approved design but is **not implemented and not available**:
-the flags, behavior, and requirements on this page are unchanged, and
-`--agent-host` does not exist yet. The design is in
-[`docs/SPEC.md`](docs/SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented).
+`wave-tui` can show the same Agent Planets stage from
+[herdr-core](https://github.com/herdrdev/herdr-core) (`hc`) terminals instead
+of Herdr. This path is implemented but has not yet been checked against a live
+`hc` runtime. A run uses at most one host, chosen once at startup with
+`--agent-host auto|herdr|herdr-core|off` (default `auto`, never persisted):
+
+- `auto` uses Herdr when the plugin environment above is eligible; only
+  otherwise does it consider herdr-core.
+- `herdr` and `herdr-core` consider only that host and never fall back to the
+  other. If the chosen host is not eligible, `wave-tui` looks exactly like a
+  standalone launch.
+- `off` and `--no-agent-pulse` disable the integration entirely, whichever
+  order the flags appear in, and neither host's environment is read.
+
+herdr-core is eligible when `HC_SOCKET` is set and nonblank, or when
+`HC_TERMINAL_ID` is set and nonblank and a socket resolves (the
+`HC_TERMINAL_SOCKET` that `hc` injects into its terminals, the core's
+configured socket, or its default session socket). `HC_TERMINAL_SOCKET` alone,
+`HC_SESSION` alone, or merely the default socket path do not opt in, and
+`wave-tui` never starts `hc` or looks for other cores.
+
+Quick start, pointing straight at a core's socket:
+
+```bash
+HC_SOCKET=/actual/socket wave-tui --agent-host herdr-core --no-auto-play
+```
+
+Or run `wave-tui --agent-host herdr-core` inside a terminal that `hc` launched;
+`hc` supplies `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` there.
+
+herdr-core is **observation only**. `wave-tui` polls `terminal.list` every
+5 seconds and shows a live terminal only when its program has declared an
+application in its status (`status.app`); the Agent column is that declared
+name, the Name column is the terminal's explicit name, and Activity is its
+terminal title. Nothing is inferred from text or brand, so a non-AI program that
+declares a status appears too, and a terminal that never reported one does not.
+Status `working`, `blocked`, `done`, and `idle` map directly; `error`, a cleared
+status, or any other value shows as Unknown. A terminal stays listed, as
+Unknown, after it clears its status, until it finishes or disappears. The
+focus (`o`/`O`) and rename (`r`/`R`) controls do not exist for herdr-core: no
+hint, no editor, no effect. A core with a slow connected remote machine can take
+longer than the 3-second socket timeout, which shows as the usual
+reconnecting/unavailable state without affecting playback.
 
 ## Command-line options
 
@@ -482,8 +521,11 @@ OPTIONS:
     --no-auto-play                Start silently even if a previous station exists
     --audio-output-device <name>  CPAL output device name
     --low-power                   Lower UI update cadence (audio unaffected)
-    --no-agent-pulse              Disable the Herdr Agent Pulse integration for
-                                  this run (never persisted)
+    --agent-host <host>           Agent Planets host for this run: auto | herdr |
+                                  herdr-core | off (default auto; an explicit
+                                  host never falls back; never persisted)
+    --no-agent-pulse              Disable every Agent Planets host for this run,
+                                  whatever --agent-host says (never persisted)
     --search <query>              Start in search mode with this query
     -h, --help                    Print help
     -V, --version                 Print version
@@ -584,7 +626,7 @@ for findings and caveats.
 - [`docs/herdr-plugin.md`](docs/herdr-plugin.md) — Herdr plugin manual
   (install, verify, open, local dev, update, uninstall, troubleshooting)
 - [`docs/herdr-core-research.md`](docs/herdr-core-research.md) — pinned source
-  evidence for the planned, not-yet-implemented herdr-core host
+  evidence for the herdr-core host
 
 The dated per-iteration superpowers design and plan documents were
 consolidated into the canonical docs above and removed; the originals are

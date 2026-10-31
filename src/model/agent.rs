@@ -2,10 +2,40 @@
 //!
 //! These types describe agents, their normalized status, and the typed
 //! outcomes of explicit requests, independent of which host supplies them.
-//! Adapters (currently only [`crate::herdr`]) translate their own wire
-//! formats into this vocabulary; the app and UI depend only on this module.
+//! Adapters ([`crate::herdr`] and the read-only herdr-core adapter) translate
+//! their own wire formats into this vocabulary; the app and UI depend only on
+//! this module.
 
 use std::hash::{Hash, Hasher};
+
+/// Which Agent Planets host a run may use, as chosen with `--agent-host`.
+///
+/// A per-run boundary value, never persisted. `Auto` prefers an eligible
+/// Herdr plugin environment and only then an eligible herdr-core terminal; the
+/// explicit variants resolve exactly one host and never fall back to another.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgentHostSelection {
+    #[default]
+    Auto,
+    Herdr,
+    HerdrCore,
+    Off,
+}
+
+impl AgentHostSelection {
+    /// Strict boundary parser for the `--agent-host` value. Accepts exactly
+    /// `auto`, `herdr`, `herdr-core`, and `off` (case-insensitive, trimmed);
+    /// anything else is `None`.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "herdr" => Some(Self::Herdr),
+            "herdr-core" => Some(Self::HerdrCore),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentStatus {
@@ -32,9 +62,9 @@ enum Identity {
         workspace_id: String,
         pane_id: String,
     },
-    // Constructed only by tests until the herdr-core adapter exists.
-    #[cfg_attr(not(test), allow(dead_code))]
-    Core { address: String },
+    Core {
+        address: String,
+    },
 }
 
 /// Marker mixed into the hash of core identities only.
@@ -93,9 +123,8 @@ impl AgentId {
         })
     }
 
-    /// Identity of a herdr-core agent address. Test-only until the core
-    /// adapter lands.
-    #[cfg(test)]
+    /// Identity of a herdr-core agent address. Intended for the herdr-core
+    /// adapter; other modules use it only to build test fixtures.
     pub(crate) fn core(address: impl Into<String>) -> Self {
         Self(Identity::Core {
             address: address.into(),
@@ -212,10 +241,8 @@ impl AgentCapabilities {
         rename: true,
     };
 
-    /// An observe-only host: neither request exists, so the controls are inert
-    /// rather than hidden-but-live.
-    // Constructed only by tests until a read-only host is selected.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// An observe-only host (herdr-core): neither request exists, so the
+    /// controls are inert rather than hidden-but-live.
     pub(crate) const READ_ONLY: Self = Self {
         focus: false,
         rename: false,
@@ -375,6 +402,36 @@ mod tests {
         assert_ne!(AgentCapabilities::HERDR, AgentCapabilities::READ_ONLY);
         let copied = AgentCapabilities::HERDR;
         assert_eq!(copied, AgentCapabilities::HERDR);
+    }
+
+    #[test]
+    fn agent_host_selection_defaults_to_auto() {
+        assert_eq!(AgentHostSelection::default(), AgentHostSelection::Auto);
+    }
+
+    #[test]
+    fn agent_host_selection_parses_exactly_the_four_documented_values() {
+        let cases = [
+            ("auto", AgentHostSelection::Auto),
+            ("herdr", AgentHostSelection::Herdr),
+            ("herdr-core", AgentHostSelection::HerdrCore),
+            ("off", AgentHostSelection::Off),
+            (" Herdr-Core ", AgentHostSelection::HerdrCore),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(AgentHostSelection::parse(raw), Some(expected), "{raw:?}");
+        }
+        for raw in [
+            "",
+            "core",
+            "herdr_core",
+            "herdrcore",
+            "on",
+            "all",
+            "herdr,core",
+        ] {
+            assert_eq!(AgentHostSelection::parse(raw), None, "{raw:?}");
+        }
     }
 
     #[test]

@@ -4,9 +4,9 @@ Evidence note for the approved herdr-core Agent Planets host. It records what
 the official herdr-core sources say; it is **not** the behavior contract.
 The target behavior is specified in
 [`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented),
-and nothing here is implemented yet. Where a statement below is a schema or
-source fact it says so; adapter behavior wave-tui plans to build on those
-facts lives in `SPEC.md`.
+and the adapter and host selection built on these facts are described there.
+Where a statement below is a schema or source fact it says so; adapter
+behavior wave-tui builds on those facts lives in `SPEC.md`.
 
 ## Pinned revision
 
@@ -56,7 +56,7 @@ this process belongs to one.
 
 **Terminal context.** [`api/run.rs:202–203`](https://github.com/herdrdev/herdr-core/blob/4a3591aa835c197f57a5d1b8e8951a75e2a79faa/crates/herdr-core/src/api/run.rs#L202-L203)
 injects `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` (the core's actual endpoint)
-into a new terminal. The planned adapter uses this injected endpoint after an
+into a new terminal. The adapter uses this injected endpoint after an
 explicit `HC_SOCKET` override, but only in a terminal-id-qualified context.
 On Unix, both macOS and Linux use `$HOME/.local/state` and `$HOME/.config`
 as defaults. With no runtime directory, the socket is placed directly in the
@@ -64,12 +64,12 @@ session state directory, not an extra `herdr-core` child; see
 [`platform/unix.rs:84–105`](https://github.com/herdrdev/herdr-core/blob/4a3591aa835c197f57a5d1b8e8951a75e2a79faa/crates/herdr-core/src/platform/unix.rs#L84-L105).
 
 **`terminal.list`.** Takes optional `all` and `labels` parameters (and no
-`on` parameter); wave-tui's planned call is the empty-params `terminal.list {}`.
+`on` parameter); wave-tui's call is the empty-params `terminal.list {}`.
 Without `all`, finished terminals are excluded. Result is `ListResult.terminals`.
 Per `api.rs`, enumeration covers this machine and then added or connected
 remote machines, with remote addresses of the form `machine/t7`; each
 machine's query is bounded to about three seconds, so a slow remote can make a
-whole call take longer than a client's own I/O timeout. There is no agent-type
+whole call take longer than a client's own attempt deadline. There is no agent-type
 filter and no workspace field: core lists terminals, not a curated agent
 inventory.
 
@@ -96,7 +96,7 @@ label.
 streams notifications (`created`, `lost`, `restarted`, `keep`, `finished`,
 `removed`, `status`, `turn`, `title`, `labels`, `size`, `doc`), with a 15 s
 default heartbeat and a fresh snapshot for subscribers that missed events.
-wave-tui does not plan to use it initially (see `SPEC.md`).
+wave-tui does not use it (see `SPEC.md`).
 
 **Focus and rename: unsupported.** The released schema has no `agent.focus`,
 `agent.rename`, or terminal focus/rename method. `terminal.attach` takes over a

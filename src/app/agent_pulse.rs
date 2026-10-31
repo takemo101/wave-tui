@@ -19,7 +19,8 @@
 //! except back to the Herdr adapter through the controller.
 
 use crate::model::agent::{
-    AgentCapabilities, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
+    AgentCapabilities, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult,
+    RenameCompletion, RenameRequest, RenameRequestId, RenameResult,
 };
 use crate::model::VizFrame;
 
@@ -110,7 +111,10 @@ enum AgentRenameOverlay {
     Editing {
         id: AgentId,
         input: String,
-        submitting: bool,
+        /// The submission awaiting its typed completion, if any. It dies with
+        /// the editor: closing or retargeting the editor drops the only record
+        /// that could match a late completion.
+        in_flight: Option<RenameRequestId>,
     },
 }
 
@@ -164,6 +168,9 @@ pub(super) struct AgentPulse {
     overlay: AgentOverlay,
     details: AgentDetailsOverlay,
     rename: AgentRenameOverlay,
+    /// The id the next submitted rename will carry; advanced on every
+    /// submission so no two submissions in a run share an id.
+    next_rename: RenameRequestId,
     focus_notice: Option<AgentFocusNotice>,
     rename_notice: Option<AgentRenameNotice>,
     /// When the last successful snapshot arrived.
@@ -194,6 +201,7 @@ impl AgentPulse {
             overlay: AgentOverlay::Closed,
             details: AgentDetailsOverlay::Closed,
             rename: AgentRenameOverlay::Closed,
+            next_rename: RenameRequestId::FIRST,
             focus_notice: None,
             rename_notice: None,
             last_success: None,
@@ -425,6 +433,7 @@ impl AgentPulse {
         };
         self.selected = self.active.get(index).map(|view| view.id.clone());
         self.follow_selection_with_details();
+        self.drop_rename_for_other_target();
     }
 
     /// Move the overlay selection to the previous sorted agent, wrapping from
@@ -445,6 +454,21 @@ impl AgentPulse {
         };
         self.selected = self.active.get(index).map(|view| view.id.clone());
         self.follow_selection_with_details();
+        self.drop_rename_for_other_target();
+    }
+
+    /// Close the inline editor when the selection no longer names the agent it
+    /// was opened for. Dropping the editor drops its pending submission, so a
+    /// late completion can neither complete another agent's editor nor rename
+    /// another row.
+    fn drop_rename_for_other_target(&mut self) {
+        let AgentRenameOverlay::Editing { id, .. } = &self.rename else {
+            return;
+        };
+        if self.selected.as_ref() != Some(id) {
+            self.rename = AgentRenameOverlay::Closed;
+            self.rename_notice = None;
+        }
     }
 
     /// Select an active agent by its identity; unknown agents change nothing.
@@ -500,7 +524,7 @@ impl AgentPulse {
         self.rename = AgentRenameOverlay::Editing {
             id: agent.id.clone(),
             input: agent.details.name.clone().unwrap_or_default(),
-            submitting: false,
+            in_flight: None,
         };
         self.rename_notice = None;
     }
@@ -510,10 +534,10 @@ impl AgentPulse {
             return;
         }
         if let AgentRenameOverlay::Editing {
-            input, submitting, ..
+            input, in_flight, ..
         } = &mut self.rename
         {
-            if !*submitting {
+            if in_flight.is_none() {
                 input.push(character);
                 self.rename_notice = None;
             }
@@ -525,10 +549,10 @@ impl AgentPulse {
             return;
         }
         if let AgentRenameOverlay::Editing {
-            input, submitting, ..
+            input, in_flight, ..
         } = &mut self.rename
         {
-            if !*submitting {
+            if in_flight.is_none() {
                 input.pop();
                 self.rename_notice = None;
             }
@@ -539,9 +563,10 @@ impl AgentPulse {
         if !self.capabilities.rename || self.connection != AgentPulseConnection::Connected {
             return;
         }
-        if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.rename {
-            if !*submitting {
-                *submitting = true;
+        if let AgentRenameOverlay::Editing { in_flight, .. } = &mut self.rename {
+            if in_flight.is_none() {
+                *in_flight = Some(self.next_rename);
+                self.next_rename = self.next_rename.following();
                 self.rename_notice = None;
             }
         }
@@ -552,15 +577,23 @@ impl AgentPulse {
         self.rename_notice = None;
     }
 
-    pub(super) fn record_rename_result(&mut self, result: RenameResult, now: Instant) {
+    pub(super) fn record_rename_result(&mut self, completion: RenameCompletion, now: Instant) {
+        let result = completion.result;
         // A host without rename never produced this request, so its result
         // (and any version notice) is not meaningful.
         if !self.capabilities.rename {
             return;
         }
+        // Only the open editor's own pending submission may be settled. A
+        // completion for a cancelled editor, an earlier submission, or a
+        // retargeted/removed agent matches nothing and changes nothing: the
+        // next `agent.list` remains the authority on every name.
+        if self.rename_in_flight() != Some(completion.request) {
+            return;
+        }
         if self.connection != AgentPulseConnection::Connected {
-            if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.rename {
-                *submitting = false;
+            if let AgentRenameOverlay::Editing { in_flight, .. } = &mut self.rename {
+                *in_flight = None;
                 self.rename_notice = Some(AgentRenameNotice {
                     result: RenameResult::Unavailable,
                     shown_at: now,
@@ -568,12 +601,7 @@ impl AgentPulse {
             }
             return;
         }
-        let AgentRenameOverlay::Editing {
-            id,
-            input,
-            submitting: _,
-        } = &self.rename
-        else {
+        let AgentRenameOverlay::Editing { id, input, .. } = &self.rename else {
             return;
         };
         if result == RenameResult::Renamed {
@@ -584,8 +612,8 @@ impl AgentPulse {
             }
             self.rename = AgentRenameOverlay::Closed;
             self.rename_notice = None;
-        } else if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.rename {
-            *submitting = false;
+        } else if let AgentRenameOverlay::Editing { in_flight, .. } = &mut self.rename {
+            *in_flight = None;
             self.rename_notice = Some(AgentRenameNotice {
                 result,
                 shown_at: now,
@@ -675,34 +703,38 @@ impl AgentPulse {
     /// Whether a submitted inline rename is awaiting its asynchronous typed
     /// outcome. The UI stays responsive but prevents duplicate submissions.
     pub(super) fn rename_is_submitting(&self) -> bool {
-        matches!(
-            self.rename,
-            AgentRenameOverlay::Editing {
-                submitting: true,
-                ..
-            }
-        )
+        self.rename_in_flight().is_some()
     }
 
-    /// Opaque target plus normalized request value for the controller. This
-    /// never exposes the private id to UI or persistence, and stale snapshots
-    /// intentionally return `None` without clearing the user's input.
-    pub(super) fn rename_request(&self) -> Option<(AgentId, Option<String>)> {
+    /// The submission the open editor is waiting on, if any.
+    pub(super) fn rename_in_flight(&self) -> Option<RenameRequestId> {
+        match &self.rename {
+            AgentRenameOverlay::Editing { in_flight, .. } => *in_flight,
+            AgentRenameOverlay::Closed => None,
+        }
+    }
+
+    /// The request the controller would dispatch for the open editor, carrying
+    /// the id the next submission will be allocated. This never exposes the
+    /// private identity to UI or persistence, and stale snapshots intentionally
+    /// return `None` without clearing the user's input.
+    pub(super) fn rename_request(&self) -> Option<RenameRequest> {
         if !self.capabilities.rename || self.connection != AgentPulseConnection::Connected {
             return None;
         }
         let AgentRenameOverlay::Editing {
             id,
             input,
-            submitting: false,
+            in_flight: None,
         } = &self.rename
         else {
             return None;
         };
-        Some((
-            id.clone(),
-            (!input.trim().is_empty()).then(|| input.trim().to_owned()),
-        ))
+        Some(RenameRequest {
+            request: self.next_rename,
+            target: id.clone(),
+            name: (!input.trim().is_empty()).then(|| input.trim().to_owned()),
+        })
     }
 
     /// Short inline-name failure copy. It deliberately omits server text and

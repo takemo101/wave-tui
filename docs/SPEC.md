@@ -763,7 +763,13 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   input seeded only from the selected agent's explicit Herdr name. Regular
   typing and Backspace edit the process-local input; Enter sends
   `agent.rename` asynchronously, with blank input encoded as JSON `null` to
-  clear the name. A successful reply immediately updates the in-memory table
+  clear the name. At most one rename request is in flight at a time and none
+  is queued; a submit the host refuses because that worker is busy is settled
+  immediately as a recoverable failure, so the input is never left saving. Each
+  completion is matched to the submission that produced it, so a late result
+  after `Esc`/reopen, a selection change, or a removed agent is ignored rather
+  than applied to another editor or row. A successful matching reply
+  immediately updates the in-memory table
   snapshot; a later `agent.list` remains authoritative. Failures retain the
   input and show only short modal-local feedback. `Esc` cancels only the
   rename input, leaving the table/stage open. Stale state disables editing and
@@ -833,8 +839,9 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 > MIK-074 adds the concrete `agent_host` facade over the existing Herdr monitor
 > and the `AgentCapabilities` startup context (Herdr: focus and rename; a
 > synthetic read-only host: neither), enforced at the reducer and at the
-> runtime effect boundary. The core adapter (`herdr_core`), CLI selection, and
-> live checks remain pending. Until those implementation issues land,
+> runtime effect boundary. MIK-075 implements the bounded, correlated Herdr
+> rename worker (see *Herdr rename results* below). The core adapter
+> (`herdr_core`), CLI selection, and live checks remain pending. Until those implementation issues land,
 > `wave-tui` behaves exactly as the Herdr Agent Pulse sections above describe:
 > production selects only the official Herdr plugin host, `--agent-host` is not
 > accepted, and herdr-core is never contacted. When an implementation issue
@@ -973,14 +980,38 @@ sibling adapters; an `agent_host` facade selects and runs the one host;
 `runtime` composes them; `app` and `ui` import no adapter. See
 `docs/implementation-guidelines.md`.
 
-#### Related planned Herdr correction: rename results (MIK-075)
+#### Herdr rename results (MIK-075, implemented)
 
-Separately from herdr-core, a narrow Herdr rename correction is planned in
-**MIK-075**: at most one rename worker in flight, and each rename result
-correlated to the submission and editor that originated it, so a late result
-cannot update or close a different agent's editor. This section makes no claim
-that the current implementation already guarantees this; until MIK-075 ships,
-the rename behavior in the Herdr sections above is unchanged.
+Separately from herdr-core, a narrow Herdr rename correction is implemented:
+
+- **One worker, no queue.** The Herdr monitor runs at most one `agent.rename`
+  transport worker at a time, behind an atomic in-flight guard that is released
+  on every exit path before the result is published. A request made while it is
+  busy is refused, not queued. The worker is started with a named
+  `thread::Builder` spawn; a panicking transport or a failed spawn is reported
+  as a recoverable `Unavailable` completion for the same request and frees the
+  slot, so the next request works. Focus has its own independent single slot, and
+  `agent.list` polling is unaffected by either.
+- **Refusal is immediate.** The facade's `rename_agent` returns whether the host
+  accepted the request. When it does not (busy slot, or no monitor), the runtime
+  effect boundary settles that submission as `Unavailable` at once, with the
+  usual "rename unavailable · retrying" notice and the input retained, so the
+  editor never stays in the saving state waiting for a result that cannot come.
+- **Correlated completions.** The reducer allocates an opaque, monotonic
+  `RenameRequestId` per submission and the host echoes it on a
+  `RenameCompletion`. A completion applies only when it names the open editor's
+  pending submission. Cancelling and reopening (the same or a different agent),
+  a newer submission, or a selection change that retargets the editor
+  invalidates the old submission; a removed agent or an Unavailable connection
+  drops the editor. A late completion then matches nothing: it cannot close or
+  flag another editor and cannot rename any row. While Stale, the
+  documented behavior is kept (the matching completion releases the input with
+  an Unavailable notice and renames nothing). Request ids are never rendered
+  and never leave `model::agent`/`app`/`runtime`/`herdr`.
+- **Unchanged.** Blank input is still JSON `null`; a matching success still
+  closes the input and updates the originating row immediately; the next
+  `agent.list` stays authoritative. A host without the rename capability (a
+  read-only host, and herdr-core) never receives or completes a rename.
 
 #### Verification status
 
@@ -997,7 +1028,18 @@ rename/focus, runtime effect gating through direct actions and key routes,
 unchanged drain order (snapshot → focus → rename → tick), startup capability
 configuration, and mouse-capture/teardown ownership. Final full-suite results
 for the combined headless and renderer-hint lanes are recorded by the issue's
-reports. The core transport, CLI selection, and their integration tests are
+reports.
+
+MIK-075 implements the rename worker bound and completion correlation with
+focused tests: a gated fake rename transport proving one worker and no backlog,
+retry after completion, panic and spawn-failure recovery, null payload, every
+result echoed with its id, cancel/reopen (same and different agent), selection
+change, newer-submission, removed-target, stale and unavailable handling in the
+reducer, busy-host refusal settling the editor, and a drained late completion
+through the event loop, plus rename/focus/polling independence. Full-suite
+results are recorded by the issue's reports.
+
+The core transport, CLI selection, and their integration tests are
 still pending. No live core or new manual visual checks have been performed;
 default tests require no live `hc` process.
 

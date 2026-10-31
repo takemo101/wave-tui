@@ -255,10 +255,11 @@ mod tests {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    /// Records every byte a value feeds its hasher, so the exact write
-    /// sequence (not just a final digest) can be compared.
+    /// Records each `write` call as its own entry, so the exact write
+    /// sequence and its boundaries (not a concatenation or a final digest)
+    /// can be compared.
     #[derive(Default)]
-    struct RecordingHasher(Vec<u8>);
+    struct RecordingHasher(Vec<Vec<u8>>);
 
     impl Hasher for RecordingHasher {
         fn finish(&self) -> u64 {
@@ -266,11 +267,11 @@ mod tests {
         }
 
         fn write(&mut self, bytes: &[u8]) {
-            self.0.extend_from_slice(bytes);
+            self.0.push(bytes.to_vec());
         }
     }
 
-    fn recorded<T: Hash>(value: &T) -> Vec<u8> {
+    fn recorded<T: Hash>(value: &T) -> Vec<Vec<u8>> {
         let mut hasher = RecordingHasher::default();
         value.hash(&mut hasher);
         hasher.0
@@ -294,6 +295,26 @@ mod tests {
             assert_eq!(recorded(&id), recorded(&legacy));
             assert_eq!(seeded(&id), seeded(&legacy));
         }
+    }
+
+    #[test]
+    fn recorded_writes_keep_their_boundaries_instead_of_concatenating() {
+        // Fields that split the same bytes differently must record differently;
+        // a concatenating recorder would make these two identities look equal.
+        assert_ne!(
+            recorded(&AgentId::herdr("ab", "c")),
+            recorded(&AgentId::herdr("a", "bc"))
+        );
+        assert_eq!(
+            recorded(&AgentId::herdr("ws", "p1")),
+            vec![b"ws".to_vec(), vec![0xff], b"p1".to_vec(), vec![0xff],],
+            "workspace then pane, each str followed by its 0xff terminator, no discriminant"
+        );
+        assert_eq!(
+            recorded(&AgentId::core("addr")),
+            vec![b"core".to_vec(), vec![0xff], b"addr".to_vec(), vec![0xff],],
+            "core hashes its tag then the address"
+        );
     }
 
     #[test]

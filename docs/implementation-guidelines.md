@@ -49,11 +49,11 @@ transport constant.
 
 **Dual-host Agent Planets.** One run observes either Herdr or herdr-core
 (behavior in
-[`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented)).
+[`SPEC.md`](SPEC.md#herdr-core-agent-host)).
 The boundaries below are implemented: `model::agent` (including
 `AgentCapabilities` and the `AgentHostSelection` CLI value), `herdr`,
 `herdr_core`, the concrete `agent_host` facade, and selection in `runtime`.
-Real-runtime verification is still pending (see `SPEC.md`).
+No live-runtime verification has been performed (see `SPEC.md`).
 
 | Module | Responsibility | Hide from others |
 | --- | --- | --- |

@@ -133,7 +133,7 @@ standalone binary, use the [README uninstall steps](../README.md#uninstall).
 
 ## What Agent Planets requires
 
-The Agent Planets companion enables itself only when **all** of the following hold at launch:
+The Herdr host of the Agent Planets companion enables itself only when **all** of the following hold at launch:
 
 1. `--no-agent-pulse` was not passed and `--agent-host` is `auto` (the default)
    or `herdr`.
@@ -167,23 +167,41 @@ notices. Stale state disables rename while retaining its input; unavailable
 closes the table/input. Disable the integration for one run with
 `--no-agent-pulse` or `--agent-host off` (never written to settings).
 
-## herdr-core host
+## herdr-core host (alternative)
 
-An optional second host observes
-[herdr-core](https://github.com/herdrdev/herdr-core) terminals instead of
-Herdr. It is not part of the plugin install: the plugin, its eligibility
-conditions, and the commands above are unchanged, and the plugin's `open`
-action does not pass `--agent-host`, so inside the plugin the default `auto`
-selects Herdr first. Pass `--agent-host herdr-core` yourself to use herdr-core
-(for example, `HC_SOCKET=/actual/socket wave-tui --agent-host herdr-core
---no-auto-play` outside Herdr); `--agent-host herdr` pins Herdr, and an
-explicit host never falls back to the other. herdr-core is observation only —
-no focus or rename — and its eligibility rules (`HC_SOCKET`, or
-`HC_TERMINAL_ID` plus a resolved socket) are in the
+Agent Planets can alternatively observe
+[herdr-core](https://github.com/herdrdev/herdr-core) terminals. That host is
+independent of this plugin and of Herdr: nothing here is needed to use it, and
+the plugin, its eligibility conditions, and the commands above are unchanged.
+The plugin's `open` action does not pass `--agent-host`, so inside the plugin
+the default `auto` selects Herdr first.
+
+Host selection is per run and never persisted:
+
+```bash
+wave-tui --agent-host auto|herdr|herdr-core|off
+```
+
+- `auto` (default) tries Herdr first, then herdr-core.
+- `herdr` or `herdr-core` considers only that host and never falls back to the
+  other, including after a later connection failure.
+- `off` and the legacy `--no-agent-pulse` disable the integration; the legacy
+  flag overrides `--agent-host` in either argument order.
+
+Example launches (illustrative; substitute your own socket):
+
+```bash
+HC_SOCKET=/actual/socket wave-tui --agent-host herdr-core --no-auto-play
+```
+
+or run `wave-tui --agent-host herdr-core` inside a terminal that `hc` started,
+where `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` are already set. herdr-core is
+observation only — no focus or rename — and `wave-tui` never starts `hc`.
+Eligibility, endpoint priority, admission rules, and timing are in the
 [README](../README.md#using-herdr-core-instead-of-herdr) and
-[`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented),
-with source evidence in [`herdr-core-research.md`](herdr-core-research.md).
-It has not yet been checked against a live `hc` runtime.
+[`SPEC.md`](SPEC.md#herdr-core-agent-host), with source evidence in
+[`herdr-core-research.md`](herdr-core-research.md). No check against a live
+`hc` runtime has been performed.
 
 ## Troubleshooting
 
@@ -209,7 +227,8 @@ design (while `a` still opens the stage), and Signal View never shows Agent
 Pulse.
 
 **`a` does nothing.** The launch was standalone or ineligible; Agent Planets
-exists only for eligible plugin launches.
+exists only for an eligible Herdr plugin launch or an eligible herdr-core launch
+(see above).
 
 **`O` cannot open a pane.** Select a planet from a live (`Connected`) snapshot
 first. If a selected live pane still cannot focus, the stage shows a temporary

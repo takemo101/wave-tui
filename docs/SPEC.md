@@ -531,7 +531,9 @@ MVP includes a minimal practical CLI surface:
 - `--low-power`: force low-power UI mode
 - `--agent-host <host>`: choose the Agent Planets host for this run only —
   `auto` (default), `herdr`, `herdr-core`, or `off`; never persisted and never
-  applied to settings (see [Host selection](#host-selection))
+  applied to settings (see [Host selection](#host-selection)); the Herdr host
+  is described in this section and the herdr-core host in
+  [herdr-core Agent Host](#herdr-core-agent-host)
 - `--no-agent-pulse`: disable every Agent Planets host for this run only,
   whatever `--agent-host` says and in either argument order; never persisted
   and never applied to settings
@@ -563,10 +565,13 @@ MVP includes automatic and CLI-controlled low-power behavior.
 
 ### Herdr Agent Pulse (Optional Integration)
 
-`wave-tui` ships as an official Herdr plugin and, only when launched by that
-plugin, shows a **read-only Agent Pulse**: the live status of the AI coding
-agents visible on that Herdr session's local control socket, presented as
-ambient context beside radio playback. The canvas background is the Dual
+`wave-tui` ships as an official Herdr plugin. Its **Herdr host** — active
+only when launched by that plugin — shows a **read-only Agent Pulse**: the
+live status of the AI coding agents visible on that Herdr session's local
+control socket, presented as ambient context beside radio playback. The same
+Agent Planets presentation can alternatively be fed by herdr-core (see below);
+the statements in this section about plugin launch, `agent.list`, `agent.focus`,
+and `agent.rename` describe the Herdr host only. The canvas background is the Dual
 Phase Scope and the agent presentation is the Agent Planets stage — the
 centered stage with round disc-mask planets, on-demand Agent table
 modal, interior-only surface status, static central sun with Working-only
@@ -574,9 +579,9 @@ invisible orbits, and selection focus brackets recorded in
 `docs/ui-design-decisions.md`, which also records the superseded
 presentation lineage. The dated per-iteration superpowers design and plan
 documents that tracked that lineage are preserved in git history.
-This section records the product behavior of the Herdr host. A second,
+This section records the product behavior of the Herdr host. The second,
 read-only herdr-core host is specified separately in
-[herdr-core Agent Host](#herdr-core-agent-host-approved-target-not-yet-implemented).
+[herdr-core Agent Host](#herdr-core-agent-host).
 
 This is an optional Herdr integration, not a plugin system inside `wave-tui`,
 and it does not weaken the non-goals below: there is still no daemon, no IPC
@@ -836,27 +841,20 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 - Nothing is persisted: agent state exists only in process memory, and
   `--no-agent-pulse` is never written to settings.
 
-### herdr-core Agent Host: Approved Target, Not Yet Implemented
+### herdr-core Agent Host
 
-> **IMPLEMENTED — LIVE CHECKS PENDING.** This section is the design for the
-> second Agent Planets host, now implemented. MIK-073 implements the shared
-> `model::agent` vocabulary and legacy Herdr identity compatibility tests.
-> MIK-074 adds the concrete `agent_host` facade and the `AgentCapabilities`
-> startup context (Herdr: focus and rename; herdr-core: neither), enforced at
-> the reducer and at the runtime effect boundary. MIK-075 implements the
-> bounded, correlated Herdr rename worker (see *Herdr rename results* below).
-> MIK-076 implements the read-only `herdr_core` adapter, the `--agent-host`
-> selection with the legacy `--no-agent-pulse` precedence, and the facade's
-> core variant. Live checks against a real `hc` runtime and real visual checks
-> are **not yet performed** (see *Verification status*). The section heading
-> keeps its original wording so existing links stay stable. A launch with no
-> eligible host, or with `--agent-host off`/`--no-agent-pulse`, behaves exactly
-> as the Herdr Agent Pulse sections above describe and never contacts
-> herdr-core.
+> **IMPLEMENTED — LIVE CHECKS NOT PERFORMED.** The host-neutral `model::agent`
+> vocabulary, the `agent_host` facade with per-host capabilities, the bounded
+> Herdr rename worker, the read-only `herdr_core` adapter, and the
+> `--agent-host` selection are all shipped. No check against a real `hc`
+> runtime or real visual check has been performed (see *Verification status*).
+> A launch with no eligible host, or with `--agent-host off`/`--no-agent-pulse`,
+> behaves as an ordinary standalone launch and never contacts herdr-core.
 
-This lets the same Agent Planets stage observe terminals from
-[herdr-core](https://github.com/herdrdev/herdr-core) (the `hc` runtime) as an
-alternative to Herdr. Presentation, geometry, selection, stale/low-power
+The same Agent Planets stage can observe terminals from
+[herdr-core](https://github.com/herdrdev/herdr-core) (the `hc` runtime) instead
+of Herdr. herdr-core does not use or require the Herdr plugin or any Herdr
+environment. Presentation, geometry, selection, stale/low-power
 behavior, and player behavior are unchanged; only the data source differs.
 Source facts about herdr-core are pinned to commit
 `4a3591aa835c197f57a5d1b8e8951a75e2a79faa`, schema `0.1.15`, and recorded in
@@ -900,24 +898,40 @@ and defaults without `HC_TERMINAL_ID`. wave-tui gates those fallbacks with the
 terminal id to avoid connecting from an unrelated shell:
 
 1. `HC_SOCKET` is set and nonblank; or
-2. `HC_TERMINAL_ID` is set and nonblank **and** a Unix socket endpoint resolves
-   from the injected `HC_TERMINAL_SOCKET`, configured socket, or session/default
-   runtime path. Resolution prefers nonblank `HC_SOCKET`, then nonblank
-   `HC_TERMINAL_SOCKET` only with a nonblank `HC_TERMINAL_ID`, then the core's
-   configuration/runtime defaults. `HC_TERMINAL_SOCKET` alone does not opt in.
+2. `HC_TERMINAL_ID` is set and nonblank **and** a Unix socket endpoint resolves.
 
-`HC_SESSION` or the default socket path alone are **not** sufficient: they
-name where a socket would be, not that this process was launched under a core.
-No `hc` process is started, no endpoint is probed to decide eligibility beyond
-that resolution, and no other session's socket is discovered. The socket is a
-trusted local boundary with no per-client authentication; wave-tui connects
-only to the one resolved endpoint.
+The endpoint is the first of these that applies:
+
+1. a nonblank `HC_SOCKET`;
+2. a nonblank `HC_TERMINAL_SOCKET` (the value `hc` injects into its terminals),
+   only together with a nonblank `HC_TERMINAL_ID`;
+3. the `socket` key of the core configuration file
+   (`$XDG_CONFIG_HOME/herdr-core/config.toml`, or
+   `~/.config/herdr-core/config.toml`); a missing, unreadable, or malformed file
+   is ignored;
+4. the session default socket: session `HC_SESSION` (trimmed, `default` when
+   blank), `<session>.sock` under `$XDG_RUNTIME_DIR/herdr-core`, else
+   `/run/user/<uid>/herdr-core` when that directory exists, else
+   `$XDG_STATE_HOME/herdr-core/<session>` (default `~/.local/state`).
+
+Steps 3 and 4 apply only with a nonblank `HC_TERMINAL_ID`. `HC_TERMINAL_SOCKET`
+alone, `HC_SESSION`, or the default socket path alone are **not** sufficient:
+they name where a socket would be, not that this process was launched under a
+core, so an ambient default never activates the host. No `hc` process or daemon
+is started, no other session's socket is scanned or discovered, and no endpoint
+is probed to decide eligibility; resolution only reads the environment and the
+optional configuration file. The socket is a trusted local boundary with no
+per-client authentication; wave-tui connects only to the one resolved endpoint.
 
 #### Monitoring and membership
 
 - The adapter polls `terminal.list {}` only — no `all`, `labels`, or
-  `events.subscribe` initially. An event subscription may be revisited by a
+  `events.subscribe`, and never `terminal.focus`, rename, attach, input, or
+  output methods. An event subscription is not built and may be revisited by a
   later design update.
+- **Scope.** Every terminal the one resolved endpoint returns is considered,
+  including terminals of connected remote machines; there is no workspace or
+  session filter. Addresses are opaque and never rendered.
 - **Admission.** A terminal is admitted only when `state` is `live` and
   `status.app` is nonblank. A terminal `name`, `title`, `reported`, or mere
   presence never qualifies it, and no agent brand is inferred from any text.
@@ -993,6 +1007,9 @@ unsupported-version feedback.
   membership change. Stop or drop during an active attempt waits at most the
   remaining deadline; while idle it returns immediately. Timeouts are reported
   as an ordinary failed poll with no peer text.
+- This deadline model is specific to herdr-core. The Herdr adapter keeps its
+  original timing: a 3-second timeout applied to each socket read and write, not
+  a total attempt deadline.
 - The 15-second unavailable threshold is owned by the app, as today, and
   applies to whichever host is active.
 - **Caveat.** `terminal.list` also enumerates connected remote machines and
@@ -1081,9 +1098,21 @@ live in `herdr_core`. Final full-suite counts for the combined MIK-076 lanes are
 recorded by the issue's reports from the run that produced them; none are
 asserted here.
 
-Still pending: the final cross-host verification issue (MIK-077) and the manual
-checks below. No live `hc` runtime, real agent, or new manual visual check has
-been performed; default tests require no live `hc` process.
+MIK-077 is the final cross-host verification and documentation issue. Its
+automated work adds cross-host lifecycle, selection, and UI regression tests on
+top of the coverage above (core fake Unix sockets, qualification and
+eligibility, host selection, capabilities, timeout and framing behavior, and
+rename safety); the issue's reports record the evidence from the runs that
+produced it, and no final test totals are asserted here. The most recent full
+parent run before that final test work passed the library and integration
+suites, formatting, `cargo check`, all-target Clippy, the `--help` smoke test,
+and a Markdown link check.
+
+Not performed: any live `hc` or Herdr runtime check, physical audio check,
+real-terminal resize check, or visual inspection of either host; the manual
+checklist below is unchecked accordingly. The Linux-only saturated accept-backlog
+test in `herdr_core` has not been executed on the macOS development host.
+Default tests need no live `hc` process, daemon, audio device, or network.
 
 ### Implementation Principles
 
@@ -1421,7 +1450,7 @@ the release as fully validated:
       inert `a`, and unchanged terminal mouse behavior.
 - [ ] Launch via the plugin with `--no-agent-pulse` and confirm the
       integration stays fully disabled for that run.
-- [ ] herdr-core (not yet performed): from a terminal started under a real
+- [ ] herdr-core (not performed): from a terminal started under a real
       `hc` runtime, or with `HC_SOCKET=/actual/socket`, run
       `wave-tui --agent-host herdr-core --no-auto-play` and confirm the stage
       shows only live terminals whose program declared a nonblank

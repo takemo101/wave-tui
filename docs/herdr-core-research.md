@@ -1,9 +1,9 @@
 # herdr-core source evidence
 
-Evidence note for the approved herdr-core Agent Planets host. It records what
+Evidence note for the herdr-core Agent Planets host. It records what
 the official herdr-core sources say; it is **not** the behavior contract.
-The target behavior is specified in
-[`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented),
+The behavior is specified in
+[`SPEC.md`](SPEC.md#herdr-core-agent-host),
 and the adapter and host selection built on these facts are described there.
 Where a statement below is a schema or source fact it says so; adapter
 behavior wave-tui builds on those facts lives in `SPEC.md`.

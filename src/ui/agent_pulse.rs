@@ -79,6 +79,8 @@ mod surface;
 
 #[cfg(test)]
 mod capabilities_tests;
+#[cfg(test)]
+mod host_regression_tests;
 
 use ratatui::{
     buffer::Buffer,

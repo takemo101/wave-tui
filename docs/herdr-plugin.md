@@ -196,8 +196,13 @@ HC_SOCKET=/actual/socket wave-tui --agent-host herdr-core --no-auto-play
 
 or run `wave-tui --agent-host herdr-core` inside a terminal that `hc` started,
 where `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` are already set. herdr-core is
-observation only — no focus or rename — and `wave-tui` never starts `hc`.
-Eligibility, endpoint priority, admission rules, and timing are in the
+observation only — no focus or rename — and `wave-tui` never starts `hc`. Each
+poll shows only live terminals whose program currently declares an
+application, so a planet disappears when that declaration is cleared even
+though the pane stays open. A running `wave-tui` keeps the behavior it was
+built with; rebuild and reopen it as described in
+[Update or reinstall](#update-or-reinstall).
+Eligibility, endpoint priority, membership rules, and timing are in the
 [README](../README.md#using-herdr-core-instead-of-herdr) and
 [`SPEC.md`](SPEC.md#herdr-core-agent-host), with source evidence in
 [`herdr-core-research.md`](herdr-core-research.md). No check against a live

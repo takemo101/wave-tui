@@ -291,7 +291,19 @@ Implications:
   the table when no inline input is open, and `a` closes the table and the
   stage. Pane ids,
   workspace ids, working directories, terminal/session ids, and raw status
-  never render.- **Player-first input.** The stage consumes search and station
+  never render.
+- **Table navigation follows the shared selection.** The table has no
+  selection of its own: its highlighted row is always the stage's planet
+  selection. While it is open, `Tab`/`↓`/`j` and `Shift+Tab`/`↑`/`k` keep
+  cycling that selection with the same wrapping order as on the stage, the
+  table stays open, and it immediately shows the newly selected agent using
+  only its existing `Name | Agent | Status | Activity` fields — no new
+  metadata is exposed and the table remains otherwise read-only. Mouse
+  selection stays blocked while the table is open, every other non-quit
+  key is table-local and consumed, and the inline rename input consumes the
+  navigation keys instead (they never move selection mid-edit). Stale and
+  unavailable states leave the selection inert, as on the stage.
+- **Player-first input.** The stage consumes search and station
   navigation/selection keys, but the documented global player shortcuts —
   `Space`, `+`/`-`, `f`, `t`, and `v` — fall through with their exact
   normal semantics while the table is closed (an open table consumes them).

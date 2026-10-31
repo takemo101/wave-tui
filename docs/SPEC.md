@@ -768,8 +768,15 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   socket, or no selection yields a short modal-local notification without
   retrying, creating a pane, sending input, or exposing identifiers.
   `Enter`/`Esc` close only the table when no inline input is open, `a` closes
-  the table and the stage, and while it is
-  open selection, player, theme, favorite, visualizer, search, and Signal  View input is consumed (`q`/`Ctrl+C` still quit). Normal-layout
+  the table and the stage. While the table is open and no inline input is
+  active, `Tab`/`↓`/`j` and `Shift+Tab`/`↑`/`k` keep cycling the shared planet
+  selection with the same wrapping order as the stage: the table stays open
+  and its highlighted row (the only selection there is) follows, showing only
+  the already-permitted fields. Mouse selection stays blocked, the inline
+  rename input consumes these keys instead, and stale/unavailable selection
+  stays inert. Otherwise, while the table is open, selection, player, theme,
+  favorite, visualizer, search, and Signal View input is consumed
+  (`q`/`Ctrl+C` still quit). Normal-layout
   navigation keys keep their non-wrapping behavior outside the stage.
   Search (`/`) and
   station navigation/selection (`g`/`G`/`Home`/`End`/`Enter`) are consumed,
@@ -1111,6 +1118,9 @@ the release as fully validated:
       corner brackets with no painted selection background, and `Enter`
       opens the all-active `Name | Agent | Status | Activity` Agent table
       with its shared selected row — no pane, workspace, cwd, or session data.
+      With the table open, confirm `Tab`/`↓`/`j` and `Shift+Tab`/`↑`/`k` cycle
+      (and wrap) the highlighted row without closing the table, while mouse
+      clicks and player/theme/search keys change nothing.
 - [ ] Resize the tab through Wide/Medium/Compact; confirm the eligible
       Wide/Medium footer shows the `a Agent Planets` hint, the summary and
       hint hide in Compact while `a` still opens the full-screen stage, and

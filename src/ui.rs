@@ -2481,7 +2481,7 @@ mod tests {
 
     // --- Agent Pulse: quiet count + full-screen Kinetic Collage -----------
 
-    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
+    use crate::model::agent::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
     use std::time::Duration;
 
     fn pulse_agent(
@@ -2491,7 +2491,7 @@ mod tests {
         status: AgentStatus,
     ) -> AgentSnapshot {
         AgentSnapshot {
-            id: AgentId::new(workspace, pane),
+            id: AgentId::herdr(workspace, pane),
             details: AgentDetails {
                 name: name.map(str::to_string),
                 agent: None,
@@ -2845,7 +2845,7 @@ mod tests {
         );
 
         app.apply(Action::AgentPollFailed {
-            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+            now: Instant::now() + crate::app::STALE_AFTER + Duration::from_secs(60),
         });
         let unavailable = buffer_text(&render_buffer(&app, 120, 36));
         assert!(

@@ -14,7 +14,7 @@
 use ratatui::{layout::Rect, text::Line};
 
 use super::geometry::{disc_geometry, rect_contains, CollageTile, DiscGeometry, DiscMask};
-use crate::herdr::AgentStatus;
+use crate::model::agent::AgentStatus;
 use crate::model::{PhaseTrace, VizFrame};
 
 /// Glyph filling a planet's round body.

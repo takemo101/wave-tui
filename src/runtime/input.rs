@@ -26,7 +26,8 @@ use ratatui::layout::Rect;
 use crate::app::{Action, AgentPulseConnection, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioHandle};
 use crate::cli::map_key;
-use crate::herdr::{self, HerdrMonitor, MonitorEvent};
+use crate::herdr::HerdrMonitor;
+use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
 use crate::model::PlaybackState;
 
 use super::debounce::{QueryChange, SearchDebounce};
@@ -241,17 +242,17 @@ fn focus_selected_agent(app: &mut App, monitor: Option<&HerdrMonitor>) {
     match app.agent_focus_target() {
         Some(id) => match monitor {
             Some(monitor) => monitor.focus_agent(id),
-            None => apply_agent_focus_result(app, herdr::FocusResult::Unavailable, Instant::now()),
+            None => apply_agent_focus_result(app, FocusResult::Unavailable, Instant::now()),
         },
         None if app.agent_pulse_connection() == AgentPulseConnection::Connected => {
-            apply_agent_focus_result(app, herdr::FocusResult::NoSelection, Instant::now());
+            apply_agent_focus_result(app, FocusResult::NoSelection, Instant::now());
         }
-        None => apply_agent_focus_result(app, herdr::FocusResult::Unavailable, Instant::now()),
+        None => apply_agent_focus_result(app, FocusResult::Unavailable, Instant::now()),
     }
 }
 
 /// Apply the typed result from a background explicit pane-focus request.
-pub(super) fn apply_agent_focus_result(app: &mut App, result: herdr::FocusResult, now: Instant) {
+pub(super) fn apply_agent_focus_result(app: &mut App, result: FocusResult, now: Instant) {
     app.apply(Action::AgentFocusResult { result, now });
 }
 
@@ -265,12 +266,12 @@ fn submit_agent_rename(app: &mut App, monitor: Option<&HerdrMonitor>) {
     app.apply(Action::SubmitAgentRename);
     match monitor {
         Some(monitor) => monitor.rename_agent(id, name),
-        None => apply_agent_rename_result(app, herdr::RenameResult::Unavailable, Instant::now()),
+        None => apply_agent_rename_result(app, RenameResult::Unavailable, Instant::now()),
     }
 }
 
 /// Fold a typed async `agent.rename` result into reducer-owned table state.
-pub(super) fn apply_agent_rename_result(app: &mut App, result: herdr::RenameResult, now: Instant) {
+pub(super) fn apply_agent_rename_result(app: &mut App, result: RenameResult, now: Instant) {
     app.apply(Action::AgentRenameResult { result, now });
 }
 
@@ -340,7 +341,8 @@ mod tests {
     use crate::app::ListSource;
     use crate::audio::AudioEvent;
     use crate::catalog::{Catalog, Category, Section};
-    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
+    use crate::herdr;
+    use crate::model::agent::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
     use crate::model::{PlaybackRequestId, VolumePercent};
     use crate::search::SearchResults;
     use crate::settings::Settings;
@@ -1133,7 +1135,7 @@ mod tests {
 
     fn pulse_agent(pane: &str) -> AgentSnapshot {
         AgentSnapshot {
-            id: AgentId::new("ws", pane),
+            id: AgentId::herdr("ws", pane),
             // Distinct names keep the reducer's name sort stable.
             details: AgentDetails {
                 name: Some(pane.to_string()),
@@ -1218,7 +1220,7 @@ mod tests {
             .focus_events()
             .recv_timeout(Duration::from_secs(1))
             .expect("typed focus result returns to the event loop");
-        assert_eq!(result, herdr::FocusResult::Missing);
+        assert_eq!(result, FocusResult::Missing);
         apply_agent_focus_result(&mut app, result, Instant::now());
         assert_eq!(
             app.agent_focus_notice(Instant::now()),

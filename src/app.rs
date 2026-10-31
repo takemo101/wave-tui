@@ -20,7 +20,7 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::herdr::{AgentId, AgentSnapshot, FocusResult, RenameResult};
+use crate::model::agent::{AgentId, AgentSnapshot, FocusResult, RenameResult};
 use crate::model::{
     PlaybackRequestId, PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent,
 };
@@ -33,6 +33,8 @@ use std::time::Instant;
 
 use agent_pulse::AgentPulse;
 
+#[cfg(test)]
+pub(crate) use agent_pulse::STALE_AFTER;
 pub(crate) use agent_pulse::{AgentPulseConnection, AgentView};
 
 /// Step applied to the volume for a single `VolumeUp`/`VolumeDown` action.
@@ -1176,7 +1178,7 @@ impl App {
     /// Kept test-only because production presentation reads the complete live
     /// display-order table rather than a single selected record.
     #[cfg(test)]
-    pub(crate) fn selected_agent_details(&self) -> Option<&crate::herdr::AgentDetails> {
+    pub(crate) fn selected_agent_details(&self) -> Option<&crate::model::agent::AgentDetails> {
         self.agent_pulse.selected_details()
     }
 
@@ -1236,8 +1238,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr::{
-        self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
+    use crate::model::agent::{
+        AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
     };
     use crate::model::{
         BitrateKbps, CodecKind, PhaseTrace, PlaybackRequestSeq, StationId, StationName,
@@ -2703,7 +2705,7 @@ mod tests {
         status: AgentStatus,
     ) -> AgentSnapshot {
         AgentSnapshot {
-            id: AgentId::new(workspace, pane),
+            id: AgentId::herdr(workspace, pane),
             details: AgentDetails {
                 name: name.map(str::to_string),
                 agent: None,
@@ -2714,7 +2716,7 @@ mod tests {
     }
 
     fn agent_id(workspace: &str, pane: &str) -> AgentId {
-        AgentId::new(workspace, pane)
+        AgentId::herdr(workspace, pane)
     }
 
     fn agent_snapshot(agents: Vec<AgentSnapshot>, now: Instant) -> Action {
@@ -2819,7 +2821,7 @@ mod tests {
         });
         assert!(app.stale_viz().is_some());
         app.apply(Action::AgentPollFailed {
-            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+            now: Instant::now() + STALE_AFTER + Duration::from_secs(60),
         });
         assert_eq!(
             app.agent_pulse_connection(),
@@ -2921,6 +2923,11 @@ mod tests {
     }
 
     #[test]
+    fn stale_after_matches_the_design_contract() {
+        assert_eq!(STALE_AFTER, Duration::from_secs(15));
+    }
+
+    #[test]
     fn agent_pulse_defaults_to_hidden_and_empty() {
         // Standalone launches must keep the exact pre-integration appearance:
         // no connection, no agents, no overlay, no selection.
@@ -2969,7 +2976,7 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(
             vec![AgentSnapshot {
-                id: AgentId::new("workspace-private", "pane-private"),
+                id: AgentId::herdr("workspace-private", "pane-private"),
                 details: AgentDetails {
                     name: Some("research".to_string()),
                     agent: Some("pi".to_string()),
@@ -2984,7 +2991,7 @@ mod tests {
         assert_eq!(view.details.name.as_deref(), Some("research"));
         assert_eq!(view.details.agent.as_deref(), Some("pi"));
         assert_eq!(view.details.activity.as_deref(), Some("Review the modal"));
-        assert_ne!(view.id, AgentId::new("different", "identity"));
+        assert_ne!(view.id, AgentId::herdr("different", "identity"));
     }
 
     #[test]
@@ -3587,7 +3594,7 @@ mod tests {
         app.apply(Action::SelectNextAgent);
         app.apply(Action::OpenAgentDetails);
         app.apply(Action::AgentPollFailed {
-            now: Instant::now() + herdr::STALE_AFTER,
+            now: Instant::now() + STALE_AFTER,
         });
         assert_eq!(
             app.agent_pulse_connection(),
@@ -3668,7 +3675,7 @@ mod tests {
         app.apply(Action::OpenAgentDetails);
         app.apply(Action::OpenAgentRename);
         app.apply(Action::AgentPollFailed {
-            now: now + herdr::STALE_AFTER + Duration::from_secs(1),
+            now: now + STALE_AFTER + Duration::from_secs(1),
         });
 
         assert!(!app.is_agent_details_open());

@@ -18,7 +18,7 @@ use ratatui::{
 use std::time::Instant;
 
 use crate::app::App;
-use crate::herdr::AgentStatus;
+use crate::model::agent::AgentStatus;
 use crate::theme::Theme;
 
 // --- status presentation helpers -------------------------------------------

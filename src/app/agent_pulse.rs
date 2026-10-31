@@ -18,8 +18,8 @@
 //! from the controller, and the private [`AgentId`] never leaves this module
 //! except back to the Herdr adapter through the controller.
 
-use crate::herdr::{
-    self, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
+use crate::model::agent::{
+    AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
 };
 use crate::model::VizFrame;
 
@@ -27,6 +27,10 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use super::DisplayMode;
+
+/// How long without a successful snapshot before the connection becomes
+/// `Unavailable`. This is app lifecycle policy, independent of any host.
+pub(crate) const STALE_AFTER: Duration = Duration::from_secs(15);
 
 /// How long a recoverable pane-focus result remains visible in the stage.
 const AGENT_FOCUS_NOTICE_FOR: Duration = Duration::from_secs(4);
@@ -37,7 +41,7 @@ const AGENT_FOCUS_NOTICE_FOR: Duration = Duration::from_secs(4);
 /// and every Agent Pulse action is a no-op, so pre-integration behavior is
 /// exactly unchanged. The other states follow the design's recovery ladder:
 /// `Connected` after a successful snapshot, `Stale` after the first failed
-/// poll, and `Unavailable` once [`herdr::STALE_AFTER`] passes without a
+/// poll, and `Unavailable` once [`STALE_AFTER`] passes without a
 /// success. A fresh snapshot always recovers to `Connected`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentPulseConnection {
@@ -243,7 +247,7 @@ impl AgentPulse {
     }
 
     /// Record a failed poll: the first failure of a streak dims state to
-    /// `Stale`, and [`herdr::STALE_AFTER`] without a success makes the
+    /// `Stale`, and [`STALE_AFTER`] without a success makes the
     /// integration `Unavailable`. Last-known agents are retained so the UI
     /// can dim them while stale.
     ///
@@ -282,7 +286,7 @@ impl AgentPulse {
         }
     }
 
-    /// Downgrade to `Unavailable` once [`herdr::STALE_AFTER`] has passed
+    /// Downgrade to `Unavailable` once [`STALE_AFTER`] has passed
     /// without a successful snapshot. Called on a timer by the controller so
     /// the threshold applies even when no further monitor event arrives; it
     /// never upgrades state and never reveals a hidden integration.
@@ -297,12 +301,12 @@ impl AgentPulse {
     }
 
     /// Whether the reference point (the last success, or else the start of
-    /// the current failure streak) is at least [`herdr::STALE_AFTER`] old.
+    /// the current failure streak) is at least [`STALE_AFTER`] old.
     fn response_overdue(&self, now: Instant) -> bool {
         let Some(reference) = self.last_success.or(self.first_failure) else {
             return false;
         };
-        now.duration_since(reference) >= herdr::STALE_AFTER
+        now.duration_since(reference) >= STALE_AFTER
     }
 
     /// Drop the frozen display and the modals that may no longer describe

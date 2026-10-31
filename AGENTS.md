@@ -101,9 +101,11 @@ Expected responsibility boundaries:
 - `herdr`: Herdr plugin environment eligibility, Unix socket protocol, the
   `agent.list` monitor thread, and explicit `agent.focus` / `agent.rename`
   requests; the only module that sees Herdr JSON or opaque pane ids.
-  (Approved target, not yet implemented: shared `model::agent` types, a
-  sibling `herdr_core` adapter, and an `agent_host` facade — see
-  `docs/implementation-guidelines.md`.)
+  The shared agent vocabulary (`AgentId`, `AgentStatus`, `AgentDetails`,
+  `AgentSnapshot`, `MonitorEvent`, `FocusResult`, `RenameResult`) lives in
+  `model::agent`; `app`/`ui` import it there, not from `herdr`.
+  (Approved target, not yet implemented: a sibling `herdr_core` adapter and an
+  `agent_host` facade — see `docs/implementation-guidelines.md`.)
 - `theme`: theme names and palette definitions.
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.

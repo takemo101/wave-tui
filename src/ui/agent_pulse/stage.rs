@@ -29,7 +29,7 @@ use super::surface::{
     surface_cells, PlanetGeometry, PlanetSurface, CRATER_GLYPH, PLANET_BODY_GLYPH,
 };
 use crate::app::{AgentPulseConnection, AgentView, App};
-use crate::herdr::AgentStatus;
+use crate::model::agent::AgentStatus;
 use crate::model::VizFrame;
 use crate::theme::Theme;
 

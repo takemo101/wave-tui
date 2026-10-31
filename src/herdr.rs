@@ -4,6 +4,10 @@
 //! variables, the Unix socket transport, JSON-RPC framing, and raw
 //! `agent.list` payloads. Everything it exposes is typed.
 
+use crate::model::agent::{AgentDetails, MonitorEvent};
+// Compatibility: these were public items of this module before the shared
+// vocabulary moved to `model::agent`.
+pub use crate::model::agent::{AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -14,95 +18,12 @@ use std::thread;
 use std::time::Duration;
 
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(5);
-pub(crate) const STALE_AFTER: Duration = Duration::from_secs(15);
 
 const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HerdrContext {
     pub socket_path: PathBuf,
-}
-
-// `AgentStatus`, `AgentSnapshot`, and `AgentId` are `pub` (not `pub(crate)`)
-// because they appear in the public `app::Action` enum, like
-// `audio::AudioEvent`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentStatus {
-    Working,
-    Blocked,
-    Done,
-    Idle,
-    Unknown,
-}
-
-/// Stable agent identity across every workspace served by the current
-/// control socket: the workspace-qualified pane.
-///
-/// The parts stay private so no caller can display or leak the raw pane or
-/// workspace ids; identity is only compared, ordered, and hashed.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct AgentId {
-    workspace_id: String,
-    pane_id: String,
-}
-
-impl AgentId {
-    pub(crate) fn new(workspace_id: impl Into<String>, pane_id: impl Into<String>) -> Self {
-        Self {
-            workspace_id: workspace_id.into(),
-            pane_id: pane_id.into(),
-        }
-    }
-
-    /// Private transport-only pane target. The opaque value never leaves this
-    /// adapter as text; it is used only in an explicit `agent.focus` request.
-    fn pane_target(&self) -> &str {
-        &self.pane_id
-    }
-}
-
-/// Recoverable outcome of an explicit request to focus the selected live pane.
-/// No outcome contains raw Herdr identifiers or server messages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusResult {
-    Focused,
-    Unsupported,
-    Missing,
-    Unavailable,
-    NoSelection,
-}
-
-/// Recoverable outcome of an explicit request to rename the selected live
-/// agent. Raw Herdr errors and identifiers remain inside this adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenameResult {
-    Renamed,
-    Unsupported,
-    Missing,
-    Unavailable,
-}
-
-/// The only agent-list fields that may reach the read-only details modal.
-/// Identity/location/session fields stay behind the private [`AgentId`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct AgentDetails {
-    pub(crate) name: Option<String>,
-    pub(crate) agent: Option<String>,
-    pub(crate) activity: Option<String>,
-}
-
-/// One normalized agent from the current control socket.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentSnapshot {
-    pub(crate) id: AgentId,
-    pub(crate) details: AgentDetails,
-    pub status: AgentStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum MonitorEvent {
-    Snapshot(Vec<AgentSnapshot>),
-    Failed,
 }
 
 /// Reads plugin eligibility from the process environment. Returns `None`
@@ -181,7 +102,7 @@ fn parse_agent_list(line: &str) -> Option<Vec<AgentSnapshot>> {
             .into_iter()
             .filter_map(|value| serde_json::from_value::<RawAgent>(value).ok())
             .map(|raw| AgentSnapshot {
-                id: AgentId::new(raw.workspace_id, raw.pane_id),
+                id: AgentId::herdr(raw.workspace_id, raw.pane_id),
                 details: AgentDetails {
                     name: nonblank(raw.name),
                     agent: nonblank(raw.agent),
@@ -220,7 +141,7 @@ fn agent_focus_request(request_id: u64, id: &AgentId) -> String {
         "jsonrpc": "2.0",
         "id": request_id.to_string(),
         "method": "agent.focus",
-        "params": { "target": id.pane_target() },
+        "params": { "target": id.herdr_pane_target() },
     });
     format!("{request}\n")
 }
@@ -232,7 +153,7 @@ fn agent_rename_request(request_id: u64, id: &AgentId, name: Option<&str>) -> St
         "jsonrpc": "2.0",
         "id": request_id.to_string(),
         "method": "agent.rename",
-        "params": { "target": id.pane_target(), "name": name },
+        "params": { "target": id.herdr_pane_target(), "name": name },
     });
     format!("{request}\n")
 }
@@ -310,6 +231,9 @@ fn poll_once(context: &HerdrContext, request_id: u64) -> MonitorEvent {
 }
 
 fn request_agent_focus(context: &HerdrContext, id: &AgentId) -> FocusResult {
+    if id.herdr_pane_target().is_none() {
+        return FocusResult::Missing;
+    }
     let Ok(mut stream) = UnixStream::connect(&context.socket_path) else {
         return FocusResult::Unavailable;
     };
@@ -330,6 +254,9 @@ fn request_agent_focus(context: &HerdrContext, id: &AgentId) -> FocusResult {
 }
 
 fn request_agent_rename(context: &HerdrContext, id: &AgentId, name: Option<&str>) -> RenameResult {
+    if id.herdr_pane_target().is_none() {
+        return RenameResult::Missing;
+    }
     let Ok(mut stream) = UnixStream::connect(&context.socket_path) else {
         return RenameResult::Unavailable;
     };
@@ -544,7 +471,6 @@ mod tests {
     #[test]
     fn polling_constants_match_the_design_contract() {
         assert_eq!(POLL_INTERVAL, Duration::from_secs(5));
-        assert_eq!(STALE_AFTER, Duration::from_secs(15));
     }
 
     #[test]
@@ -644,7 +570,7 @@ mod tests {
             agents,
             vec![
                 AgentSnapshot {
-                    id: AgentId::new("ws-1", "p1"),
+                    id: AgentId::herdr("ws-1", "p1"),
                     details: AgentDetails {
                         name: Some("impl".to_string()),
                         agent: Some("claude".to_string()),
@@ -653,12 +579,12 @@ mod tests {
                     status: AgentStatus::Working,
                 },
                 AgentSnapshot {
-                    id: AgentId::new("ws-2", "p2"),
+                    id: AgentId::herdr("ws-2", "p2"),
                     details: AgentDetails::default(),
                     status: AgentStatus::Idle,
                 },
                 AgentSnapshot {
-                    id: AgentId::new("ws-1", "p3"),
+                    id: AgentId::herdr("ws-1", "p3"),
                     details: AgentDetails::default(),
                     status: AgentStatus::Blocked,
                 },
@@ -762,7 +688,7 @@ mod tests {
         );
         let agents = parse_agent_list(line).expect("valid payload");
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].id, AgentId::new("ws-1", "p3"));
+        assert_eq!(agents[0].id, AgentId::herdr("ws-1", "p3"));
     }
 
     #[test]
@@ -798,7 +724,7 @@ mod tests {
 
     #[test]
     fn focus_request_targets_only_the_opaque_pane_id() {
-        let request = agent_focus_request(9, &AgentId::new("other-workspace", "pane-7"));
+        let request = agent_focus_request(9, &AgentId::herdr("other-workspace", "pane-7"));
         let body = request.trim_end();
         let value: serde_json::Value = serde_json::from_str(body).expect("request must be JSON");
         assert_eq!(value["method"], "agent.focus");
@@ -808,7 +734,7 @@ mod tests {
 
     #[test]
     fn rename_request_targets_only_the_opaque_pane_and_clears_blank_names_with_null() {
-        let id = AgentId::new("workspace-private", "pane-7");
+        let id = AgentId::herdr("workspace-private", "pane-7");
         let named: serde_json::Value =
             serde_json::from_str(agent_rename_request(9, &id, Some("Research")).trim_end())
                 .expect("rename request must be JSON");
@@ -902,7 +828,7 @@ mod tests {
     fn repeated_focus_input_keeps_at_most_one_request_in_flight() {
         let (mut dispatcher, results) = test_dispatcher();
         let blocked = BlockedTransport::install(&mut dispatcher, FocusResult::Focused);
-        let id = AgentId::new("ws-1", "pane-1");
+        let id = AgentId::herdr("ws-1", "pane-1");
 
         for _ in 0..8 {
             dispatcher.dispatch(id.clone());
@@ -937,7 +863,7 @@ mod tests {
     fn focus_is_dispatchable_again_after_the_previous_request_completes() {
         let (mut dispatcher, results) = test_dispatcher();
         let blocked = BlockedTransport::install(&mut dispatcher, FocusResult::Focused);
-        let id = AgentId::new("ws-1", "pane-1");
+        let id = AgentId::herdr("ws-1", "pane-1");
 
         dispatcher.dispatch(id.clone());
         blocked.await_entry();
@@ -975,7 +901,7 @@ mod tests {
         ] {
             let (mut dispatcher, results) = test_dispatcher();
             let blocked = BlockedTransport::install(&mut dispatcher, result);
-            dispatcher.dispatch(AgentId::new("ws-1", "pane-1"));
+            dispatcher.dispatch(AgentId::herdr("ws-1", "pane-1"));
             blocked.await_entry();
             blocked.release();
             assert_eq!(results.recv_timeout(Duration::from_secs(2)), Ok(result));
@@ -988,7 +914,7 @@ mod tests {
         dispatcher.transport = Arc::new(|_context: &HerdrContext, _id: &AgentId| {
             panic!("focus transport panicked");
         });
-        let id = AgentId::new("ws-1", "pane-1");
+        let id = AgentId::herdr("ws-1", "pane-1");
 
         dispatcher.dispatch(id.clone());
         // Wait for the slot to be released rather than for the thread itself;

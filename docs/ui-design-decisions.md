@@ -318,6 +318,33 @@ Implications:
   selection cannot change (`a`/`Esc` still close the stage) — selection
   input should not act on possibly outdated data.
 
+#### Dual-host presentation (approved target, not yet implemented)
+
+> **APPROVED TARGET — NOT YET IMPLEMENTED.** Today only the Herdr host exists
+> and every decision above describes it. The herdr-core host's behavior and
+> data mapping are specified in
+> [`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented);
+> only its presentation consequences are recorded here.
+
+- **One stage, two sources.** The Agent Planets stage, Dual Phase Scope,
+  planets, interior status, brackets, quiet count, stale/unavailable ladder,
+  low-power freezing, and selection are identical whichever host supplies the
+  agents. No host name, badge, color, or explanatory copy is added: the
+  presentation never tells the user which runtime is behind it.
+- **Controls follow capability.** Herdr keeps `o`/`O` focus and `r`/`R` rename.
+  For herdr-core those controls do not exist: the Agent table footer omits
+  `O open pane`, the stage footer omits any focus or rename hint, the keys do
+  nothing, no rename editor opens, and no "unsupported" notice appears. The
+  table stays read-only, with the same `Name | Agent | Status | Activity`
+  columns, widths, and privacy exclusions.
+- **Unknown is a calm first-class state.** Core terminals whose status is
+  cleared, null, `error`, or unrecognized render as the existing Unknown
+  treatment (muted, nearly still); no new "error" visual is introduced.
+- **Quiet degradation.** Fields core cannot supply render as the existing
+  empty/label-free states: an unnamed planet stays label-free, an empty `Name`
+  or `Activity` cell stays blank, and no workspace or location data is
+  invented to fill a gap.
+
 ### Theme Set: High Contrast Trio
 
 Initial themes:

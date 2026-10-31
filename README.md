@@ -447,7 +447,8 @@ explicit-name rename actions:
 - It never creates, restarts, closes, sends pane input to, or otherwise controls
   Herdr panes beyond those explicit requests. Unsupported Herdr (update to
   0.7.0+), missing/moved panes, and unavailable sockets show temporary local
-  feedback without interrupting playback.- It shows every agent reported by the plugin invocation's local Herdr
+  feedback without interrupting playback.
+- It shows every agent reported by the plugin invocation's local Herdr
   socket, across that session's workspaces; it never discovers other Herdr
   sessions or opens another socket.
 - The Agent table renders only explicit Herdr `name`, Herdr `agent`, normalized
@@ -460,6 +461,14 @@ explicit-name rename actions:
 
 Disable the integration for one launch with `--no-agent-pulse` (never written
 to settings).
+
+### Roadmap: herdr-core host (not yet implemented)
+
+An optional second source of agents, [herdr-core](https://github.com/herdrdev/herdr-core)
+terminals, is an approved design but is **not implemented and not available**:
+the flags, behavior, and requirements on this page are unchanged, and
+`--agent-host` does not exist yet. The design is in
+[`docs/SPEC.md`](docs/SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented).
 
 ## Command-line options
 
@@ -574,6 +583,8 @@ for findings and caveats.
 - [`herdr-plugin.toml`](herdr-plugin.toml) — official Herdr plugin manifest
 - [`docs/herdr-plugin.md`](docs/herdr-plugin.md) — Herdr plugin manual
   (install, verify, open, local dev, update, uninstall, troubleshooting)
+- [`docs/herdr-core-research.md`](docs/herdr-core-research.md) — pinned source
+  evidence for the planned, not-yet-implemented herdr-core host
 
 The dated per-iteration superpowers design and plan documents were
 consolidated into the canonical docs above and removed; the originals are

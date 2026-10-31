@@ -279,7 +279,7 @@ mod tests {
     use crate::app::Action;
     use crate::audio::AudioEvent;
     use crate::catalog::Catalog;
-    use crate::herdr::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
+    use crate::model::agent::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
     use crate::model::{PhaseTrace, VizFrame};
     use crate::settings::Settings;
     use crate::theme::ThemeName;
@@ -318,7 +318,7 @@ mod tests {
 
     fn view(workspace: &str, pane: &str, status: AgentStatus) -> AgentView {
         AgentView {
-            id: AgentId::new(workspace, pane),
+            id: AgentId::herdr(workspace, pane),
             details: AgentDetails::default(),
             name: None,
             status,
@@ -375,7 +375,7 @@ mod tests {
 
     fn snap(workspace: &str, pane: &str, name: Option<&str>, status: AgentStatus) -> AgentSnapshot {
         AgentSnapshot {
-            id: AgentId::new(workspace, pane),
+            id: AgentId::herdr(workspace, pane),
             details: AgentDetails {
                 name: name.map(str::to_string),
                 agent: None,
@@ -2122,7 +2122,7 @@ mod tests {
             now: t0 + Duration::from_secs(5),
         });
         assert_eq!(
-            app.low_power_orbit_secs(&AgentId::new("ws", "p2")),
+            app.low_power_orbit_secs(&AgentId::herdr("ws", "p2")),
             Some(0.0),
             "an agent unknown to the capture reads zero orbit seconds"
         );
@@ -2445,7 +2445,7 @@ mod tests {
             AgentStatus::Working,
         )]);
         app.apply(Action::AgentPollFailed {
-            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(1),
+            now: Instant::now() + crate::app::STALE_AFTER + Duration::from_secs(1),
         });
         let text = buffer_text(&render_collage_for(&app, false, Instant::now()));
         assert!(
@@ -2511,7 +2511,7 @@ mod tests {
         app.apply(Action::SelectNextAgent);
         push_frame(&mut app, phase_frame());
         app.apply(Action::AgentPollFailed {
-            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+            now: Instant::now() + crate::app::STALE_AFTER + Duration::from_secs(60),
         });
         let buf = render_collage_for(&app, false, Instant::now());
         assert_eq!(count_planet_cells(&buf), 0, "no agent planets render");
@@ -2897,7 +2897,7 @@ mod tests {
     #[test]
     fn stage_hides_agent_data_until_the_selected_planet_opens_the_table() {
         let mut app = collage_app(vec![AgentSnapshot {
-            id: AgentId::new("workspace-private", "pane-private"),
+            id: AgentId::herdr("workspace-private", "pane-private"),
             details: AgentDetails {
                 name: Some("research".to_string()),
                 agent: Some("pi".to_string()),
@@ -2953,7 +2953,7 @@ mod tests {
     fn agent_table_lists_all_agents_and_styles_the_shared_selection() {
         let mut app = collage_app(vec![
             AgentSnapshot {
-                id: AgentId::new("ws", "p1"),
+                id: AgentId::herdr("ws", "p1"),
                 details: AgentDetails {
                     name: Some("alpha".to_string()),
                     agent: Some("pi".to_string()),
@@ -2962,7 +2962,7 @@ mod tests {
                 status: AgentStatus::Working,
             },
             AgentSnapshot {
-                id: AgentId::new("ws", "p2"),
+                id: AgentId::herdr("ws", "p2"),
                 details: AgentDetails {
                     name: Some("beta".to_string()),
                     agent: Some("claude".to_string()),
@@ -3017,7 +3017,7 @@ mod tests {
     #[test]
     fn agent_table_modal_has_outer_borders_and_a_centered_full_width_footer() {
         let mut app = collage_app(vec![AgentSnapshot {
-            id: AgentId::new("ws", "p1"),
+            id: AgentId::herdr("ws", "p1"),
             details: AgentDetails {
                 name: Some("alpha".to_string()),
                 agent: Some("pi".to_string()),
@@ -3087,7 +3087,7 @@ mod tests {
     fn table_selection_follows_keyboard_navigation_across_planets() {
         let mut app = collage_app(vec![
             AgentSnapshot {
-                id: AgentId::new("ws", "p1"),
+                id: AgentId::herdr("ws", "p1"),
                 details: AgentDetails {
                     name: Some("alpha".to_string()),
                     agent: Some("pi".to_string()),
@@ -3096,7 +3096,7 @@ mod tests {
                 status: AgentStatus::Working,
             },
             AgentSnapshot {
-                id: AgentId::new("ws", "p2"),
+                id: AgentId::herdr("ws", "p2"),
                 details: AgentDetails {
                     name: Some("beta".to_string()),
                     agent: Some("claude".to_string()),
@@ -3127,7 +3127,7 @@ mod tests {
         let activity =
             "012345678901234567890123456789012345678901234567890123456789012345678901234567890";
         let mut app = collage_app(vec![AgentSnapshot {
-            id: AgentId::new("workspace-private", "pane-private"),
+            id: AgentId::herdr("workspace-private", "pane-private"),
             details: AgentDetails {
                 name: None,
                 agent: Some("pi".to_string()),
@@ -3181,7 +3181,7 @@ mod tests {
 
         let snapshots = (0..12)
             .map(|index| AgentSnapshot {
-                id: AgentId::new("ws", format!("p{index:02}")),
+                id: AgentId::herdr("ws", format!("p{index:02}")),
                 details: AgentDetails {
                     name: Some(format!("row-{index:02}")),
                     agent: Some("pi".to_string()),
@@ -3226,7 +3226,7 @@ mod tests {
 
         let mut unavailable = collage_app(vec![snap("ws", "p1", None, AgentStatus::Working)]);
         unavailable.apply(Action::AgentPollFailed {
-            now: Instant::now() + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+            now: Instant::now() + crate::app::STALE_AFTER + Duration::from_secs(60),
         });
         assert!(summary_line(&unavailable, &theme).is_none());
     }
@@ -3496,7 +3496,7 @@ mod tests {
 
         let mut unavailable = characterization_statuses(now);
         unavailable.apply(Action::AgentPollFailed {
-            now: now + crate::herdr::STALE_AFTER + Duration::from_secs(60),
+            now: now + crate::app::STALE_AFTER + Duration::from_secs(60),
         });
         assert_eq!(
             buffer_digest(&render_collage_in(&unavailable, false, now, CANVAS)),

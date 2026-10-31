@@ -7,6 +7,8 @@
 //! Boundary parsing helpers live here (stream URLs, volume, search query,
 //! bitrate, sample rate). Theme names are owned by [`crate::theme`].
 
+pub mod agent;
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

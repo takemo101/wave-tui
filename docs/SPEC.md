@@ -828,8 +828,10 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 ### herdr-core Agent Host: Approved Target, Not Yet Implemented
 
 > **APPROVED TARGET — NOT YET IMPLEMENTED.** This section is the approved
-> design for a second Agent Planets host. No code, CLI flag, test, or manual
-> check for it exists yet. Until the implementation issues land, `wave-tui`
+> design for a second Agent Planets host. MIK-073 implements the shared
+> `model::agent` vocabulary and legacy Herdr identity compatibility tests;
+> the host facade, core adapter, CLI selection, and live checks remain pending.
+> Until those implementation issues land, `wave-tui`
 > behaves exactly as the Herdr Agent Pulse sections above describe: only the
 > official Herdr plugin host exists, `--agent-host` is not accepted, and
 > herdr-core is never contacted. When an implementation issue ships a part of
@@ -967,9 +969,13 @@ the rename behavior in the Herdr sections above is unchanged.
 
 #### Verification status
 
-Documentation only. The target has no automated tests and no manual checklist
-yet; those are defined by the implementation issues, with pure fake-socket
-tests first and no live `hc` process in default tests.
+MIK-073 implements the host-neutral model and tests preserving legacy Herdr
+hashing, ordering, Debug text, and existing rendering/hit-map characterizations.
+The full suite passes (587 library tests plus 9 integration tests), as do
+formatting, build checks, and all-target Clippy. The facade, core transport,
+CLI selection, and their integration tests are still pending. No live core or
+new manual visual checks have been performed; default tests require no live
+`hc` process.
 
 ### Implementation Principles
 

@@ -30,13 +30,27 @@ For `wave-tui`, the expected change boundaries are:
 | `ui` | rendering changes | domain mutation logic |
 | `cli` | flags, help text, or key meaning change | terminal/adapter lifecycle |
 | `runtime` | startup, teardown, or event-loop wiring changes | terminal, worker, and channel details |
+| `model::agent` | shared agent vocabulary changes | which host produced a value; raw host ids |
 | `herdr` | Herdr socket protocol or agent request behavior changes | Herdr JSON and opaque pane ids |
+
+`model::agent` (implemented) owns `AgentId`, `AgentStatus`, `AgentDetails`,
+`AgentSnapshot`, `MonitorEvent`, `FocusResult`, and `RenameResult`; `app`, `ui`,
+and `runtime` import them from there, and `herdr` translates its wire format
+into them (re-exporting the public ones for source compatibility). `AgentId`
+is opaque with a private Herdr(workspace, pane) / core(address) representation
+and no fabricated workspace; only `herdr` reads its transport pane target, which
+a source-scan test enforces. The Herdr identity hashes the exact legacy
+workspace-then-pane sequence and keeps its legacy `Debug` text, so planet
+seeds and the UI characterization digests are unchanged. The stale-connection
+window is app lifecycle policy (`app::agent_pulse::STALE_AFTER`), not a Herdr
+transport constant.
 
 **Approved target, not yet implemented (dual-host Agent Planets).** To let one
 run observe either Herdr or herdr-core (behavior in
 [`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented)),
-the target boundaries are below; until the implementation issues land, the
-`herdr` row above and the current module layout are what the code does.
+the target boundaries are below; the `model::agent` row is now implemented, and
+until the remaining implementation issues land (`herdr_core`, `agent_host`,
+`--agent-host`) the layout above is what the code does.
 
 | Module | Responsibility | Hide from others |
 | --- | --- | --- |

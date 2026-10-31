@@ -521,10 +521,19 @@ the Agent column is that declared name, the Name column is the terminal's
 explicit name, and Activity is its terminal title. Nothing is inferred from
 text or brand, so a non-AI program that declares a status appears too, and a
 terminal that never reported one does not. Status `working`, `blocked`,
-`done`, and `idle` map directly; `error`, a cleared status, or any other value
-shows as Unknown. A terminal that was shown stays listed, as Unknown, after it
-clears its status (even if a state value remains but the app is blank) until it
-finishes or disappears. The focus (`o`/`O`) and rename (`r`/`R`) controls do
+`done`, and `idle` map directly; `error` or any other value shows as Unknown.
+Membership is decided afresh from each successful poll: a terminal whose
+current report has no application (cleared, null, or blank `status.app`) is not
+shown, even if it was shown before and even if a `working`/`done` state value
+remains, and it reappears when the program reports an application again. A
+`done` status that still names an application stays shown, since it means a
+turn finished, not that the program exited. This is not a process-exit
+detector: a program that exits without clearing its status stays shown, and a
+momentary clear hides the planet until the next report. A failed poll is not
+an empty list and keeps the reconnecting/unavailable behavior. A running
+`wave-tui` keeps the behavior it was built with; rebuild and reopen it to pick
+up a change (see the [plugin manual](docs/herdr-plugin.md#update-or-reinstall)).
+The focus (`o`/`O`) and rename (`r`/`R`) controls do
 not exist for herdr-core: no hint, no editor, no effect. A core with a slow
 connected remote machine can take longer than the 3-second deadline, which
 shows as the usual reconnecting/unavailable state without affecting playback.

@@ -932,22 +932,38 @@ per-client authentication; wave-tui connects only to the one resolved endpoint.
 - **Scope.** Every terminal the one resolved endpoint returns is considered,
   including terminals of connected remote machines; there is no workspace or
   session filter. Addresses are opaque and never rendered.
-- **Admission.** A terminal is admitted only when `state` is `live` and
-  `status.app` is nonblank. A terminal `name`, `title`, `reported`, or mere
-  presence never qualifies it, and no agent brand is inferred from any text.
-- **Retention.** An admitted live address stays in the view when its status is
-  later cleared or null, shown with the Unknown status. A blank or missing
-  `status.app` on an already admitted live terminal always yields Unknown, even
-  when `status.state` is still present, and no earlier agent name or metadata is
-  kept. It is removed when a
-  successful snapshot omits it or reports it `finished`. A failed poll never
-  changes membership; the existing stale/unavailable ladder governs
-  presentation.
+- **Membership (current snapshot only).** Each successful snapshot displays
+  exactly the terminals that are `live` **and** whose `status.app` is
+  currently nonblank. A terminal `name`, `title`, `reported`, or mere presence
+  never qualifies it, and no agent brand is inferred from any text. Nothing is
+  retained between snapshots: a terminal whose latest report has a null,
+  missing, or blank `status.app` is not displayed, even if an earlier snapshot
+  displayed it and even if its raw `status.state` still reads `working` or
+  `done`, and no earlier agent name or metadata is kept. A terminal is also
+  absent when a successful snapshot omits it or reports it `finished`.
+- **Done is not exit.** A current `done` status that still carries a nonblank
+  `status.app` stays displayed: it means a turn completed, not that the
+  program ended. A program that reports a fresh nonblank `status.app` later,
+  including in the same terminal as an earlier one, appears again from that
+  snapshot. There is no removal timer and no PID, foreground-process, or brand
+  inference.
+- **Failed polls.** A transport or envelope failure is not a successful empty
+  snapshot. It never changes membership, and the existing stale/unavailable
+  ladder governs presentation.
+- **Rationale and consequence.** The pinned core source has no authoritative
+  lifetime signal for a program running inside a terminal (see
+  [`herdr-core-research.md`](herdr-core-research.md)), and the terminal's own
+  `live` state outlasts the program. Showing only terminals with a currently
+  declared application is therefore a product policy about what is truthfully
+  reported, not an API guarantee and not reliable detection of an agent
+  exiting. Its accepted consequences: a program that exits without clearing
+  its status stays displayed; a temporary clear (for example a transient OSC
+  clear) hides the planet until the program reports a nonblank app again.
 - **Limitations.** Core reports only what programs declare, so a live terminal
-  that never reported a status, or first appears with a cleared status, is not
-  admitted even if an agent runs in it. Conversely, any live terminal whose
-  program declares a nonblank `status.app` is admitted, whether or not it is an
-  AI coding agent. This conservatism is deliberate: no heuristic is added.
+  that never reported a status, or whose status is currently cleared, is not
+  displayed even if an agent runs in it. Conversely, any live terminal whose
+  program declares a nonblank `status.app` is displayed, whether or not it is
+  an AI coding agent. This conservatism is deliberate: no heuristic is added.
 
 #### Field mapping
 
@@ -957,7 +973,7 @@ per-client authentication; wave-tui connects only to the one resolved endpoint.
 | `Name` (explicit name) | `name`, when nonblank |
 | `Agent` | `status.app` |
 | `Activity` | `Terminal.title` (not `status.title`), when nonblank |
-| Status | `status.state`: `working`, `blocked`, `done`, `idle` map directly; `error`, null/cleared, and any other value are Unknown |
+| Status | `status.state` of a displayed terminal: `working`, `blocked`, `done`, `idle` map directly; `error`, a null or missing state, and any other value are Unknown. A terminal whose `status` is cleared/null or whose `status.app` is blank is not displayed at all |
 
 No workspace, pane, session, or machine identifier is fabricated, and no other
 core field (`foreground`, `parent`, `msg`, `kind`, `progress`, `status.title`,
@@ -1093,7 +1109,7 @@ flag, legacy flag order independence, help text, help/version precedence), and
 a facade test against a fake core Unix socket that receives a `terminal.list`
 snapshot while proving zero focus/rename dispatch and a clean drop/stop. The
 core adapter's own pure and socket tests (eligibility and path resolution,
-schema fixtures, admission/retention, wire request, recovery, idle shutdown)
+schema fixtures, per-snapshot membership, wire request, recovery, idle shutdown)
 live in `herdr_core`. Final full-suite counts for the combined MIK-076 lanes are
 recorded by the issue's reports from the run that produced them; none are
 asserted here.
@@ -1113,6 +1129,16 @@ real-terminal resize check, or visual inspection of either host; the manual
 checklist below is unchecked accordingly. The Linux-only saturated accept-backlog
 test in `herdr_core` has not been executed on the macOS development host.
 Default tests need no live `hc` process, daemon, audio device, or network.
+
+MIK-078 revises the core membership contract above (current snapshot only; a
+cleared, null, or blank `status.app` removes a terminal that earlier snapshots
+displayed). The regression and focused tests for it are being added in
+`herdr_core` with the issue; the issue's reports record the evidence from the
+runs that produced them, and no test totals are asserted here. That the change
+works in a rebuilt and restarted `wave-tui` against a live core has not been
+verified; a running binary keeps the behavior it was built with until it is
+rebuilt and reopened (see the plugin manual's
+[Update or reinstall](herdr-plugin.md#update-or-reinstall)).
 
 ### Implementation Principles
 
@@ -1455,8 +1481,11 @@ the release as fully validated:
       `wave-tui --agent-host herdr-core --no-auto-play` and confirm the stage
       shows only live terminals whose program declared a nonblank
       `status.app`, `o`/`O`/`r`/`R` do nothing (no hint, editor, or notice),
-      an `error` status renders Unknown, and stopping the core shows the
-      existing stale → unavailable ladder with playback unaffected.
+      an `error` status renders Unknown, a terminal whose program clears its
+      status (or whose app becomes blank) disappears while its pane stays
+      open and returns when the program reports a nonblank app again, and
+      stopping the core shows the existing stale → unavailable ladder with
+      playback unaffected.
 - [ ] Run `wave-tui --agent-host herdr-core` from a shell with no `HC_*`
       variables and confirm the exact standalone appearance (no fallback to
       Herdr).

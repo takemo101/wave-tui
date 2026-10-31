@@ -338,9 +338,12 @@ Implications:
   nothing, no rename editor opens, and no "unsupported" notice appears. The
   table stays read-only, with the same `Name | Agent | Status | Activity`
   columns, widths, and privacy exclusions.
-- **Unknown is a calm first-class state.** Core terminals whose status is
-  cleared, null, `error`, or unrecognized render as the existing Unknown
-  treatment (muted, nearly still); no new "error" visual is introduced.
+- **Unknown is a calm first-class state.** Displayed core terminals whose
+  status is `error` or unrecognized render as the existing Unknown treatment
+  (muted, nearly still); no new "error" visual is introduced. A core terminal
+  whose current report has no application (cleared, null, or blank
+  `status.app`) is not displayed at all rather than shown as Unknown; it
+  returns when the program reports one again.
 - **Quiet degradation.** Fields core cannot supply render as the existing
   empty/label-free states: an unnamed planet stays label-free, an empty `Name`
   or `Activity` cell stays blank, and no workspace or location data is

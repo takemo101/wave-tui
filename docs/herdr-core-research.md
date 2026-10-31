@@ -91,6 +91,18 @@ None of `name`, `title`, `reported`, or the mere presence of a terminal shows
 that it is an agent. `status.app` is the only program-declared application
 label.
 
+**Status versus terminal lifetime.** `state` (`live`/`finished`) describes the
+terminal, which can stay `live` after a program inside it ends, for example
+while a shell remains. `status` describes only what a program last declared. A
+source review of this revision found no event or field that reports the end of
+an arbitrary program running inside a terminal, and `done` is a turn-completion
+status, not a process exit. During the MIK-078 diagnosis, the user reported
+an exited agent whose planet remained, while read-only `terminal.list`
+snapshots from the confirmed endpoint showed live terminals with null status.
+The snapshots were not matched to a captured before/after trace of that
+specific agent (no identifiers recorded). They do not establish when its
+status cleared or guarantee that every program clears its status on exit.
+
 **Events.** The method is `events.subscribe` (plural; there is no
 `event.subscribe`). It returns a terminal snapshot with a sequence number and
 streams notifications (`created`, `lost`, `restarted`, `keep`, `finished`,
@@ -111,13 +123,17 @@ design.
 
 - Read-only observation is feasible through `terminal.list {}` and an
   app-side qualification rule; parity with the Herdr GUI adapter is not.
-- Qualification must come from `state = live` with a nonblank `status.app`.
-  `status` null/cleared, `error`, and unrecognized states carry no reliable
-  working/blocked/done/idle meaning and therefore map to Unknown, never to an
-  invented status.
+- Qualification must come from `state = live` with a *currently* nonblank
+  `status.app`, re-evaluated on every successful snapshot. A cleared or blank
+  application is the only program-declared sign that the program no longer
+  claims the terminal, so wave-tui stops displaying it then; this is a product
+  policy over declared data, not a claim that core reports agent exit.
+  Within a displayed terminal, `error` and unrecognized states carry no
+  reliable working/blocked/done/idle meaning and therefore map to Unknown,
+  never to an invented status.
 - Core can only report what programs declare. A live terminal whose program
-  never sent a status, or whose `status` was cleared, cannot be told apart from
-  a non-agent by this API; membership is deliberately conservative.
+  never sent a status, or whose `status` is currently cleared, cannot be told
+  apart from a non-agent by this API; membership is deliberately conservative.
 - Connecting to a socket the user can access is a trust decision; an endpoint
   that is merely the default path is not enough to opt in (see `SPEC.md`
   eligibility).

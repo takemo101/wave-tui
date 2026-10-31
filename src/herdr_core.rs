@@ -114,49 +114,34 @@ fn normalize_status(status: Option<&str>) -> AgentStatus {
     }
 }
 
-/// Addresses admitted so far, kept across successful polls only. Only the
-/// full wire address is stored (never metadata), so `t7` and `machine/t7`
-/// are different members.
-#[derive(Debug, Default)]
-struct Membership {
-    admitted: HashSet<String>,
-}
-
-impl Membership {
-    /// Applies one successful snapshot. A live terminal with a nonblank
-    /// `status.app` is admitted; an already admitted live terminal whose
-    /// status was cleared stays as Unknown with no remembered metadata; a
-    /// terminal that is omitted or not live leaves the membership.
-    fn observe(&mut self, terminals: Vec<RawTerminal>) -> Vec<AgentSnapshot> {
-        let mut next = HashSet::new();
-        let mut agents = Vec::new();
-        for terminal in terminals {
-            if terminal.state.as_deref() != Some("live") || next.contains(&terminal.address) {
-                continue;
-            }
-            let app = nonblank(terminal.app.as_deref());
-            if app.is_none() && !self.admitted.contains(&terminal.address) {
-                continue;
-            }
-            let status = if app.is_some() {
-                normalize_status(terminal.status_state.as_deref())
-            } else {
-                AgentStatus::Unknown
-            };
-            agents.push(AgentSnapshot {
-                id: AgentId::core(terminal.address.as_str()),
-                details: AgentDetails {
-                    name: nonblank(terminal.name.as_deref()),
-                    agent: app,
-                    activity: nonblank(terminal.title.as_deref()),
-                },
-                status,
-            });
-            next.insert(terminal.address);
+/// Reduces one successful snapshot to the agents to display. The snapshot is
+/// the whole truth: only a live terminal that currently reports a nonblank
+/// `status.app` is shown, so a terminal whose status was cleared (the agent
+/// exited and left a shell) or that is omitted or not live is gone, and
+/// nothing is remembered between polls. The full wire address is the identity
+/// (`t7` and `machine/t7` differ) and the first entry for an address wins.
+fn normalize_snapshot(terminals: Vec<RawTerminal>) -> Vec<AgentSnapshot> {
+    let mut seen = HashSet::new();
+    let mut agents = Vec::new();
+    for terminal in terminals {
+        if terminal.state.as_deref() != Some("live") || seen.contains(&terminal.address) {
+            continue;
         }
-        self.admitted = next;
-        agents
+        let Some(app) = nonblank(terminal.app.as_deref()) else {
+            continue;
+        };
+        agents.push(AgentSnapshot {
+            id: AgentId::core(terminal.address.as_str()),
+            details: AgentDetails {
+                name: nonblank(terminal.name.as_deref()),
+                agent: Some(app),
+                activity: nonblank(terminal.title.as_deref()),
+            },
+            status: normalize_status(terminal.status_state.as_deref()),
+        });
+        seen.insert(terminal.address);
     }
+    agents
 }
 
 /// One bounded attempt: connect, write the request, and read one complete
@@ -303,12 +288,11 @@ fn spawn_with(context: HerdrCoreContext, interval: Duration, budget: Duration) -
     let handle = thread::Builder::new()
         .name("herdr-core-monitor".to_string())
         .spawn(move || {
-            let mut membership = Membership::default();
             let mut request_id: u64 = 0;
             loop {
                 request_id += 1;
                 let event = match request_terminal_list_within(&context, request_id, budget) {
-                    Some(terminals) => MonitorEvent::Snapshot(membership.observe(terminals)),
+                    Some(terminals) => MonitorEvent::Snapshot(normalize_snapshot(terminals)),
                     None => MonitorEvent::Failed,
                 };
                 if event_tx.send(event).is_err() {
@@ -476,8 +460,7 @@ mod tests {
 
     #[test]
     fn addresses_are_kept_exactly_so_local_and_remote_t7_stay_distinct() {
-        let mut membership = Membership::default();
-        let agents = membership.observe(parse(
+        let agents = normalize_snapshot(parse(
             r#"[{"address":"t7","state":"live","status":{"app":"a","state":"idle"}},
                 {"address":"box/t7","state":"live","status":{"app":"a","state":"idle"}}]"#,
         ));
@@ -489,8 +472,7 @@ mod tests {
 
     #[test]
     fn fixture_maps_name_agent_activity_and_status() {
-        let mut membership = Membership::default();
-        let agents = membership.observe(parse(
+        let agents = normalize_snapshot(parse(
             r#"[{"address":"t1","name":"  planner ","title":" Fix the build ","state":"live",
                  "status":{"app":" claude ","state":"working","title":"STATUS TITLE"}}]"#,
         ));
@@ -510,12 +492,11 @@ mod tests {
 
     #[test]
     fn blank_name_is_none_and_never_falls_back_to_title_or_address() {
-        let mut membership = Membership::default();
         for name in [None, Some(""), Some("   ")] {
             let mut terminal = live("t1", Some("claude"), Some("idle"));
             terminal.name = name.map(str::to_string);
             terminal.title = Some("A title".to_string());
-            let agents = membership.observe(vec![terminal]);
+            let agents = normalize_snapshot(vec![terminal]);
             assert_eq!(agents[0].details.name, None, "{name:?}");
             assert_eq!(agents[0].details.activity.as_deref(), Some("A title"));
         }
@@ -523,10 +504,9 @@ mod tests {
 
     #[test]
     fn blank_title_is_no_activity() {
-        let mut membership = Membership::default();
         let mut terminal = live("t1", Some("claude"), Some("idle"));
         terminal.title = Some("  ".to_string());
-        assert_eq!(membership.observe(vec![terminal])[0].details.activity, None);
+        assert_eq!(normalize_snapshot(vec![terminal])[0].details.activity, None);
     }
 
     #[test]
@@ -542,8 +522,7 @@ mod tests {
             (Some(""), AgentStatus::Unknown),
             (None, AgentStatus::Unknown),
         ] {
-            let mut membership = Membership::default();
-            let agents = membership.observe(vec![live("t1", Some("app"), state)]);
+            let agents = normalize_snapshot(vec![live("t1", Some("app"), state)]);
             assert_eq!(agents[0].status, expected, "{state:?}");
         }
     }
@@ -552,8 +531,7 @@ mod tests {
 
     #[test]
     fn only_live_terminals_with_a_nonblank_app_are_admitted() {
-        let mut membership = Membership::default();
-        let agents = membership.observe(vec![
+        let agents = normalize_snapshot(vec![
             live("t1", Some("claude"), Some("idle")),
             live("t2", None, None),
             live("t3", Some(""), Some("working")),
@@ -572,107 +550,188 @@ mod tests {
 
     #[test]
     fn lifecycle_state_is_not_agent_status() {
-        let mut membership = Membership::default();
-        let agents = membership.observe(vec![live("t1", Some("claude"), None)]);
+        let agents = normalize_snapshot(vec![live("t1", Some("claude"), None)]);
         assert_eq!(agents[0].status, AgentStatus::Unknown);
     }
 
     #[test]
     fn name_title_or_presence_never_admit_a_terminal() {
-        let mut membership = Membership::default();
         let mut terminal = live("t1", None, None);
         terminal.name = Some("claude".to_string());
         terminal.title = Some("Claude Code".to_string());
-        assert!(membership.observe(vec![terminal]).is_empty());
+        assert!(normalize_snapshot(vec![terminal]).is_empty());
     }
 
-    // --- retention ---
+    // --- snapshot is the whole truth (MIK-078) ---
 
     #[test]
-    fn cleared_status_keeps_an_admitted_terminal_as_unknown_without_old_metadata() {
-        let mut membership = Membership::default();
-        let first = membership.observe(vec![live("t1", Some("claude"), Some("working"))]);
-        assert_eq!(first[0].details.agent.as_deref(), Some("claude"));
+    fn cleared_status_removes_the_terminal_and_a_later_app_report_returns_it() {
+        let shown = normalize_snapshot(vec![live("t1", Some("claude"), Some("working"))]);
+        assert_eq!(shown[0].details.agent.as_deref(), Some("claude"));
 
         let mut cleared = live("t1", None, None);
         cleared.title = Some("now".to_string());
-        let second = membership.observe(vec![cleared]);
-        assert_eq!(
-            second,
-            vec![AgentSnapshot {
-                id: AgentId::core("t1"),
-                details: AgentDetails {
-                    name: None,
-                    agent: None,
-                    activity: Some("now".to_string()),
-                },
-                status: AgentStatus::Unknown,
-            }]
+        assert!(normalize_snapshot(vec![cleared]).is_empty());
+
+        let back = normalize_snapshot(vec![live("t1", Some("claude"), Some("idle"))]);
+        assert_eq!(back[0].status, AgentStatus::Idle);
+        assert_eq!(back[0].details.agent.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn omission_and_nonlive_state_remove_the_terminal() {
+        assert!(normalize_snapshot(Vec::new()).is_empty());
+        assert!(
+            normalize_snapshot(vec![raw("t1", "finished", Some("claude"), Some("done"))])
+                .is_empty()
         );
     }
 
+    // --- current-app-only display (MIK-078) ---
+
+    const TRACE_WORKING: &str = r#"[{"address":"t1","state":"live","reported":true,"title":"T","status":{"app":"claude","state":"working"}}]"#;
+    const TRACE_DONE: &str = r#"[{"address":"t1","state":"live","reported":true,"status":{"app":"claude","state":"done"}}]"#;
+    const TRACE_SHELL: &str = r#"[{"address":"t1","state":"live","reported":false,"status":null}]"#;
+    const TRACE_RESTARTED: &str = r#"[{"address":"t1","state":"live","reported":true,"status":{"app":"claude","state":"working"}}]"#;
+
     #[test]
-    fn blank_or_missing_app_on_an_admitted_terminal_is_unknown_even_with_a_state() {
-        for app in [None, Some(""), Some("   ")] {
-            let mut membership = Membership::default();
-            membership.observe(vec![live("t1", Some("claude"), Some("idle"))]);
-            let agents = membership.observe(vec![live("t1", app, Some("working"))]);
+    fn agent_exit_trace_removes_the_planet_while_the_pane_stays_live() {
+        let working = normalize_snapshot(parse(TRACE_WORKING));
+        assert_eq!(
+            statuses(&working),
+            vec![(AgentId::core("t1"), AgentStatus::Working)]
+        );
+        // Turn completion: Done with the app still reported stays.
+        let done = normalize_snapshot(parse(TRACE_DONE));
+        assert_eq!(
+            statuses(&done),
+            vec![(AgentId::core("t1"), AgentStatus::Done)]
+        );
+        // The agent exits; the terminal stays live with no status. Repeatedly.
+        for poll in 0..3 {
+            assert!(
+                normalize_snapshot(parse(TRACE_SHELL)).is_empty(),
+                "post-exit poll {poll} must not re-admit the stale planet"
+            );
+        }
+        // A fresh app report in the same terminal re-admits it.
+        let restarted = normalize_snapshot(parse(TRACE_RESTARTED));
+        assert_eq!(
+            statuses(&restarted),
+            vec![(AgentId::core("t1"), AgentStatus::Working)]
+        );
+        assert_eq!(restarted[0].details.agent.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn missing_blank_or_wrong_typed_app_removes_a_previously_shown_agent_whatever_the_state() {
+        for terminal in [
+            r#"{"address":"t1","state":"live","status":{"state":"working"}}"#,
+            r#"{"address":"t1","state":"live","status":{"app":null,"state":"working"}}"#,
+            r#"{"address":"t1","state":"live","status":{"app":"","state":"done"}}"#,
+            r#"{"address":"t1","state":"live","status":{"app":"   ","state":"working"}}"#,
+            r#"{"address":"t1","state":"live","status":{"app":5,"state":"working"}}"#,
+            r#"{"address":"t1","state":"live","status":{"app":["claude"],"state":"done"}}"#,
+            r#"{"address":"t1","state":"live","reported":true,"status":null}"#,
+            r#"{"address":"t1","state":"live","reported":true}"#,
+        ] {
+            let agents = normalize_snapshot(parse(&format!("[{terminal}]")));
+            assert!(agents.is_empty(), "{terminal}");
+        }
+    }
+
+    #[test]
+    fn current_unknown_status_with_an_app_stays_as_unknown() {
+        for status in ["error", "bogus", ""] {
+            let line = format!(
+                r#"[{{"address":"t1","state":"live","status":{{"app":"claude","state":"{status}"}}}}]"#
+            );
+            let agents = normalize_snapshot(parse(&line));
             assert_eq!(
                 statuses(&agents),
                 vec![(AgentId::core("t1"), AgentStatus::Unknown)],
-                "{app:?}"
-            );
-            assert_eq!(agents[0].details.agent, None);
-        }
-    }
-
-    #[test]
-    fn retention_survives_repeated_polls_until_the_status_returns() {
-        let mut membership = Membership::default();
-        membership.observe(vec![live("t1", Some("claude"), Some("working"))]);
-        for _ in 0..3 {
-            let agents = membership.observe(vec![live("t1", None, None)]);
-            assert_eq!(
-                statuses(&agents),
-                vec![(AgentId::core("t1"), AgentStatus::Unknown)]
+                "{status}"
             );
         }
-        let agents = membership.observe(vec![live("t1", Some("claude"), Some("idle"))]);
-        assert_eq!(agents[0].status, AgentStatus::Idle);
-        assert_eq!(agents[0].details.agent.as_deref(), Some("claude"));
     }
 
     #[test]
-    fn a_status_never_seen_admitted_stays_out_even_after_others_are_retained() {
-        let mut membership = Membership::default();
-        membership.observe(vec![live("t1", Some("claude"), Some("idle"))]);
-        let agents = membership.observe(vec![live("t1", None, None), live("t2", None, None)]);
-        let ids: Vec<_> = agents.iter().map(|a| a.id.clone()).collect();
-        assert_eq!(ids, vec![AgentId::core("t1")]);
+    fn monitor_trace_over_the_socket_removes_the_exited_agent_and_readmits_a_restart() {
+        let socket = SocketPath::new();
+        let (_requests, server) = fake_core(
+            &socket,
+            vec![
+                Behavior::Terminals(TRACE_WORKING),
+                Behavior::Terminals(TRACE_DONE),
+                Behavior::Terminals(TRACE_SHELL),
+                Behavior::Terminals(TRACE_SHELL),
+                Behavior::Terminals(TRACE_RESTARTED),
+            ],
+        );
+        let monitor = spawn_with_interval(socket.context(), Duration::from_millis(5));
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let MonitorEvent::Snapshot(agents) = next_event(&monitor) else {
+                panic!("every scripted poll is a successful snapshot");
+            };
+            seen.push(statuses(&agents));
+        }
+        let t1 = AgentId::core("t1");
+        assert_eq!(
+            seen,
+            vec![
+                vec![(t1.clone(), AgentStatus::Working)],
+                vec![(t1.clone(), AgentStatus::Done)],
+                Vec::new(),
+                Vec::new(),
+                vec![(t1, AgentStatus::Working)],
+            ]
+        );
+        monitor.stop();
+        server.join().unwrap();
     }
 
     #[test]
-    fn omission_removes_membership_and_a_later_cleared_return_is_not_readmitted() {
-        let mut membership = Membership::default();
-        membership.observe(vec![live("t1", Some("claude"), Some("idle"))]);
-        assert!(membership.observe(Vec::new()).is_empty());
-        assert!(membership.observe(vec![live("t1", None, None)]).is_empty());
-    }
-
-    #[test]
-    fn finished_removes_membership() {
-        let mut membership = Membership::default();
-        membership.observe(vec![live("t1", Some("claude"), Some("idle"))]);
-        assert!(membership
-            .observe(vec![raw("t1", "finished", Some("claude"), Some("done"))])
-            .is_empty());
-        assert!(membership.observe(vec![live("t1", None, None)]).is_empty());
+    fn a_failed_poll_between_valid_snapshots_is_failed_not_an_empty_success() {
+        let socket = SocketPath::new();
+        let (_requests, server) = fake_core(
+            &socket,
+            vec![
+                Behavior::Terminals(TRACE_WORKING),
+                Behavior::Hangup,
+                Behavior::RpcError,
+                Behavior::Terminals(TRACE_SHELL),
+                Behavior::Terminals(TRACE_RESTARTED),
+            ],
+        );
+        let monitor = spawn_with_interval(socket.context(), Duration::from_millis(5));
+        let t1 = AgentId::core("t1");
+        assert_eq!(
+            next_event(&monitor),
+            MonitorEvent::Snapshot(vec![AgentSnapshot {
+                id: t1.clone(),
+                details: AgentDetails {
+                    name: None,
+                    agent: Some("claude".to_string()),
+                    activity: Some("T".to_string()),
+                },
+                status: AgentStatus::Working,
+            }])
+        );
+        assert_eq!(next_event(&monitor), MonitorEvent::Failed);
+        assert_eq!(next_event(&monitor), MonitorEvent::Failed);
+        assert_eq!(next_event(&monitor), MonitorEvent::Snapshot(Vec::new()));
+        let MonitorEvent::Snapshot(restarted) = next_event(&monitor) else {
+            panic!("restart poll should succeed");
+        };
+        assert_eq!(statuses(&restarted), vec![(t1, AgentStatus::Working)]);
+        monitor.stop();
+        server.join().unwrap();
     }
 
     #[test]
     fn duplicate_addresses_in_one_snapshot_yield_one_agent() {
-        let mut membership = Membership::default();
-        let agents = membership.observe(vec![
+        let agents = normalize_snapshot(vec![
             live("t1", Some("claude"), Some("idle")),
             live("t1", Some("other"), Some("working")),
         ]);
@@ -681,15 +740,17 @@ mod tests {
     }
 
     #[test]
-    fn remote_and_local_membership_are_tracked_independently() {
-        let mut membership = Membership::default();
-        membership.observe(vec![
+    fn remote_and_local_addresses_are_removed_independently() {
+        let agents = normalize_snapshot(vec![
+            live("box/t7", None, None),
             live("t7", Some("claude"), Some("idle")),
-            live("box/t7", Some("claude"), Some("idle")),
         ]);
-        let agents = membership.observe(vec![live("box/t7", None, None), live("t7", None, None)]);
-        assert_eq!(agents.len(), 2);
-        let agents = membership.observe(vec![live("box/t7", None, None)]);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, AgentId::core("t7"));
+        let agents = normalize_snapshot(vec![
+            live("box/t7", Some("claude"), Some("idle")),
+            live("t7", None, None),
+        ]);
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].id, AgentId::core("box/t7"));
     }
@@ -816,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn monitor_polls_immediately_recovers_and_preserves_membership_across_a_failure() {
+    fn monitor_polls_immediately_and_recovers_after_a_failure_with_the_current_snapshot() {
         let socket = SocketPath::new();
         let (requests, server) = fake_core(
             &socket,
@@ -839,14 +900,7 @@ mod tests {
         let MonitorEvent::Snapshot(third) = next_event(&monitor) else {
             panic!("monitor should recover");
         };
-        assert_eq!(
-            third,
-            vec![AgentSnapshot {
-                id: AgentId::core("t1"),
-                details: AgentDetails::default(),
-                status: AgentStatus::Unknown,
-            }]
-        );
+        assert_eq!(third, Vec::new(), "the cleared terminal is gone");
 
         let methods: Vec<String> = requests
             .try_iter()
@@ -1091,20 +1145,6 @@ mod tests {
     #[test]
     fn non_utf8_frame_is_rejected() {
         assert_eq!(frame_over_pair(vec![0xff, 0xfe, b'\n'], false, 64), None);
-    }
-
-    #[test]
-    fn a_failed_transport_attempt_does_not_touch_membership() {
-        let mut membership = Membership::default();
-        membership.observe(parse(AGENT_WORKING));
-        let before = membership.admitted.clone();
-        let socket = SocketPath::new();
-        let _peer = misbehaving_core(&socket, Misbehavior::Stall);
-        assert_eq!(
-            request_terminal_list_within(&socket.context(), 1, Duration::from_millis(100)),
-            None
-        );
-        assert_eq!(membership.admitted, before);
     }
 
     /// A listener whose accept queue is full must produce a bounded failure,

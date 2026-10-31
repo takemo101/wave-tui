@@ -20,7 +20,10 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::model::agent::{AgentCapabilities, AgentId, AgentSnapshot, FocusResult, RenameResult};
+use crate::model::agent::{
+    AgentCapabilities, AgentId, AgentSnapshot, FocusResult, RenameCompletion, RenameRequest,
+    RenameRequestId,
+};
 use crate::model::{
     PlaybackRequestId, PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent,
 };
@@ -312,8 +315,12 @@ pub enum Action {
     SubmitAgentRename,
     /// Cancel the inline Name input while leaving the Agent table open.
     CloseAgentRename,
-    /// Fold a typed asynchronous `agent.rename` outcome into the live table.
-    AgentRenameResult { result: RenameResult, now: Instant },
+    /// Fold a typed asynchronous `agent.rename` completion into the live table.
+    /// It applies only to the submission it names; anything else is ignored.
+    AgentRenameResult {
+        completion: RenameCompletion,
+        now: Instant,
+    },
     /// Select an active agent by its stable identity (mouse/particle
     /// selection).
     SelectAgent(AgentId),
@@ -486,8 +493,8 @@ impl App {
             Action::BackspaceAgentRename => self.agent_pulse.backspace_rename(),
             Action::SubmitAgentRename => self.agent_pulse.submit_rename(),
             Action::CloseAgentRename => self.agent_pulse.close_rename(),
-            Action::AgentRenameResult { result, now } => {
-                self.agent_pulse.record_rename_result(result, now)
+            Action::AgentRenameResult { completion, now } => {
+                self.agent_pulse.record_rename_result(completion, now)
             }
             Action::SelectAgent(id) => self.agent_pulse.select(id, self.display_mode),
         }
@@ -1174,10 +1181,18 @@ impl App {
         self.agent_pulse.rename_is_submitting()
     }
 
-    /// Opaque target plus normalized request value for the controller. This
-    /// never exposes the private id to UI or persistence, and stale snapshots
+    /// The submission the open editor is waiting on, if any. The controller
+    /// reads it after applying a submit to learn which request the reducer
+    /// accepted; it is never rendered.
+    pub(crate) fn agent_rename_in_flight(&self) -> Option<RenameRequestId> {
+        self.agent_pulse.rename_in_flight()
+    }
+
+    /// The request the controller would dispatch for the open editor: opaque
+    /// target, normalized name, and the id a submit would allocate. This never
+    /// exposes the private id to UI or persistence, and stale snapshots
     /// intentionally return `None` without clearing the user's input.
-    pub(crate) fn agent_rename_request(&self) -> Option<(AgentId, Option<String>)> {
+    pub(crate) fn agent_rename_request(&self) -> Option<RenameRequest> {
         self.agent_pulse.rename_request()
     }
 
@@ -1254,6 +1269,7 @@ mod tests {
     use crate::model::agent::{
         AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
     };
+    // `RenameCompletion` / `RenameRequestId` come in through `use super::*`.
     use crate::model::{
         BitrateKbps, CodecKind, PhaseTrace, PlaybackRequestSeq, StationId, StationName,
         StationSource, StreamUrl, VisualizerMode, VolumePercent,
@@ -2737,6 +2753,22 @@ mod tests {
     }
 
     /// An app that received one Agent Pulse snapshot.
+    fn completion(request: RenameRequestId, result: RenameResult) -> RenameCompletion {
+        RenameCompletion { request, result }
+    }
+
+    /// Complete whichever submission the open editor is waiting on (or the
+    /// first id when none is), the way a host echoing the request id would.
+    fn settle_rename(app: &mut App, result: RenameResult, now: Instant) {
+        let request = app
+            .agent_rename_in_flight()
+            .unwrap_or(RenameRequestId::FIRST);
+        app.apply(Action::AgentRenameResult {
+            completion: completion(request, result),
+            now,
+        });
+    }
+
     fn app_with_agents(agents: Vec<AgentSnapshot>) -> App {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(agents, Instant::now()));
@@ -2843,7 +2875,7 @@ mod tests {
             now,
         });
         app.apply(Action::AgentRenameResult {
-            result: RenameResult::Unsupported,
+            completion: completion(RenameRequestId::FIRST, RenameResult::Unsupported),
             now,
         });
 
@@ -2867,10 +2899,7 @@ mod tests {
 
         app.apply(Action::OpenAgentRename);
         app.apply(Action::SubmitAgentRename);
-        app.apply(Action::AgentRenameResult {
-            result: RenameResult::Unsupported,
-            now,
-        });
+        settle_rename(&mut app, RenameResult::Unsupported, now);
         assert_eq!(
             app.agent_rename_notice(now),
             Some("rename requires Herdr 0.7.0+")
@@ -3781,10 +3810,7 @@ mod tests {
         app.apply(Action::BackspaceAgentRename);
         app.apply(Action::SubmitAgentRename);
         assert!(app.agent_rename_is_submitting());
-        app.apply(Action::AgentRenameResult {
-            result: RenameResult::Renamed,
-            now: Instant::now(),
-        });
+        settle_rename(&mut app, RenameResult::Renamed, Instant::now());
 
         assert!(!app.is_agent_rename_open());
         assert_eq!(
@@ -3810,10 +3836,7 @@ mod tests {
         app.apply(Action::AppendAgentRename('e'));
         app.apply(Action::AppendAgentRename('w'));
         app.apply(Action::SubmitAgentRename);
-        app.apply(Action::AgentRenameResult {
-            result: RenameResult::Unavailable,
-            now,
-        });
+        settle_rename(&mut app, RenameResult::Unavailable, now);
         assert_eq!(app.agent_rename_input(), Some("new"));
         assert_eq!(
             app.agent_rename_notice(now),
@@ -3824,6 +3847,258 @@ mod tests {
         app.apply(Action::SubmitAgentRename);
         assert_eq!(app.agent_rename_input(), Some("new"));
         assert!(!app.agent_rename_is_submitting());
+    }
+
+    // --- MIK-075: rename completions are correlated to their submission ------
+
+    fn row_names(app: &App) -> Vec<Option<String>> {
+        app.active_agents()
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect()
+    }
+
+    /// Submit the open editor and return the id the reducer allocated.
+    fn submit_open_editor(app: &mut App) -> RenameRequestId {
+        app.apply(Action::SubmitAgentRename);
+        app.agent_rename_in_flight().expect("submission accepted")
+    }
+
+    fn deliver(app: &mut App, request: RenameRequestId, result: RenameResult, now: Instant) {
+        app.apply(Action::AgentRenameResult {
+            completion: completion(request, result),
+            now,
+        });
+    }
+
+    #[test]
+    fn a_late_success_cannot_settle_a_reopened_editor_for_the_same_agent() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('x'));
+        let old = submit_open_editor(&mut app);
+        app.apply(Action::CloseAgentRename);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('z'));
+        let rows_before = row_names(&app);
+
+        deliver(&mut app, old, RenameResult::Renamed, now);
+
+        assert!(app.is_agent_rename_open(), "the new editor stays open");
+        assert_eq!(app.agent_rename_input(), Some("alphaz"));
+        assert!(!app.agent_rename_is_submitting());
+        assert_eq!(row_names(&app), rows_before, "no row takes the old name");
+    }
+
+    #[test]
+    fn a_late_failure_cannot_flag_or_unstick_a_reopened_editor() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        let old = submit_open_editor(&mut app);
+        app.apply(Action::CloseAgentRename);
+        app.apply(Action::OpenAgentRename);
+        let current = submit_open_editor(&mut app);
+        assert_ne!(old, current, "every submission gets its own id");
+
+        deliver(&mut app, old, RenameResult::Missing, now);
+
+        assert!(
+            app.agent_rename_is_submitting(),
+            "the old failure must not release the new submission"
+        );
+        assert_eq!(app.agent_rename_notice(now), None);
+
+        deliver(&mut app, current, RenameResult::Renamed, now);
+        assert!(
+            !app.is_agent_rename_open(),
+            "the matching result settles it"
+        );
+    }
+
+    #[test]
+    fn cancel_then_reopen_on_a_different_agent_ignores_the_old_completion() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('x'));
+        let old = submit_open_editor(&mut app);
+        app.apply(Action::CloseAgentRename);
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
+            Some("beta")
+        );
+        app.apply(Action::OpenAgentRename);
+        let rows_before = row_names(&app);
+
+        deliver(&mut app, old, RenameResult::Renamed, now);
+
+        assert!(app.is_agent_rename_open(), "beta's editor is not completed");
+        assert_eq!(app.agent_rename_input(), Some("beta"));
+        assert_eq!(row_names(&app), rows_before, "neither row is renamed");
+    }
+
+    #[test]
+    fn selecting_another_agent_while_editing_invalidates_the_editor_and_its_submission() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('x'));
+        let old = submit_open_editor(&mut app);
+
+        app.apply(Action::SelectNextAgent);
+        assert!(
+            !app.is_agent_rename_open(),
+            "the editor never outlives its target selection"
+        );
+        let rows_before = row_names(&app);
+
+        deliver(&mut app, old, RenameResult::Renamed, now);
+
+        assert!(!app.is_agent_rename_open());
+        assert_eq!(row_names(&app), rows_before, "no row is mutated");
+        assert!(app.is_agent_details_open(), "details follow the selection");
+    }
+
+    #[test]
+    fn selecting_the_previous_agent_while_editing_also_invalidates_the_editor() {
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::SelectPreviousAgent);
+        assert!(!app.is_agent_rename_open());
+    }
+
+    #[test]
+    fn an_older_completion_after_a_newer_submission_is_ignored() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('x'));
+        let first = submit_open_editor(&mut app);
+        deliver(&mut app, first, RenameResult::Unavailable, now);
+        assert!(
+            !app.agent_rename_is_submitting(),
+            "failure releases the editor"
+        );
+        let second = submit_open_editor(&mut app);
+        assert_ne!(first, second);
+
+        // A duplicate of the earlier completion arrives late.
+        deliver(&mut app, first, RenameResult::Renamed, now);
+        assert!(app.is_agent_rename_open(), "the stale success is ignored");
+        assert!(app.agent_rename_is_submitting());
+
+        deliver(&mut app, second, RenameResult::Renamed, now);
+        assert!(!app.is_agent_rename_open());
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
+            Some("alphax"),
+            "the matching success updates the originating row immediately"
+        );
+    }
+
+    #[test]
+    fn a_blank_submission_still_clears_the_name_and_the_matching_success_clears_the_row() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        for _ in 0.."alpha".len() {
+            app.apply(Action::BackspaceAgentRename);
+        }
+        let request = app.agent_rename_request().expect("editor can submit");
+        assert_eq!(request.name, None, "blank input is a clear request");
+        let id = submit_open_editor(&mut app);
+        assert_eq!(request.request, id, "the peeked id is the allocated id");
+
+        deliver(&mut app, id, RenameResult::Renamed, now);
+
+        assert!(!app.is_agent_rename_open());
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.clone()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_removed_target_drops_the_editor_and_a_late_completion_mutates_nothing() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('x'));
+        let id = submit_open_editor(&mut app);
+
+        // The next authoritative list no longer contains the target.
+        app.apply(agent_snapshot(
+            vec![agent("ws", "p2", Some("beta"), AgentStatus::Idle)],
+            now,
+        ));
+        assert!(!app.is_agent_rename_open());
+        let rows_before = row_names(&app);
+
+        deliver(&mut app, id, RenameResult::Renamed, now);
+
+        assert!(!app.is_agent_rename_open(), "nothing is resurrected");
+        assert_eq!(row_names(&app), rows_before, "no other row is mutated");
+    }
+
+    #[test]
+    fn a_stale_connection_only_accepts_the_matching_completion_and_never_renames() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('x'));
+        let id = submit_open_editor(&mut app);
+        let other = id.following();
+        app.apply(Action::AgentPollFailed { now });
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Stale);
+        let rows_before = row_names(&app);
+
+        deliver(&mut app, other, RenameResult::Renamed, now);
+        assert!(
+            app.agent_rename_is_submitting(),
+            "a completion for another submission is ignored while stale"
+        );
+
+        deliver(&mut app, id, RenameResult::Renamed, now);
+        assert!(!app.agent_rename_is_submitting());
+        assert_eq!(app.agent_rename_input(), Some("alphax"), "input retained");
+        assert_eq!(
+            app.agent_rename_notice(now),
+            Some("rename unavailable · retrying")
+        );
+        assert_eq!(row_names(&app), rows_before, "stale rows are not mutated");
+    }
+
+    #[test]
+    fn an_unavailable_connection_drops_the_editor_and_ignores_the_completion() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        app.apply(Action::OpenAgentRename);
+        let id = submit_open_editor(&mut app);
+        app.apply(Action::AgentPollFailed {
+            now: now + STALE_AFTER + Duration::from_secs(1),
+        });
+        assert!(!app.is_agent_rename_open());
+
+        deliver(&mut app, id, RenameResult::Renamed, now);
+
+        assert!(!app.is_agent_rename_open(), "nothing is resurrected");
+        assert_eq!(app.agent_rename_notice(now), None);
+    }
+
+    #[test]
+    fn submission_ids_never_repeat_across_editors() {
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.apply(Action::OpenAgentRename);
+            let id = submit_open_editor(&mut app);
+            assert!(!seen.contains(&id), "{id:?} was handed out twice");
+            seen.push(id);
+            app.apply(Action::CloseAgentRename);
+        }
     }
 
     #[test]
@@ -4161,10 +4436,7 @@ mod tests {
         app.apply(Action::AppendAgentRename('x'));
         app.apply(Action::BackspaceAgentRename);
         app.apply(Action::SubmitAgentRename);
-        app.apply(Action::AgentRenameResult {
-            result: RenameResult::Renamed,
-            now: t0 + Duration::from_secs(1),
-        });
+        settle_rename(&mut app, RenameResult::Renamed, t0 + Duration::from_secs(1));
         app.apply(Action::CloseAgentRename);
         app.apply(Action::CloseAgentDetails);
         app.apply(Action::AgentFocusResult {

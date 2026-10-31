@@ -156,9 +156,10 @@ chrome. It never reads pane output and persists nothing. The explicit controls
 are `o`/`O` from Agent Planets, which may request
 `agent.focus` for the selected current pane, and `r`/`R` then Enter in its
 Agent table, which may request `agent.rename` for that agent's explicit display
-name. Rename is asynchronous; blank input clears the name as JSON `null`,
-`Esc` cancels only the input, and only short local feedback is shown for
-failures. Neither control creates,
+name. Rename is asynchronous (one request at a time; a result that arrives after
+you cancel, reopen, or move to another agent is ignored); blank input clears the
+name as JSON `null`, `Esc` cancels only the input, and only short local feedback
+is shown for failures. Neither control creates,
 restarts, closes, or sends pane input to a pane; missing/moved panes, socket
 failures, and unsupported Herdr (update to 0.7.0+) remain recoverable local
 notices. Stale state disables rename while retaining its input; unavailable

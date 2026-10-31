@@ -34,7 +34,9 @@ For `wave-tui`, the expected change boundaries are:
 | `herdr` | Herdr socket protocol or agent request behavior changes | Herdr JSON and opaque pane ids |
 
 `model::agent` (implemented) owns `AgentId`, `AgentStatus`, `AgentDetails`,
-`AgentSnapshot`, `MonitorEvent`, `FocusResult`, and `RenameResult`; `app`, `ui`,
+`AgentSnapshot`, `MonitorEvent`, `FocusResult`, `RenameResult`, and the rename
+correlation types (`RenameRequestId`, `RenameRequest`, `RenameCompletion`);
+`app`, `ui`,
 and `runtime` import them from there, and `herdr` translates its wire format
 into them (re-exporting the public ones for source compatibility). `AgentId`
 is opaque with a private Herdr(workspace, pane) / core(address) representation
@@ -66,8 +68,11 @@ Rules for the target:
 - `agent_host` is a concrete type or enum, not a trait-object plugin layer; the
   two hosts are the only hosts. Today `AgentHostContext` has the Herdr variant
   only and `AgentHostMonitor` forwards the typed events, focus results, and
-  rename results as three receivers; a `#[cfg(test)]` synthetic backend stands
-  in for a read-only host. `runtime` speaks the facade, never `HerdrMonitor`.
+  rename completions as three receivers; a `#[cfg(test)]` synthetic backend
+  stands in for a read-only host. `rename_agent` reports whether the host
+  accepted the request (Herdr runs one rename worker, no queue), and the effect
+  boundary settles a refusal itself. `runtime` speaks the facade, never
+  `HerdrMonitor`.
 - Capabilities (`AgentCapabilities`) are gated at the reducer
   (`app::agent_pulse`) and at the runtime effect boundary (`runtime::input`),
   with the facade dropping unsupported requests as a last guard; the renderer

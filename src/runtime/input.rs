@@ -27,7 +27,7 @@ use crate::agent_host::AgentHostMonitor;
 use crate::app::{Action, AgentPulseConnection, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioHandle};
 use crate::cli::map_key;
-use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
+use crate::model::agent::{FocusResult, MonitorEvent, RenameCompletion, RenameResult};
 use crate::model::PlaybackState;
 
 use super::debounce::{QueryChange, SearchDebounce};
@@ -263,25 +263,43 @@ pub(super) fn apply_agent_focus_result(app: &mut App, result: FocusResult, now: 
 
 /// Submit the inline table Name input via the already-eligible monitor; a
 /// host without the rename capability is refused before any dispatch. The
-/// target is opaque outside `herdr`, socket work runs on its one-shot worker,
-/// and stale state leaves the user input intact without dispatching anything.
+/// target is opaque outside `herdr`, socket work runs on the monitor's single
+/// rename worker, and stale state leaves the user input intact without
+/// dispatching anything.
+///
+/// The reducer allocates the submission id; only a request it accepted is sent,
+/// and it is sent under that id. A host that refuses it (single worker slot
+/// busy, or no monitor at all) produces no completion, so the refusal is
+/// settled here, immediately, as a recoverable `Unavailable` for the same
+/// submission. The editor therefore never waits on a result that cannot come.
 fn submit_agent_rename(app: &mut App, monitor: Option<&AgentHostMonitor>) {
     if !app.agent_capabilities().rename {
         return;
     }
-    let Some((id, name)) = app.agent_rename_request() else {
+    let Some(request) = app.agent_rename_request() else {
         return;
     };
+    let submission = request.request;
     app.apply(Action::SubmitAgentRename);
-    match monitor {
-        Some(monitor) => monitor.rename_agent(id, name),
-        None => apply_agent_rename_result(app, RenameResult::Unavailable, Instant::now()),
+    if app.agent_rename_in_flight() != Some(submission) {
+        return;
+    }
+    let accepted = monitor.is_some_and(|monitor| monitor.rename_agent(request));
+    if !accepted {
+        apply_agent_rename_result(
+            app,
+            RenameCompletion {
+                request: submission,
+                result: RenameResult::Unavailable,
+            },
+            Instant::now(),
+        );
     }
 }
 
-/// Fold a typed async `agent.rename` result into reducer-owned table state.
-pub(super) fn apply_agent_rename_result(app: &mut App, result: RenameResult, now: Instant) {
-    app.apply(Action::AgentRenameResult { result, now });
+/// Fold a typed async `agent.rename` completion into reducer-owned table state.
+pub(super) fn apply_agent_rename_result(app: &mut App, completion: RenameCompletion, now: Instant) {
+    app.apply(Action::AgentRenameResult { completion, now });
 }
 
 /// Fold a typed Herdr monitor event into app state at the current time.
@@ -1427,6 +1445,118 @@ mod tests {
         assert!(!app.agent_rename_is_submitting());
         assert_eq!(app.agent_focus_notice(Instant::now()), None);
         assert_eq!(app.agent_rename_notice(Instant::now()), None);
+    }
+
+    // --- MIK-075: rename submission, refusal, and late completions ----------
+
+    #[test]
+    fn a_busy_host_refuses_the_rename_and_the_editor_is_settled_immediately() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::HERDR);
+        control.set_rename_busy(true);
+
+        press(KeyCode::Char('r'), &mut app, &monitor);
+        press(KeyCode::Char('x'), &mut app, &monitor);
+        press(KeyCode::Enter, &mut app, &monitor);
+
+        assert!(control.rename_requests().is_empty(), "nothing was started");
+        assert!(
+            !app.agent_rename_is_submitting(),
+            "a refused request must never leave the editor saving"
+        );
+        assert!(app.is_agent_rename_open(), "the input is retained");
+        assert_eq!(app.agent_rename_input(), Some("alphax"));
+        assert_eq!(
+            app.agent_rename_notice(Instant::now()),
+            Some("rename unavailable · retrying")
+        );
+
+        // Once the host frees up the same input submits normally.
+        control.set_rename_busy(false);
+        press(KeyCode::Enter, &mut app, &monitor);
+        assert_eq!(control.rename_requests(), vec![Some("alphax".to_string())]);
+        assert!(app.agent_rename_is_submitting());
+    }
+
+    #[test]
+    fn a_missing_monitor_settles_the_submission_instead_of_leaving_it_saving() {
+        let (mut app, _monitor, _control) = capable_details_app(AgentCapabilities::HERDR);
+
+        app.apply(Action::OpenAgentRename);
+        submit_agent_rename(&mut app, None);
+
+        assert!(!app.agent_rename_is_submitting());
+        assert!(app.is_agent_rename_open());
+        assert_eq!(
+            app.agent_rename_notice(Instant::now()),
+            Some("rename unavailable · retrying")
+        );
+    }
+
+    #[test]
+    fn a_dispatched_rename_carries_the_reducer_allocated_request_id() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::HERDR);
+
+        press(KeyCode::Char('r'), &mut app, &monitor);
+        press(KeyCode::Enter, &mut app, &monitor);
+
+        let sent = control.rename_request_ids();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(app.agent_rename_in_flight(), Some(sent[0]));
+    }
+
+    #[test]
+    fn a_late_completion_after_cancel_and_reopen_cannot_touch_the_new_editor() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::HERDR);
+
+        press(KeyCode::Char('r'), &mut app, &monitor);
+        press(KeyCode::Char('x'), &mut app, &monitor);
+        press(KeyCode::Enter, &mut app, &monitor);
+        let old = control.rename_request_ids()[0];
+
+        // The user cancels while the worker is still running, then reopens.
+        press(KeyCode::Esc, &mut app, &monitor);
+        assert!(!app.is_agent_rename_open());
+        press(KeyCode::Char('r'), &mut app, &monitor);
+        press(KeyCode::Char('z'), &mut app, &monitor);
+
+        control
+            .rename_results
+            .send(RenameCompletion {
+                request: old,
+                result: RenameResult::Renamed,
+            })
+            .unwrap();
+        while let Ok(completion) = monitor.rename_events().try_recv() {
+            apply_agent_rename_result(&mut app, completion, Instant::now());
+        }
+
+        assert!(
+            app.is_agent_rename_open(),
+            "the old result must not close it"
+        );
+        assert_eq!(app.agent_rename_input(), Some("alphaz"));
+        assert!(!app.agent_rename_is_submitting());
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
+            Some("alpha"),
+            "the row keeps the name Herdr last reported"
+        );
+    }
+
+    #[test]
+    fn rename_and_focus_requests_are_independent_of_each_other() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::HERDR);
+
+        press(KeyCode::Char('r'), &mut app, &monitor);
+        press(KeyCode::Enter, &mut app, &monitor);
+        assert!(app.agent_rename_is_submitting());
+        assert_eq!(control.rename_requests().len(), 1);
+
+        // Leave the editor; focus must still dispatch while a rename is out.
+        press(KeyCode::Esc, &mut app, &monitor);
+        press(KeyCode::Char('o'), &mut app, &monitor);
+        assert_eq!(control.focus_requests(), 1);
+        assert!(app.is_agent_details_open());
     }
 
     #[test]

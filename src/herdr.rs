@@ -4,7 +4,7 @@
 //! variables, the Unix socket transport, JSON-RPC framing, and raw
 //! `agent.list` payloads. Everything it exposes is typed.
 
-use crate::model::agent::{AgentDetails, MonitorEvent};
+use crate::model::agent::{AgentDetails, MonitorEvent, RenameCompletion, RenameRequest};
 // Compatibility: these were public items of this module before the shared
 // vocabulary moved to `model::agent`.
 pub use crate::model::agent::{AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult};
@@ -349,15 +349,111 @@ impl FocusDispatcher {
     }
 }
 
+/// The blocking socket round-trip a rename request performs; injectable like
+/// [`FocusTransport`] so tests control it without a real socket.
+type RenameTransport =
+    Arc<dyn Fn(&HerdrContext, &AgentId, Option<&str>) -> RenameResult + Send + Sync>;
+
+/// How a dispatcher starts its worker; production spawns a named thread and
+/// tests inject a failing spawner.
+type WorkerSpawner = Box<dyn FnOnce(Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<()>>;
+
+fn thread_spawner(name: &'static str) -> WorkerSpawner {
+    Box::new(move |job| {
+        thread::Builder::new()
+            .name(name.to_string())
+            .spawn(job)
+            .map(|_| ())
+    })
+}
+
+/// Bounds explicit rename requests to at most one in-flight socket worker and
+/// echoes the originating request id on every completion.
+///
+/// Like focus, a rename that arrives while another is still running is refused
+/// rather than queued: replaying a backlog of stale edits after a stalled
+/// socket recovers would write names the user has long since abandoned. Unlike
+/// focus, the refusal is reported to the caller (`false`) because a submitted
+/// editor is waiting on an answer; the caller settles it immediately instead of
+/// leaving it saving. Every accepted request yields exactly one completion —
+/// including a panicking transport or a failed thread spawn, both reported as
+/// `Unavailable` — and the slot is released before that completion is
+/// published, so the next request after a completion always dispatches.
+struct RenameDispatcher {
+    context: HerdrContext,
+    results: mpsc::Sender<RenameCompletion>,
+    in_flight: Arc<AtomicBool>,
+    transport: RenameTransport,
+}
+
+impl RenameDispatcher {
+    fn new(context: HerdrContext, results: mpsc::Sender<RenameCompletion>) -> Self {
+        Self {
+            context,
+            results,
+            in_flight: Arc::new(AtomicBool::new(false)),
+            transport: Arc::new(request_agent_rename),
+        }
+    }
+
+    /// Start `request` on the worker slot. Returns `false`, starting nothing and
+    /// publishing nothing, when the slot is busy.
+    fn dispatch(&self, request: RenameRequest) -> bool {
+        self.dispatch_with(request, thread_spawner("herdr-rename"))
+    }
+
+    fn dispatch_with(&self, request: RenameRequest, spawner: WorkerSpawner) -> bool {
+        if self
+            .in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        let guard = InFlightGuard(Arc::clone(&self.in_flight));
+        let id = request.request;
+        let context = self.context.clone();
+        let results = self.results.clone();
+        let transport = Arc::clone(&self.transport);
+        let spawned = spawner(Box::new(move || {
+            // Scoped so the slot reopens before the completion is published.
+            let result = {
+                let _guard = guard;
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    transport(&context, &request.target, request.name.as_deref())
+                }))
+                .unwrap_or(RenameResult::Unavailable)
+            };
+            let _ = results.send(RenameCompletion {
+                request: id,
+                result,
+            });
+        }));
+        if spawned.is_err() {
+            // The guard moved into the job and was dropped with it, so the slot
+            // is already free; settle the submission as recoverable.
+            let _ = self.results.send(RenameCompletion {
+                request: id,
+                result: RenameResult::Unavailable,
+            });
+        }
+        true
+    }
+
+    #[cfg(test)]
+    fn is_in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire)
+    }
+}
+
 /// Handle for the background polling thread. Dropping it (or calling
 /// [`HerdrMonitor::stop`]) wakes the thread and joins it.
 pub(crate) struct HerdrMonitor {
-    context: HerdrContext,
     events: mpsc::Receiver<MonitorEvent>,
     focus_events: mpsc::Receiver<FocusResult>,
     focus: FocusDispatcher,
-    rename_events: mpsc::Receiver<RenameResult>,
-    rename_event_tx: mpsc::Sender<RenameResult>,
+    rename_events: mpsc::Receiver<RenameCompletion>,
+    rename: RenameDispatcher,
     stop: Option<mpsc::Sender<()>>,
     handle: Option<thread::JoinHandle<()>>,
 }
@@ -376,7 +472,7 @@ impl HerdrMonitor {
 
     /// Typed results of explicit background rename requests. They remain
     /// separate from polling, so a slow or failed edit cannot delay recovery.
-    pub(crate) fn rename_events(&self) -> &mpsc::Receiver<RenameResult> {
+    pub(crate) fn rename_events(&self) -> &mpsc::Receiver<RenameCompletion> {
         &self.rename_events
     }
 
@@ -390,14 +486,11 @@ impl HerdrMonitor {
     }
 
     /// Dispatch an explicit name edit without blocking rendering or keyboard
-    /// input. Only the typed result crosses back to the controller.
-    pub(crate) fn rename_agent(&self, id: AgentId, name: Option<String>) {
-        let context = self.context.clone();
-        let result_tx = self.rename_event_tx.clone();
-        thread::spawn(move || {
-            let _ = result_tx.send(request_agent_rename(&context, &id, name.as_deref()));
-        });
+    /// input. Only the typed completion crosses back to the controller.
+    pub(crate) fn rename_agent(&self, request: RenameRequest) -> bool {
+        self.rename.dispatch(request)
     }
+
     pub(crate) fn stop(mut self) {
         self.shutdown();
     }
@@ -440,11 +533,10 @@ pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
     });
     HerdrMonitor {
         focus: FocusDispatcher::new(monitor_context.clone(), focus_event_tx),
-        context: monitor_context,
         events: event_rx,
         focus_events,
         rename_events,
-        rename_event_tx,
+        rename: RenameDispatcher::new(monitor_context, rename_event_tx),
         stop: Some(stop_tx),
         handle: Some(handle),
     }
@@ -453,6 +545,7 @@ pub(crate) fn spawn_monitor(context: HerdrContext) -> HerdrMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::agent::RenameRequestId;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Condvar, Mutex};
@@ -940,6 +1033,305 @@ mod tests {
             "focus must recover after a worker panic"
         );
         blocked.release();
+    }
+
+    // --- MIK-075: the rename worker is bounded and its completions correlated --
+
+    fn request_id(position: u64) -> RenameRequestId {
+        (1..position).fold(RenameRequestId::FIRST, |id, _| id.following())
+    }
+
+    fn rename_request(position: u64, name: Option<&str>) -> RenameRequest {
+        RenameRequest {
+            request: request_id(position),
+            target: AgentId::herdr("ws-1", "pane-1"),
+            name: name.map(str::to_string),
+        }
+    }
+
+    fn test_rename_dispatcher() -> (RenameDispatcher, mpsc::Receiver<RenameCompletion>) {
+        let (results_tx, results) = mpsc::channel();
+        let context = HerdrContext {
+            socket_path: PathBuf::from("/nonexistent/herdr-rename-test.sock"),
+        };
+        (RenameDispatcher::new(context, results_tx), results)
+    }
+
+    /// A rename transport that blocks every call until the test opens the gate,
+    /// recording how many calls reached it and the name each one carried.
+    struct RenameGate {
+        entered: mpsc::Receiver<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        calls: Arc<AtomicUsize>,
+        names: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    impl RenameGate {
+        fn install(dispatcher: &mut RenameDispatcher, result: RenameResult) -> Self {
+            let (entered_tx, entered) = mpsc::channel();
+            let release = Arc::new((Mutex::new(false), Condvar::new()));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let names = Arc::new(Mutex::new(Vec::new()));
+            let (gate_release, gate_calls, gate_names) =
+                (Arc::clone(&release), Arc::clone(&calls), Arc::clone(&names));
+            dispatcher.transport = Arc::new(
+                move |_context: &HerdrContext, _id: &AgentId, name: Option<&str>| {
+                    gate_calls.fetch_add(1, Ordering::SeqCst);
+                    gate_names
+                        .lock()
+                        .expect("names lock")
+                        .push(name.map(str::to_string));
+                    let _ = entered_tx.send(());
+                    let (lock, cvar) = &*gate_release;
+                    let mut open = lock.lock().expect("gate lock");
+                    while !*open {
+                        open = cvar.wait(open).expect("gate wait");
+                    }
+                    result
+                },
+            );
+            Self {
+                entered,
+                release,
+                calls,
+                names,
+            }
+        }
+
+        fn await_entry(&self) {
+            self.entered
+                .recv_timeout(Duration::from_secs(2))
+                .expect("a rename worker must reach the transport");
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        fn open(&self) {
+            let (lock, cvar) = &*self.release;
+            *lock.lock().expect("gate lock") = true;
+            cvar.notify_all();
+        }
+    }
+
+    #[test]
+    fn repeated_rename_requests_keep_at_most_one_transport_worker_in_flight() {
+        let (mut dispatcher, completions) = test_rename_dispatcher();
+        let gate = RenameGate::install(&mut dispatcher, RenameResult::Renamed);
+
+        assert!(dispatcher.dispatch(rename_request(1, Some("one"))));
+        gate.await_entry();
+        for position in 2..10 {
+            assert!(
+                !dispatcher.dispatch(rename_request(position, Some("more"))),
+                "a request made while one is in flight is refused, not queued"
+            );
+        }
+
+        assert_eq!(gate.calls(), 1, "only one worker may reach the transport");
+        assert_eq!(
+            completions.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "no completion while the transport is blocked"
+        );
+
+        gate.open();
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(2)),
+            Ok(RenameCompletion {
+                request: request_id(1),
+                result: RenameResult::Renamed,
+            })
+        );
+        assert_eq!(
+            completions.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "refused requests produce no completion and leave no backlog"
+        );
+        assert_eq!(gate.calls(), 1);
+    }
+
+    #[test]
+    fn rename_is_dispatchable_again_once_the_previous_request_completes() {
+        let (mut dispatcher, completions) = test_rename_dispatcher();
+        let gate = RenameGate::install(&mut dispatcher, RenameResult::Renamed);
+
+        assert!(dispatcher.dispatch(rename_request(1, Some("one"))));
+        gate.await_entry();
+        gate.open();
+        completions
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first completion");
+
+        // The slot is released before the completion is published, so this
+        // retry is deterministic rather than a race.
+        assert!(dispatcher.dispatch(rename_request(2, Some("two"))));
+        gate.await_entry();
+        assert_eq!(gate.calls(), 2);
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(2)),
+            Ok(RenameCompletion {
+                request: request_id(2),
+                result: RenameResult::Renamed,
+            })
+        );
+    }
+
+    #[test]
+    fn every_rename_result_is_echoed_with_its_own_request_id() {
+        for result in [
+            RenameResult::Renamed,
+            RenameResult::Unsupported,
+            RenameResult::Missing,
+            RenameResult::Unavailable,
+        ] {
+            let (mut dispatcher, completions) = test_rename_dispatcher();
+            let gate = RenameGate::install(&mut dispatcher, result);
+            assert!(dispatcher.dispatch(rename_request(7, Some("name"))));
+            gate.await_entry();
+            gate.open();
+            assert_eq!(
+                completions.recv_timeout(Duration::from_secs(2)),
+                Ok(RenameCompletion {
+                    request: request_id(7),
+                    result,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn a_blank_rename_reaches_the_transport_as_no_name() {
+        let (mut dispatcher, completions) = test_rename_dispatcher();
+        let gate = RenameGate::install(&mut dispatcher, RenameResult::Renamed);
+
+        assert!(dispatcher.dispatch(rename_request(1, None)));
+        gate.await_entry();
+        gate.open();
+        completions
+            .recv_timeout(Duration::from_secs(2))
+            .expect("completion");
+
+        assert_eq!(*gate.names.lock().unwrap(), vec![None]);
+    }
+
+    #[test]
+    fn a_panicking_rename_worker_reports_unavailable_and_the_next_request_works() {
+        let (mut dispatcher, completions) = test_rename_dispatcher();
+        dispatcher.transport = Arc::new(
+            |_context: &HerdrContext, _id: &AgentId, _name: Option<&str>| {
+                panic!("rename transport panicked");
+            },
+        );
+
+        assert!(dispatcher.dispatch(rename_request(1, Some("one"))));
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(2)),
+            Ok(RenameCompletion {
+                request: request_id(1),
+                result: RenameResult::Unavailable,
+            }),
+            "a panic is a recoverable, matching Unavailable completion"
+        );
+        assert!(
+            !dispatcher.is_in_flight(),
+            "the slot reopens before the completion is published"
+        );
+
+        let gate = RenameGate::install(&mut dispatcher, RenameResult::Renamed);
+        assert!(
+            dispatcher.dispatch(rename_request(2, Some("two"))),
+            "the slot was released by the panicking worker"
+        );
+        gate.await_entry();
+        gate.open();
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(2)),
+            Ok(RenameCompletion {
+                request: request_id(2),
+                result: RenameResult::Renamed,
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_rename_worker_spawn_reports_unavailable_and_releases_the_slot() {
+        let (mut dispatcher, completions) = test_rename_dispatcher();
+        let failing: WorkerSpawner = Box::new(|_job| Err(std::io::Error::other("no threads")));
+
+        assert!(dispatcher.dispatch_with(rename_request(1, Some("one")), failing));
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(2)),
+            Ok(RenameCompletion {
+                request: request_id(1),
+                result: RenameResult::Unavailable,
+            })
+        );
+        assert!(!dispatcher.is_in_flight());
+
+        let gate = RenameGate::install(&mut dispatcher, RenameResult::Renamed);
+        assert!(
+            dispatcher.dispatch(rename_request(2, Some("two"))),
+            "a spawn failure must not strand the in-flight slot"
+        );
+        gate.await_entry();
+        gate.open();
+        assert_eq!(
+            completions.recv_timeout(Duration::from_secs(2)),
+            Ok(RenameCompletion {
+                request: request_id(2),
+                result: RenameResult::Renamed,
+            })
+        );
+    }
+
+    #[test]
+    fn a_core_identity_has_no_pane_target_so_rename_is_missing_without_io() {
+        let context = HerdrContext {
+            socket_path: PathBuf::from("/nonexistent/herdr-rename-test.sock"),
+        };
+        assert_eq!(
+            request_agent_rename(&context, &AgentId::core("address"), Some("x")),
+            RenameResult::Missing
+        );
+    }
+
+    #[test]
+    fn a_blocked_rename_does_not_delay_focus_or_polling() {
+        let context = HerdrContext {
+            socket_path: PathBuf::from("/nonexistent/herdr-independence-test.sock"),
+        };
+        let mut monitor = spawn_monitor(context);
+        let gate = RenameGate::install(&mut monitor.rename, RenameResult::Renamed);
+        assert!(monitor.rename_agent(rename_request(1, Some("one"))));
+        gate.await_entry();
+
+        // Polling still completes and focus still dispatches (against a dead
+        // socket, so each is a recoverable failure) while rename is blocked.
+        assert_eq!(
+            monitor.events().recv_timeout(Duration::from_secs(2)),
+            Ok(MonitorEvent::Failed)
+        );
+        monitor.focus_agent(AgentId::herdr("ws-1", "pane-1"));
+        assert_eq!(
+            monitor.focus_events().recv_timeout(Duration::from_secs(2)),
+            Ok(FocusResult::Unavailable)
+        );
+        assert!(
+            monitor.rename_events().try_recv().is_err(),
+            "the blocked rename has not completed"
+        );
+
+        gate.open();
+        assert_eq!(
+            monitor.rename_events().recv_timeout(Duration::from_secs(2)),
+            Ok(RenameCompletion {
+                request: request_id(1),
+                result: RenameResult::Renamed,
+            })
+        );
+        monitor.stop();
     }
 
     #[test]

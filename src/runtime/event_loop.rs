@@ -133,8 +133,8 @@ fn drain_runtime_events(
         while let Ok(result) = monitor.focus_events().try_recv() {
             apply_agent_focus_result(app, result, Instant::now());
         }
-        while let Ok(result) = monitor.rename_events().try_recv() {
-            apply_agent_rename_result(app, result, Instant::now());
+        while let Ok(completion) = monitor.rename_events().try_recv() {
+            apply_agent_rename_result(app, completion, Instant::now());
         }
         // Stale/unavailable thresholds advance every loop, so the 15-second
         // unavailable state occurs even when no monitor event arrives (e.g.
@@ -311,7 +311,9 @@ mod tests {
     #[test]
     fn host_events_drain_to_empty_in_one_pass_and_connect_the_app() {
         use crate::app::AgentPulseConnection;
-        use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
+        use crate::model::agent::{
+            FocusResult, MonitorEvent, RenameCompletion, RenameRequestId, RenameResult,
+        };
 
         let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
         let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
@@ -326,7 +328,13 @@ mod tests {
             .focus_results
             .send(FocusResult::Unsupported)
             .unwrap();
-        control.rename_results.send(RenameResult::Missing).unwrap();
+        control
+            .rename_results
+            .send(RenameCompletion {
+                request: RenameRequestId::FIRST,
+                result: RenameResult::Missing,
+            })
+            .unwrap();
 
         let adapters = Adapters {
             audio: &audio,
@@ -352,7 +360,9 @@ mod tests {
 
     #[test]
     fn a_read_only_host_drains_without_any_herdr_version_notice() {
-        use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
+        use crate::model::agent::{
+            FocusResult, MonitorEvent, RenameCompletion, RenameRequestId, RenameResult,
+        };
 
         let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
         let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
@@ -370,7 +380,10 @@ mod tests {
             .unwrap();
         control
             .rename_results
-            .send(RenameResult::Unsupported)
+            .send(RenameCompletion {
+                request: RenameRequestId::FIRST,
+                result: RenameResult::Unsupported,
+            })
             .unwrap();
 
         let adapters = Adapters {
@@ -383,6 +396,68 @@ mod tests {
 
         assert_eq!(app.active_agents().len(), 1, "observation still works");
         assert_eq!(app.agent_focus_notice(Instant::now()), None);
+        assert_eq!(app.agent_rename_notice(Instant::now()), None);
+    }
+
+    #[test]
+    fn a_drained_late_rename_completion_cannot_settle_a_reopened_editor() {
+        use crate::model::agent::{
+            MonitorEvent, RenameCompletion, RenameRequest, RenameRequestId, RenameResult,
+        };
+
+        let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
+        let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
+        let (_response_tx, response_rx) = mpsc::channel::<SearchResponse>();
+        let (mut app, debounce, persistence) = controller();
+        let (monitor, control) = AgentHostMonitor::synthetic(AgentCapabilities::HERDR);
+        app.configure_agent_capabilities(monitor.capabilities());
+        control
+            .events
+            .send(MonitorEvent::Snapshot(vec![pulse_agent("alpha")]))
+            .unwrap();
+        let adapters = Adapters {
+            audio: &audio,
+            request_tx: &request_tx,
+            response_rx: &response_rx,
+            monitor: Some(&monitor),
+        };
+        drain_runtime_events(&mut app, &adapters, &debounce, &persistence);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+
+        // First editor submits, is cancelled, and a second editor opens.
+        app.apply(Action::OpenAgentRename);
+        let first = app.agent_rename_request().expect("can submit");
+        assert!(monitor.rename_agent(RenameRequest {
+            request: first.request,
+            target: first.target.clone(),
+            name: first.name.clone(),
+        }));
+        app.apply(Action::SubmitAgentRename);
+        app.apply(Action::CloseAgentRename);
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::AppendAgentRename('!'));
+
+        // The stale result and an unrelated future id both land in one drain.
+        for (request, result) in [
+            (first.request, RenameResult::Renamed),
+            (
+                RenameRequestId::FIRST.following().following(),
+                RenameResult::Missing,
+            ),
+        ] {
+            control
+                .rename_results
+                .send(RenameCompletion { request, result })
+                .unwrap();
+        }
+        drain_runtime_events(&mut app, &adapters, &debounce, &persistence);
+
+        assert!(monitor.rename_events().try_recv().is_err(), "fully drained");
+        assert!(app.is_agent_rename_open(), "neither stale result lands");
+        assert_eq!(app.agent_rename_input(), Some("alpha!"));
+        assert!(!app.agent_rename_is_submitting());
         assert_eq!(app.agent_rename_notice(Instant::now()), None);
     }
 

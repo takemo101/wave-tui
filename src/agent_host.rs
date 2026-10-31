@@ -25,7 +25,9 @@
 use std::sync::mpsc::Receiver;
 
 use crate::herdr::{self, HerdrContext, HerdrMonitor};
-use crate::model::agent::{AgentCapabilities, AgentId, FocusResult, MonitorEvent, RenameResult};
+use crate::model::agent::{
+    AgentCapabilities, AgentId, FocusResult, MonitorEvent, RenameCompletion, RenameRequest,
+};
 
 /// Eligibility of an Agent Planets host for this launch, with the host's
 /// startup context. Absent for standalone, ineligible, and `--no-agent-pulse`
@@ -99,8 +101,9 @@ impl AgentHostMonitor {
         }
     }
 
-    /// Typed results of explicit rename requests, separate from polling.
-    pub(crate) fn rename_events(&self) -> &Receiver<RenameResult> {
+    /// Typed completions of explicit rename requests, separate from polling.
+    /// Each carries the id of the submission it settles.
+    pub(crate) fn rename_events(&self) -> &Receiver<RenameCompletion> {
         match &self.backend {
             Backend::Herdr(monitor) => monitor.rename_events(),
             #[cfg(test)]
@@ -123,16 +126,19 @@ impl AgentHostMonitor {
     }
 
     /// Ask the host to rename an agent (`None` clears the name) without
-    /// blocking. A no-op when the host has no rename capability; the typed
-    /// result returns on [`Self::rename_events`].
-    pub(crate) fn rename_agent(&self, id: AgentId, name: Option<String>) {
+    /// blocking. Returns whether the host accepted the request: only then does
+    /// a matching completion arrive on [`Self::rename_events`]. A host without
+    /// the rename capability, or one whose single rename slot is busy, refuses
+    /// (`false`) and produces no completion, so the caller settles the
+    /// submission itself.
+    pub(crate) fn rename_agent(&self, request: RenameRequest) -> bool {
         if !self.capabilities.rename {
-            return;
+            return false;
         }
         match &self.backend {
-            Backend::Herdr(monitor) => monitor.rename_agent(id, name),
+            Backend::Herdr(monitor) => monitor.rename_agent(request),
             #[cfg(test)]
-            Backend::Synthetic(synthetic) => synthetic.record_rename(name),
+            Backend::Synthetic(synthetic) => synthetic.record_rename(request),
         }
     }
 
@@ -155,18 +161,23 @@ pub(crate) mod synthetic {
     use std::sync::{Arc, Mutex};
 
     use super::{AgentCapabilities, AgentHostMonitor, Backend as HostBackend};
-    use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
+    use crate::model::agent::{
+        FocusResult, MonitorEvent, RenameCompletion, RenameRequest, RenameRequestId,
+    };
 
     #[derive(Default)]
     struct Dispatched {
         focus: usize,
-        renames: Vec<Option<String>>,
+        renames: Vec<RenameRequest>,
+        /// When set, the host's single rename slot is busy: requests are
+        /// refused and never recorded as dispatched.
+        rename_busy: bool,
     }
 
     pub(super) struct Backend {
         pub(super) events: Receiver<MonitorEvent>,
         pub(super) focus_events: Receiver<FocusResult>,
-        pub(super) rename_events: Receiver<RenameResult>,
+        pub(super) rename_events: Receiver<RenameCompletion>,
         dispatched: Arc<Mutex<Dispatched>>,
     }
 
@@ -175,8 +186,13 @@ pub(crate) mod synthetic {
             self.dispatched.lock().unwrap().focus += 1;
         }
 
-        pub(super) fn record_rename(&self, name: Option<String>) {
-            self.dispatched.lock().unwrap().renames.push(name);
+        pub(super) fn record_rename(&self, request: RenameRequest) -> bool {
+            let mut dispatched = self.dispatched.lock().unwrap();
+            if dispatched.rename_busy {
+                return false;
+            }
+            dispatched.renames.push(request);
+            true
         }
     }
 
@@ -184,7 +200,7 @@ pub(crate) mod synthetic {
     pub(crate) struct SyntheticControl {
         pub(crate) events: Sender<MonitorEvent>,
         pub(crate) focus_results: Sender<FocusResult>,
-        pub(crate) rename_results: Sender<RenameResult>,
+        pub(crate) rename_results: Sender<RenameCompletion>,
         dispatched: Arc<Mutex<Dispatched>>,
     }
 
@@ -196,7 +212,28 @@ pub(crate) mod synthetic {
 
         /// The names of the rename requests that reached the host.
         pub(crate) fn rename_requests(&self) -> Vec<Option<String>> {
-            self.dispatched.lock().unwrap().renames.clone()
+            let dispatched = self.dispatched.lock().unwrap();
+            dispatched
+                .renames
+                .iter()
+                .map(|request| request.name.clone())
+                .collect()
+        }
+
+        /// The submission ids of the rename requests that reached the host.
+        pub(crate) fn rename_request_ids(&self) -> Vec<RenameRequestId> {
+            let dispatched = self.dispatched.lock().unwrap();
+            dispatched
+                .renames
+                .iter()
+                .map(|request| request.request)
+                .collect()
+        }
+
+        /// Make the host refuse (or accept again) rename requests, as a busy
+        /// single worker slot would.
+        pub(crate) fn set_rename_busy(&self, busy: bool) {
+            self.dispatched.lock().unwrap().rename_busy = busy;
         }
     }
 
@@ -235,6 +272,7 @@ pub(crate) mod synthetic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::agent::{RenameRequestId, RenameResult};
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -286,30 +324,41 @@ mod tests {
         let (monitor, control) = AgentHostMonitor::synthetic(AgentCapabilities::HERDR);
         control.events.send(MonitorEvent::Failed).unwrap();
         control.focus_results.send(FocusResult::Missing).unwrap();
-        control.rename_results.send(RenameResult::Renamed).unwrap();
+        let completion = RenameCompletion {
+            request: RenameRequestId::FIRST,
+            result: RenameResult::Renamed,
+        };
+        control.rename_results.send(completion).unwrap();
 
         assert_eq!(monitor.events().try_recv(), Ok(MonitorEvent::Failed));
         assert_eq!(monitor.focus_events().try_recv(), Ok(FocusResult::Missing));
-        assert_eq!(
-            monitor.rename_events().try_recv(),
-            Ok(RenameResult::Renamed)
-        );
+        assert_eq!(monitor.rename_events().try_recv(), Ok(completion));
         assert!(monitor.events().try_recv().is_err());
+    }
+
+    fn rename(request: RenameRequestId, name: Option<&str>) -> RenameRequest {
+        RenameRequest {
+            request,
+            target: AgentId::herdr("ws", "p1"),
+            name: name.map(str::to_string),
+        }
     }
 
     #[test]
     fn supported_requests_reach_the_host() {
         let (monitor, control) = AgentHostMonitor::synthetic(AgentCapabilities::HERDR);
+        let first = RenameRequestId::FIRST;
 
         monitor.focus_agent(AgentId::herdr("ws", "p1"));
-        monitor.rename_agent(AgentId::herdr("ws", "p1"), Some("alpha".to_string()));
-        monitor.rename_agent(AgentId::herdr("ws", "p1"), None);
+        assert!(monitor.rename_agent(rename(first, Some("alpha"))));
+        assert!(monitor.rename_agent(rename(first.following(), None)));
 
         assert_eq!(control.focus_requests(), 1);
         assert_eq!(
             control.rename_requests(),
             vec![Some("alpha".to_string()), None]
         );
+        assert_eq!(control.rename_request_ids(), vec![first, first.following()]);
     }
 
     #[test]
@@ -318,7 +367,7 @@ mod tests {
         assert_eq!(monitor.capabilities(), AgentCapabilities::READ_ONLY);
 
         monitor.focus_agent(AgentId::herdr("ws", "p1"));
-        monitor.rename_agent(AgentId::herdr("ws", "p1"), Some("alpha".to_string()));
+        assert!(!monitor.rename_agent(rename(RenameRequestId::FIRST, Some("alpha"))));
 
         assert_eq!(control.focus_requests(), 0);
         assert!(control.rename_requests().is_empty());

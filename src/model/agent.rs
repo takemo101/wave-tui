@@ -134,6 +134,40 @@ pub enum RenameResult {
     Unavailable,
 }
 
+/// Opaque, monotonic identity of one submitted rename. The app allocates it at
+/// submission and the host echoes it back on the matching completion, so a late
+/// result can only ever settle the submission that produced it. The value is
+/// private: it is compared, never displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenameRequestId(u64);
+
+impl RenameRequestId {
+    /// The first id an app hands out.
+    pub(crate) const FIRST: Self = Self(1);
+
+    /// The id allocated after this one.
+    pub(crate) fn following(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+/// One explicit rename handed to a host: the submission it belongs to, the
+/// opaque target, and the normalized name (`None` clears the explicit name).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameRequest {
+    pub(crate) request: RenameRequestId,
+    pub(crate) target: AgentId,
+    pub(crate) name: Option<String>,
+}
+
+/// A host's typed answer to one [`RenameRequest`]: the submission it settles
+/// plus the unchanged recoverable [`RenameResult`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenameCompletion {
+    pub(crate) request: RenameRequestId,
+    pub(crate) result: RenameResult,
+}
+
 /// The only agent-list fields that may reach the read-only details modal.
 /// Identity/location/session fields stay behind the private [`AgentId`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

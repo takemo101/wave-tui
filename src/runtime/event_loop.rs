@@ -15,9 +15,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
+use crate::agent_host::AgentHostMonitor;
 use crate::app::{Action, App};
 use crate::audio::{AudioEvent, AudioHandle};
-use crate::herdr::HerdrMonitor;
 
 use super::debounce::SearchDebounce;
 use super::input::{
@@ -37,15 +37,15 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const POLL_INTERVAL_LOW_POWER: Duration = Duration::from_millis(150);
 
 /// The adapter endpoints the event loop talks to: the audio runtime handle, the
-/// search worker's request/response channels, and the optional Herdr monitor.
-/// Bundled so the event loop keeps a small, readable signature.
+/// search worker's request/response channels, and the optional agent host
+/// monitor. Bundled so the event loop keeps a small, readable signature.
 pub(super) struct Adapters<'a> {
     pub(super) audio: &'a AudioHandle,
     pub(super) request_tx: &'a Sender<SearchRequest>,
     pub(super) response_rx: &'a Receiver<SearchResponse>,
-    /// The optional Herdr Agent Pulse monitor; `None` for standalone,
+    /// The optional Agent Pulse host monitor; `None` for standalone,
     /// ineligible, or `--no-agent-pulse` launches.
-    pub(super) monitor: Option<&'a HerdrMonitor>,
+    pub(super) monitor: Option<&'a AgentHostMonitor>,
 }
 
 /// The terminal event loop: render, fire due searches, handle input, and drain
@@ -108,7 +108,7 @@ pub(super) fn event_loop(
 /// Fold every event queued by the adapters into app state, in one pass.
 ///
 /// Ordering is part of the contract: all pending audio events first, then all
-/// pending search responses, then — only when the Herdr integration is live —
+/// pending search responses, then — only when an agent host is live —
 /// the monitor's snapshots, focus results, and rename results, followed by the
 /// per-loop `AgentTick`. Every channel is drained to empty rather than one
 /// event per loop, so a burst never lags behind rendering.
@@ -168,6 +168,7 @@ mod tests {
     use crate::app::SearchStatus;
     use crate::audio::AudioCommand;
     use crate::catalog::Catalog;
+    use crate::model::agent::AgentCapabilities;
     use crate::model::VolumePercent;
     use crate::search::SearchResults;
     use crate::settings::Settings;
@@ -292,6 +293,97 @@ mod tests {
             !app.visible().is_empty(),
             "the stale (empty) result set must not replace the visible list"
         );
+    }
+
+    fn pulse_agent(pane: &str) -> crate::model::agent::AgentSnapshot {
+        use crate::model::agent::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
+        AgentSnapshot {
+            id: AgentId::herdr("ws", pane),
+            details: AgentDetails {
+                name: Some(pane.to_string()),
+                agent: None,
+                activity: None,
+            },
+            status: AgentStatus::Working,
+        }
+    }
+
+    #[test]
+    fn host_events_drain_to_empty_in_one_pass_and_connect_the_app() {
+        use crate::app::AgentPulseConnection;
+        use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
+
+        let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
+        let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
+        let (_response_tx, response_rx) = mpsc::channel::<SearchResponse>();
+        let (mut app, debounce, persistence) = controller();
+        let (monitor, control) = AgentHostMonitor::synthetic(AgentCapabilities::HERDR);
+        control
+            .events
+            .send(MonitorEvent::Snapshot(vec![pulse_agent("alpha")]))
+            .unwrap();
+        control
+            .focus_results
+            .send(FocusResult::Unsupported)
+            .unwrap();
+        control.rename_results.send(RenameResult::Missing).unwrap();
+
+        let adapters = Adapters {
+            audio: &audio,
+            request_tx: &request_tx,
+            response_rx: &response_rx,
+            monitor: Some(&monitor),
+        };
+        drain_runtime_events(&mut app, &adapters, &debounce, &persistence);
+
+        assert!(monitor.events().try_recv().is_err());
+        assert!(monitor.focus_events().try_recv().is_err());
+        assert!(monitor.rename_events().try_recv().is_err());
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        assert_eq!(
+            app.agent_focus_notice(Instant::now()),
+            Some("pane focus requires Herdr 0.7.0+"),
+            "Herdr keeps its unsupported-version feedback"
+        );
+    }
+
+    #[test]
+    fn a_read_only_host_drains_without_any_herdr_version_notice() {
+        use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
+
+        let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
+        let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
+        let (_response_tx, response_rx) = mpsc::channel::<SearchResponse>();
+        let (mut app, debounce, persistence) = controller();
+        let (monitor, control) = AgentHostMonitor::synthetic_read_only();
+        app.configure_agent_capabilities(monitor.capabilities());
+        control
+            .events
+            .send(MonitorEvent::Snapshot(vec![pulse_agent("alpha")]))
+            .unwrap();
+        control
+            .focus_results
+            .send(FocusResult::Unsupported)
+            .unwrap();
+        control
+            .rename_results
+            .send(RenameResult::Unsupported)
+            .unwrap();
+
+        let adapters = Adapters {
+            audio: &audio,
+            request_tx: &request_tx,
+            response_rx: &response_rx,
+            monitor: Some(&monitor),
+        };
+        drain_runtime_events(&mut app, &adapters, &debounce, &persistence);
+
+        assert_eq!(app.active_agents().len(), 1, "observation still works");
+        assert_eq!(app.agent_focus_notice(Instant::now()), None);
+        assert_eq!(app.agent_rename_notice(Instant::now()), None);
     }
 
     #[test]

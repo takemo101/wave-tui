@@ -318,10 +318,11 @@ Implications:
   selection cannot change (`a`/`Esc` still close the stage) — selection
   input should not act on possibly outdated data.
 
-#### Dual-host presentation (approved target, not yet implemented)
+#### Dual-host presentation (partially implemented)
 
-> **APPROVED TARGET — NOT YET IMPLEMENTED.** Today only the Herdr host exists
-> and every decision above describes it. The herdr-core host's behavior and
+> **PARTIALLY IMPLEMENTED.** Capability-gated stage and table hints are in
+> place; today only the Herdr host exists, and herdr-core transport and CLI
+> selection remain pending. The herdr-core host's behavior and
 > data mapping are specified in
 > [`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented);
 > only its presentation consequences are recorded here.

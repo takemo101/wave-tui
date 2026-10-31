@@ -157,6 +157,37 @@ pub(crate) enum MonitorEvent {
     Failed,
 }
 
+/// The explicit requests the active host can honor.
+///
+/// Host-neutral startup context, not persistence: the runtime derives it from
+/// the selected host once, before the first agent event, and the App gates the
+/// matching controls on it at the reducer and effect boundary. Observation
+/// (the live table, selection, details) needs no capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AgentCapabilities {
+    /// Whether the host can jump to the selected agent's pane (`o`/`O`).
+    pub(crate) focus: bool,
+    /// Whether the host can rename the selected agent (`r`/`R`).
+    pub(crate) rename: bool,
+}
+
+impl AgentCapabilities {
+    /// Herdr's local socket supports explicit pane focus and rename.
+    pub(crate) const HERDR: Self = Self {
+        focus: true,
+        rename: true,
+    };
+
+    /// An observe-only host: neither request exists, so the controls are inert
+    /// rather than hidden-but-live.
+    // Constructed only by tests until a read-only host is selected.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const READ_ONLY: Self = Self {
+        focus: false,
+        rename: false,
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +330,17 @@ mod tests {
             offenders.is_empty(),
             "raw pane targeting escaped the Herdr adapter: {offenders:?}"
         );
+    }
+
+    #[test]
+    fn capability_presets_name_exactly_the_supported_requests() {
+        let herdr = AgentCapabilities::HERDR;
+        let read_only = AgentCapabilities::READ_ONLY;
+        assert_eq!((herdr.focus, herdr.rename), (true, true));
+        assert_eq!((read_only.focus, read_only.rename), (false, false));
+        assert_ne!(AgentCapabilities::HERDR, AgentCapabilities::READ_ONLY);
+        let copied = AgentCapabilities::HERDR;
+        assert_eq!(copied, AgentCapabilities::HERDR);
     }
 
     #[test]

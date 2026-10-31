@@ -827,15 +827,19 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 
 ### herdr-core Agent Host: Approved Target, Not Yet Implemented
 
-> **APPROVED TARGET — NOT YET IMPLEMENTED.** This section is the approved
+> **APPROVED TARGET — PARTLY IMPLEMENTED.** This section is the approved
 > design for a second Agent Planets host. MIK-073 implements the shared
-> `model::agent` vocabulary and legacy Herdr identity compatibility tests;
-> the host facade, core adapter, CLI selection, and live checks remain pending.
-> Until those implementation issues land, `wave-tui`
-> behaves exactly as the Herdr Agent Pulse sections above describe: only the
-> official Herdr plugin host exists, `--agent-host` is not accepted, and
-> herdr-core is never contacted. When an implementation issue ships a part of
-> this section, that change updates this section's status in the same change.
+> `model::agent` vocabulary and legacy Herdr identity compatibility tests.
+> MIK-074 adds the concrete `agent_host` facade over the existing Herdr monitor
+> and the `AgentCapabilities` startup context (Herdr: focus and rename; a
+> synthetic read-only host: neither), enforced at the reducer and at the
+> runtime effect boundary. The core adapter (`herdr_core`), CLI selection, and
+> live checks remain pending. Until those implementation issues land,
+> `wave-tui` behaves exactly as the Herdr Agent Pulse sections above describe:
+> production selects only the official Herdr plugin host, `--agent-host` is not
+> accepted, and herdr-core is never contacted. When an implementation issue
+> ships a part of this section, that change updates this section's status in the
+> same change.
 
 The target lets the same Agent Planets stage observe terminals from
 [herdr-core](https://github.com/herdrdev/herdr-core) (the `hc` runtime) as an
@@ -939,6 +943,17 @@ For herdr-core the focus and rename controls are absent, not disabled: no
 footer or modal hint, no keystroke effect, no inline editor, and no
 notification. Everything else about the stage and Agent table is unchanged.
 
+Capabilities are startup context, not persistence: the runtime reads them from
+the selected host's facade and hands them to the app once, before the first
+agent event. The gate is enforced below the renderer, not only by hiding hints.
+For a host without a capability the reducer refuses the matching action (a
+read-only host never opens the rename editor, never issues a focus target, and
+ignores focus/rename results), the runtime effect boundary never dispatches the
+request or creates a Herdr-version notice, and the facade itself drops the
+request. `o`/`O`/`r`/`R` are consumed without side effects; selection, details,
+and global player controls are unaffected. Herdr keeps its existing
+unsupported-version feedback.
+
 #### Timing and recovery
 
 - The monitor polls immediately on start, then waits five seconds after each
@@ -971,11 +986,20 @@ the rename behavior in the Herdr sections above is unchanged.
 
 MIK-073 implements the host-neutral model and tests preserving legacy Herdr
 hashing, ordering, Debug text, and existing rendering/hit-map characterizations.
-The full suite passes (587 library tests plus 9 integration tests), as do
-formatting, build checks, and all-target Clippy. The facade, core transport,
-CLI selection, and their integration tests are still pending. No live core or
-new manual visual checks have been performed; default tests require no live
-`hc` process.
+The full suite passed then (587 library tests plus 9 integration tests), as did
+formatting, build checks, and all-target Clippy.
+
+MIK-074 implements the `agent_host` facade (`AgentHostContext` /
+`AgentHostMonitor`, Herdr only in production) and the capability gates, with
+focused tests: facade channel forwarding, capability-gated dispatch, a
+synthetic read-only host proving no request reaches it, reducer refusal of
+rename/focus, runtime effect gating through direct actions and key routes,
+unchanged drain order (snapshot → focus → rename → tick), startup capability
+configuration, and mouse-capture/teardown ownership. Final full-suite results
+for the combined headless and renderer-hint lanes are recorded by the issue's
+reports. The core transport, CLI selection, and their integration tests are
+still pending. No live core or new manual visual checks have been performed;
+default tests require no live `hc` process.
 
 ### Implementation Principles
 

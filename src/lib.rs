@@ -1,6 +1,7 @@
 #[path = "audio_spike.rs"]
 pub mod audio_spike;
 
+pub mod agent_host;
 pub mod app;
 pub mod audio;
 pub mod catalog;

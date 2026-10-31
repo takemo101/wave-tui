@@ -1,7 +1,7 @@
 //! Runtime composition root: everything a run owns outside argument parsing.
 //!
 //! [`run`] turns a parsed [`CliArgs`] into a live session — settings, catalog,
-//! audio runtime, search worker, optional Herdr monitor, terminal, splash, and
+//! audio runtime, search worker, optional agent host monitor, terminal, splash, and
 //! event loop — and tears it back down in a fixed order. Argument parsing and
 //! key *mapping* stay in [`crate::cli`], which this module depends on and which
 //! never depends back on any terminal or adapter lifecycle detail.
@@ -28,11 +28,11 @@ use std::time::Instant;
 
 use anyhow::Result;
 
+use crate::agent_host::{AgentHostContext, AgentHostMonitor};
 use crate::app::{Action, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioHandle, AudioRuntime, AudioRuntimeConfig};
 use crate::catalog::Catalog;
 use crate::cli::{self, apply_overrides, CliArgs, CliInvocation};
-use crate::herdr::{self, HerdrMonitor};
 use crate::model::PlaybackRequestId;
 use crate::settings::{self, Settings};
 
@@ -87,6 +87,14 @@ fn startup_play_command(
         })
 }
 
+/// Hand the selected host's capabilities to the app. With no host the app
+/// keeps its inert, hidden defaults, so standalone launches are unchanged.
+fn configure_agent_capabilities(app: &mut App, monitor: Option<&AgentHostMonitor>) {
+    if let Some(monitor) = monitor {
+        app.configure_agent_capabilities(monitor.capabilities());
+    }
+}
+
 /// Bootstrap settings, catalog, audio runtime, and the search worker, then run
 /// the terminal event loop. Settings are persisted on relevant changes and on a
 /// clean shutdown.
@@ -104,12 +112,17 @@ fn run_app(args: CliArgs) -> Result<()> {
     // audio event, so the App can freeze the first visual frame's geometry.
     app.configure_low_power_visuals(args.low_power);
 
-    // Agent Pulse monitor: created only when the official Herdr plugin
-    // environment is eligible and `--no-agent-pulse` is absent. `None` keeps
-    // standalone behavior exact. The polling thread is joined on every exit
-    // path: explicitly in the shutdown block on a normal return, and by
-    // `HerdrMonitor`'s `Drop` on the early `?` returns below.
-    let monitor = herdr::context_from_env(args.no_agent_pulse).map(herdr::spawn_monitor);
+    // Agent Pulse monitor: created only when an Agent Planets host is
+    // eligible (production selects the official Herdr plugin environment only)
+    // and `--no-agent-pulse` is absent. `None` keeps standalone behavior
+    // exact. The polling thread is joined on every exit path: explicitly in the
+    // shutdown block on a normal return, and by the monitor's `Drop` on the
+    // early `?` returns below.
+    let monitor =
+        AgentHostContext::from_env(args.no_agent_pulse).map(AgentHostContext::spawn_monitor);
+    // Host capabilities are startup context, configured once before the first
+    // agent event can be drained.
+    configure_agent_capabilities(&mut app, monitor.as_ref());
 
     let audio = AudioRuntime::spawn(AudioRuntimeConfig {
         output_device: args.audio_output_device.clone(),
@@ -202,7 +215,7 @@ fn run_app(args: CliArgs) -> Result<()> {
 
 /// Ask every runtime worker to stop, in the order a clean shutdown relies on:
 /// audio first (so the device is released promptly), then the search worker,
-/// then the Herdr monitor thread.
+/// then the agent host monitor thread.
 ///
 /// Only signalling happens here. The caller still owns persisting final state
 /// and joining the search worker, so the documented shutdown ordering —
@@ -210,7 +223,7 @@ fn run_app(args: CliArgs) -> Result<()> {
 fn signal_shutdown(
     audio: &AudioHandle,
     request_tx: &Sender<SearchRequest>,
-    monitor: Option<HerdrMonitor>,
+    monitor: Option<AgentHostMonitor>,
 ) {
     let _ = audio.command_tx.send(AudioCommand::Shutdown);
     let _ = request_tx.send(SearchRequest::Shutdown);
@@ -297,6 +310,49 @@ mod tests {
             matches!(request_rx.try_recv(), Ok(SearchRequest::Shutdown)),
             "the search worker is asked to shut down"
         );
+    }
+
+    #[test]
+    fn host_capabilities_reach_the_app_as_startup_context() {
+        use crate::model::agent::AgentCapabilities;
+
+        let (monitor, _control) = AgentHostMonitor::synthetic_read_only();
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.agent_capabilities(), AgentCapabilities::HERDR);
+
+        configure_agent_capabilities(&mut app, Some(&monitor));
+
+        assert_eq!(app.agent_capabilities(), AgentCapabilities::READ_ONLY);
+    }
+
+    #[test]
+    fn no_host_leaves_the_app_defaults_and_hidden() {
+        use crate::app::AgentPulseConnection;
+        use crate::model::agent::AgentCapabilities;
+
+        let mut app = App::new(Settings::default(), Catalog::curated());
+
+        configure_agent_capabilities(&mut app, None);
+
+        assert_eq!(app.agent_capabilities(), AgentCapabilities::HERDR);
+        assert_eq!(app.agent_pulse_connection(), AgentPulseConnection::Hidden);
+    }
+
+    #[test]
+    fn shutdown_stops_the_agent_host_after_audio_and_search() {
+        let (audio, cmd_rx, _event_tx) = fake_audio_with_events();
+        let (request_tx, request_rx) = mpsc::channel::<SearchRequest>();
+        let (monitor, control) = AgentHostMonitor::synthetic_read_only();
+
+        signal_shutdown(&audio, &request_tx, Some(monitor));
+
+        assert!(matches!(cmd_rx.try_recv(), Ok(AudioCommand::Shutdown)));
+        assert!(matches!(request_rx.try_recv(), Ok(SearchRequest::Shutdown)));
+        // The monitor was consumed and dropped, closing its channels.
+        assert!(control
+            .events
+            .send(crate::model::agent::MonitorEvent::Failed)
+            .is_err());
     }
 
     #[test]

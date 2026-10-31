@@ -152,9 +152,16 @@ pub(super) fn render_agent_table_modal(
         }
         prompt
     } else {
-        notice
-            .map(str::to_owned)
-            .unwrap_or_else(|| "O open pane · r rename · Enter/Esc close".to_string())
+        notice.map(str::to_owned).unwrap_or_else(|| {
+            let capabilities = app.agent_capabilities();
+            match (capabilities.focus, capabilities.rename) {
+                (true, true) => "O open pane · r rename · Enter/Esc close",
+                (true, false) => "O open pane · Enter/Esc close",
+                (false, true) => "r rename · Enter/Esc close",
+                (false, false) => "Enter/Esc close",
+            }
+            .to_string()
+        })
     };
     let header = agent_table_row(["Name", "Agent", "Status", "Activity"], widths)
         .style(muted.add_modifier(Modifier::BOLD));

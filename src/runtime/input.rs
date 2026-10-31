@@ -23,10 +23,10 @@ use std::time::Instant;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
+use crate::agent_host::AgentHostMonitor;
 use crate::app::{Action, AgentPulseConnection, App, FocusPane, SearchStatus};
 use crate::audio::{AudioCommand, AudioHandle};
 use crate::cli::map_key;
-use crate::herdr::HerdrMonitor;
 use crate::model::agent::{FocusResult, MonitorEvent, RenameResult};
 use crate::model::PlaybackState;
 
@@ -62,7 +62,7 @@ pub(super) fn handle_key_with_monitor(
     audio: &AudioHandle,
     debounce: &mut SearchDebounce,
     persistence: &mut Persistence,
-    monitor: Option<&HerdrMonitor>,
+    monitor: Option<&AgentHostMonitor>,
 ) -> Flow {
     // Snapshot settings once, before any routing, and compare once after: a
     // key produces at most one persistence write no matter which mode ran.
@@ -129,7 +129,7 @@ fn apply_route(
     audio: &AudioHandle,
     debounce: &mut SearchDebounce,
     persistence: &mut Persistence,
-    monitor: Option<&HerdrMonitor>,
+    monitor: Option<&AgentHostMonitor>,
 ) -> Flow {
     match route {
         Route::Quit => Flow::Quit,
@@ -157,7 +157,7 @@ fn apply_effect(
     audio: &AudioHandle,
     debounce: &mut SearchDebounce,
     persistence: &mut Persistence,
-    monitor: Option<&HerdrMonitor>,
+    monitor: Option<&AgentHostMonitor>,
 ) {
     match effect {
         Effect::PlaySelected => {
@@ -233,12 +233,17 @@ fn set_volume(action: Action, app: &mut App, audio: &AudioHandle, persistence: &
 }
 
 /// Explicitly focus the selected pane through the already-eligible monitor.
-/// The App issues an opaque target only for the open Connected stage, so stale
+/// A host without the focus capability is refused here, before any dispatch
+/// and before any notice: there is no request to fail, so no Herdr-version
+/// feedback may appear. The App issues an opaque target only for the open Connected stage, so stale
 /// and unavailable snapshots cannot produce a socket call. Socket I/O runs in
 /// a one-shot monitor worker; its typed result returns through `focus_events`
 /// and never blocks input or rendering. Immediate local failures remain
 /// recoverable, modal-local feedback and never change stage/modal selection.
-fn focus_selected_agent(app: &mut App, monitor: Option<&HerdrMonitor>) {
+fn focus_selected_agent(app: &mut App, monitor: Option<&AgentHostMonitor>) {
+    if !app.agent_capabilities().focus {
+        return;
+    }
     match app.agent_focus_target() {
         Some(id) => match monitor {
             Some(monitor) => monitor.focus_agent(id),
@@ -256,10 +261,14 @@ pub(super) fn apply_agent_focus_result(app: &mut App, result: FocusResult, now: 
     app.apply(Action::AgentFocusResult { result, now });
 }
 
-/// Submit the inline table Name input via the already-eligible monitor. The
+/// Submit the inline table Name input via the already-eligible monitor; a
+/// host without the rename capability is refused before any dispatch. The
 /// target is opaque outside `herdr`, socket work runs on its one-shot worker,
 /// and stale state leaves the user input intact without dispatching anything.
-fn submit_agent_rename(app: &mut App, monitor: Option<&HerdrMonitor>) {
+fn submit_agent_rename(app: &mut App, monitor: Option<&AgentHostMonitor>) {
+    if !app.agent_capabilities().rename {
+        return;
+    }
     let Some((id, name)) = app.agent_rename_request() else {
         return;
     };
@@ -338,11 +347,14 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use crate::agent_host::AgentHostContext;
     use crate::app::ListSource;
     use crate::audio::AudioEvent;
     use crate::catalog::{Catalog, Category, Section};
     use crate::herdr;
-    use crate::model::agent::{AgentDetails, AgentId, AgentSnapshot, AgentStatus};
+    use crate::model::agent::{
+        AgentCapabilities, AgentDetails, AgentId, AgentSnapshot, AgentStatus,
+    };
     use crate::model::{PlaybackRequestId, VolumePercent};
     use crate::search::SearchResults;
     use crate::settings::Settings;
@@ -1188,9 +1200,10 @@ mod tests {
                 poll_replied_tx.send(()).expect("signal poll reply");
             }
         });
-        let monitor = herdr::spawn_monitor(herdr::HerdrContext {
+        let monitor = AgentHostContext::Herdr(herdr::HerdrContext {
             socket_path: socket_path.clone(),
-        });
+        })
+        .spawn_monitor();
         poll_replied_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("initial monitor poll completes before focus request");
@@ -1274,6 +1287,202 @@ mod tests {
             app.agent_focus_notice(Instant::now()),
             Some("pane focus unavailable · retrying")
         );
+    }
+
+    // --- host capability gating ---------------------------------------------
+
+    /// An app on a synthetic host with `capabilities`, the stage open and
+    /// details showing the first agent.
+    fn capable_details_app(
+        capabilities: AgentCapabilities,
+    ) -> (
+        App,
+        AgentHostMonitor,
+        crate::agent_host::synthetic::SyntheticControl,
+    ) {
+        let (monitor, control) = AgentHostMonitor::synthetic(capabilities);
+        let (mut app, _debounce, _persistence) = controller();
+        app.configure_agent_capabilities(monitor.capabilities());
+        connect_agent_pulse(&mut app, &["alpha", "beta"]);
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        assert!(app.is_agent_details_open());
+        (app, monitor, control)
+    }
+
+    fn press(
+        code: KeyCode,
+        app: &mut App,
+        monitor: &AgentHostMonitor,
+    ) -> (Flow, Receiver<AudioCommand>) {
+        let (audio, commands) = fake_audio();
+        let (_app, mut debounce, mut persistence) = controller();
+        let flow = handle_key_with_monitor(
+            key(code),
+            app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+            Some(monitor),
+        );
+        (flow, commands)
+    }
+
+    #[test]
+    fn herdr_host_dispatches_focus_and_rename_through_the_facade() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::HERDR);
+
+        press(KeyCode::Char('o'), &mut app, &monitor);
+        assert_eq!(control.focus_requests(), 1);
+
+        press(KeyCode::Char('r'), &mut app, &monitor);
+        assert!(app.is_agent_rename_open());
+        press(KeyCode::Char('x'), &mut app, &monitor);
+        press(KeyCode::Enter, &mut app, &monitor);
+        assert_eq!(control.rename_requests(), vec![Some("alphax".to_string())]);
+    }
+
+    #[test]
+    fn read_only_o_and_capital_o_are_consumed_without_request_or_notice() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::READ_ONLY);
+        let selected = app.selected_agent().map(|agent| agent.id.clone());
+
+        for code in [KeyCode::Char('o'), KeyCode::Char('O')] {
+            let (flow, commands) = press(code, &mut app, &monitor);
+            assert_eq!(flow, Flow::Continue);
+            assert!(commands.try_recv().is_err(), "no audio side effect");
+        }
+
+        assert_eq!(control.focus_requests(), 0, "no request reached the host");
+        assert_eq!(app.agent_focus_notice(Instant::now()), None);
+        assert!(app.is_agent_overlay_open());
+        assert!(app.is_agent_details_open());
+        assert_eq!(app.selected_agent().map(|agent| agent.id.clone()), selected);
+    }
+
+    #[test]
+    fn read_only_stage_o_is_also_inert_without_a_selection_or_monitor() {
+        // Stage (no details), nothing selected, and not even a monitor: the
+        // Herdr "select a live planet first" / "unavailable" feedback must
+        // not appear for a host that never had a focus request.
+        let (audio, _commands) = fake_audio();
+        let (mut app, mut debounce, mut persistence) = controller();
+        app.configure_agent_capabilities(AgentCapabilities::READ_ONLY);
+        connect_agent_pulse(&mut app, &["alpha"]);
+        app.apply(Action::ToggleAgentOverlay);
+
+        for code in [KeyCode::Char('o'), KeyCode::Char('O')] {
+            handle_key(key(code), &mut app, &audio, &mut debounce, &mut persistence);
+        }
+
+        assert_eq!(app.agent_focus_notice(Instant::now()), None);
+        assert!(app.is_agent_overlay_open());
+    }
+
+    #[test]
+    fn read_only_r_and_capital_r_never_open_the_editor() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::READ_ONLY);
+
+        for code in [KeyCode::Char('r'), KeyCode::Char('R')] {
+            let (flow, _commands) = press(code, &mut app, &monitor);
+            assert_eq!(flow, Flow::Continue);
+            assert!(!app.is_agent_rename_open());
+        }
+        // Typing and Enter after the refused `r` stay modal-local no-ops.
+        press(KeyCode::Char('x'), &mut app, &monitor);
+        press(KeyCode::Backspace, &mut app, &monitor);
+        assert_eq!(app.agent_rename_input(), None);
+
+        assert!(app.is_agent_details_open(), "details stay readable");
+        assert!(control.rename_requests().is_empty());
+        assert_eq!(app.agent_rename_notice(Instant::now()), None);
+    }
+
+    #[test]
+    fn read_only_submit_effect_never_dispatches_even_when_driven_directly() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::READ_ONLY);
+        let (audio, _commands) = fake_audio();
+        let (_app, mut debounce, mut persistence) = controller();
+
+        apply_effect(
+            Effect::SubmitRename,
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+            Some(&monitor),
+        );
+        apply_effect(
+            Effect::FocusAgentPane,
+            &mut app,
+            &audio,
+            &mut debounce,
+            &mut persistence,
+            Some(&monitor),
+        );
+
+        assert!(control.rename_requests().is_empty());
+        assert_eq!(control.focus_requests(), 0);
+        assert!(!app.agent_rename_is_submitting());
+        assert_eq!(app.agent_focus_notice(Instant::now()), None);
+        assert_eq!(app.agent_rename_notice(Instant::now()), None);
+    }
+
+    #[test]
+    fn read_only_selection_navigation_and_player_controls_are_unaffected() {
+        let (mut app, monitor, _control) = capable_details_app(AgentCapabilities::READ_ONLY);
+
+        // The details modal follows selection navigation.
+        press(KeyCode::Tab, &mut app, &monitor);
+        assert_eq!(
+            app.selected_agent().and_then(|agent| agent.name.as_deref()),
+            Some("beta")
+        );
+
+        // Enter closes details; the stage then lets global player controls
+        // fall through to normal-mode policy exactly as on Herdr. Routing is
+        // checked as data so the test never writes real settings.
+        press(KeyCode::Enter, &mut app, &monitor);
+        assert!(!app.is_agent_details_open());
+        assert!(matches!(
+            route_key(key(KeyCode::Char('+')), &app),
+            Route::Effect(Effect::VolumeUp)
+        ));
+        assert!(matches!(
+            route_key(key(KeyCode::Char('-')), &app),
+            Route::Effect(Effect::VolumeDown)
+        ));
+        assert!(matches!(
+            route_key(key(KeyCode::Char('t')), &app),
+            Route::Act(Action::CycleTheme)
+        ));
+        assert!(matches!(
+            route_key(key(KeyCode::Char(' ')), &app),
+            Route::Effect(Effect::TogglePlayback)
+        ));
+
+        // `a` still closes the stage and `q` still quits.
+        press(KeyCode::Char('a'), &mut app, &monitor);
+        assert!(!app.is_agent_overlay_open());
+        press(KeyCode::Char('a'), &mut app, &monitor);
+        let (flow, _commands) = press(KeyCode::Char('q'), &mut app, &monitor);
+        assert_eq!(flow, Flow::Quit);
+    }
+
+    #[test]
+    fn read_only_hosts_keep_snapshots_flowing_into_the_reducer() {
+        let (mut app, monitor, control) = capable_details_app(AgentCapabilities::READ_ONLY);
+        control
+            .events
+            .send(MonitorEvent::Snapshot(vec![pulse_agent("gamma")]))
+            .unwrap();
+
+        while let Ok(event) = monitor.events().try_recv() {
+            apply_monitor_event(&mut app, event, Instant::now());
+        }
+
+        assert_eq!(app.active_agents().len(), 1);
     }
 
     #[test]

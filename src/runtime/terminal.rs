@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::herdr::HerdrMonitor;
+use crate::agent_host::AgentHostMonitor;
 
 /// Whether the terminal should capture mouse events for this run.
 ///
@@ -24,7 +24,7 @@ use crate::herdr::HerdrMonitor;
 /// (native text selection needs Shift+drag while captured). So it follows
 /// the monitor exactly: standalone, ineligible, and `--no-agent-pulse`
 /// launches keep their pre-integration terminal behavior untouched.
-pub(super) fn mouse_capture_for(monitor: Option<&HerdrMonitor>) -> bool {
+pub(super) fn mouse_capture_for(monitor: Option<&AgentHostMonitor>) -> bool {
     monitor.is_some()
 }
 
@@ -71,6 +71,7 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_host::AgentHostContext;
     use crate::herdr;
 
     #[test]
@@ -82,10 +83,19 @@ mod tests {
         // Only a live monitor (an eligible plugin launch) turns capture on.
         // The socket path does not need to work; the monitor only needs to
         // exist, exactly as in run_app.
-        let monitor = herdr::spawn_monitor(herdr::HerdrContext {
+        let monitor = AgentHostContext::Herdr(herdr::HerdrContext {
             socket_path: "/nonexistent/wave-tui-cli-test.sock".into(),
-        });
+        })
+        .spawn_monitor();
         assert!(mouse_capture_for(Some(&monitor)));
         monitor.stop();
+    }
+
+    #[test]
+    fn mouse_capture_applies_to_a_read_only_host_too() {
+        // Click selection is observation, so it needs capture whatever the
+        // host's explicit-request capabilities are.
+        let (monitor, _control) = AgentHostMonitor::synthetic_read_only();
+        assert!(mouse_capture_for(Some(&monitor)));
     }
 }

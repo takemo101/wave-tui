@@ -20,7 +20,7 @@ use crate::catalog::{
     station_matches_category, station_matches_section, Catalog, Category, Section,
     SessionStationHealth, Stations,
 };
-use crate::model::agent::{AgentId, AgentSnapshot, FocusResult, RenameResult};
+use crate::model::agent::{AgentCapabilities, AgentId, AgentSnapshot, FocusResult, RenameResult};
 use crate::model::{
     PlaybackRequestId, PlaybackState, Station, StationId, VisualizerMode, VizFrame, VolumePercent,
 };
@@ -1109,6 +1109,19 @@ impl App {
     /// The Agent Pulse connection state; `Hidden` for standalone launches.
     pub(crate) fn agent_pulse_connection(&self) -> AgentPulseConnection {
         self.agent_pulse.connection()
+    }
+
+    /// The explicit requests the active host supports. Defaults to Herdr's;
+    /// the renderer reads this to omit hints for unsupported controls.
+    pub(crate) fn agent_capabilities(&self) -> AgentCapabilities {
+        self.agent_pulse.capabilities()
+    }
+
+    /// Set the host capabilities. The controller calls this once at startup,
+    /// before the first agent event; it is startup context, never persisted,
+    /// and never reveals a hidden integration.
+    pub(crate) fn configure_agent_capabilities(&mut self, capabilities: AgentCapabilities) {
+        self.agent_pulse.configure_capabilities(capabilities);
     }
 
     /// Live agents across the current socket's workspaces, in display
@@ -2728,6 +2741,153 @@ mod tests {
         let mut app = App::new(Settings::default(), Catalog::curated());
         app.apply(agent_snapshot(agents, Instant::now()));
         app
+    }
+
+    /// An app on a host with `capabilities`, its stage open and details
+    /// showing the first of two agents.
+    fn app_with_open_details(capabilities: AgentCapabilities) -> App {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        app.configure_agent_capabilities(capabilities);
+        app.apply(agent_snapshot(
+            vec![
+                agent("ws", "p1", Some("alpha"), AgentStatus::Working),
+                agent("ws", "p2", Some("beta"), AgentStatus::Idle),
+            ],
+            Instant::now(),
+        ));
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        assert!(app.is_agent_details_open());
+        app
+    }
+
+    #[test]
+    fn agent_capabilities_default_to_herdr_and_are_configurable_startup_context() {
+        let mut app = App::new(Settings::default(), Catalog::curated());
+        assert_eq!(app.agent_capabilities(), AgentCapabilities::HERDR);
+
+        app.configure_agent_capabilities(AgentCapabilities::READ_ONLY);
+        assert_eq!(app.agent_capabilities(), AgentCapabilities::READ_ONLY);
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Hidden,
+            "capabilities never reveal a hidden integration"
+        );
+    }
+
+    #[test]
+    fn herdr_capabilities_keep_rename_and_focus_live() {
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+        assert!(app.agent_focus_target().is_some());
+
+        app.apply(Action::OpenAgentRename);
+        assert!(app.is_agent_rename_open());
+        app.apply(Action::AppendAgentRename('x'));
+        assert_eq!(app.agent_rename_input(), Some("alphax"));
+        assert!(app.agent_rename_request().is_some());
+    }
+
+    #[test]
+    fn read_only_refuses_rename_open_and_keeps_observation_working() {
+        let mut app = app_with_open_details(AgentCapabilities::READ_ONLY);
+
+        app.apply(Action::OpenAgentRename);
+
+        assert!(!app.is_agent_rename_open(), "no editor opens read-only");
+        assert_eq!(app.agent_rename_input(), None);
+        assert!(app.agent_rename_request().is_none());
+        assert!(app.is_agent_details_open(), "details stay readable");
+        app.apply(Action::SelectNextAgent);
+        assert_eq!(
+            app.selected_agent().and_then(|a| a.name.as_deref()),
+            Some("beta"),
+            "selection navigation is unaffected"
+        );
+    }
+
+    #[test]
+    fn read_only_rename_edit_and_submit_actions_are_inert() {
+        let mut app = app_with_open_details(AgentCapabilities::READ_ONLY);
+
+        app.apply(Action::AppendAgentRename('x'));
+        app.apply(Action::BackspaceAgentRename);
+        app.apply(Action::SubmitAgentRename);
+
+        assert!(!app.is_agent_rename_open());
+        assert!(!app.agent_rename_is_submitting());
+        assert!(app.agent_rename_request().is_none());
+        assert_eq!(app.agent_rename_notice(Instant::now()), None);
+    }
+
+    #[test]
+    fn read_only_never_issues_a_focus_target() {
+        let mut app = app_with_open_details(AgentCapabilities::READ_ONLY);
+
+        assert!(app.selected_agent().is_some());
+        assert!(
+            app.agent_focus_target().is_none(),
+            "a selected live agent still has no focus target read-only"
+        );
+        app.apply(Action::CloseAgentDetails);
+        assert!(app.agent_focus_target().is_none());
+    }
+
+    #[test]
+    fn read_only_ignores_results_so_no_herdr_version_notice_appears() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::READ_ONLY);
+
+        app.apply(Action::AgentFocusResult {
+            result: FocusResult::Unsupported,
+            now,
+        });
+        app.apply(Action::AgentRenameResult {
+            result: RenameResult::Unsupported,
+            now,
+        });
+
+        assert_eq!(app.agent_focus_notice(now), None);
+        assert_eq!(app.agent_rename_notice(now), None);
+    }
+
+    #[test]
+    fn herdr_unsupported_notices_are_preserved() {
+        let now = Instant::now();
+        let mut app = app_with_open_details(AgentCapabilities::HERDR);
+
+        app.apply(Action::AgentFocusResult {
+            result: FocusResult::Unsupported,
+            now,
+        });
+        assert_eq!(
+            app.agent_focus_notice(now),
+            Some("pane focus requires Herdr 0.7.0+")
+        );
+
+        app.apply(Action::OpenAgentRename);
+        app.apply(Action::SubmitAgentRename);
+        app.apply(Action::AgentRenameResult {
+            result: RenameResult::Unsupported,
+            now,
+        });
+        assert_eq!(
+            app.agent_rename_notice(now),
+            Some("rename requires Herdr 0.7.0+")
+        );
+    }
+
+    #[test]
+    fn hidden_integration_stays_a_noop_whatever_the_capabilities() {
+        for capabilities in [AgentCapabilities::HERDR, AgentCapabilities::READ_ONLY] {
+            let mut app = App::new(Settings::default(), Catalog::curated());
+            app.configure_agent_capabilities(capabilities);
+            app.apply(Action::ToggleAgentOverlay);
+            app.apply(Action::OpenAgentRename);
+            assert!(!app.is_agent_overlay_open());
+            assert!(!app.is_agent_rename_open());
+            assert!(app.agent_focus_target().is_none());
+        }
     }
 
     #[test]

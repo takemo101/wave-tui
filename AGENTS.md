@@ -60,10 +60,12 @@ Stay inside the MVP unless the user explicitly expands scope:
   live pane via `agent.focus` or rename its explicit display name via
   `agent.rename`; it is not a daemon, remote control service, or an internal
   plugin system.
-  A read-only herdr-core host is an approved target that is **not yet
-  implemented**; do not add it, `--agent-host`, or any herdr-core code except
-  through the dual-host implementation issues, and follow the target
-  contract in `docs/SPEC.md` (herdr-core Agent Host) when you do.
+  A read-only herdr-core host is an approved target. Only its `agent_host`
+  facade and capability gates exist so far; the core adapter and
+  `--agent-host` are **not yet implemented**, so do not add them or any
+  herdr-core code except through the dual-host implementation issues, and
+  follow the target contract in `docs/SPEC.md` (herdr-core Agent Host) when
+  you do.
 
 Do not add these in MVP without an explicit design update:
 
@@ -104,8 +106,12 @@ Expected responsibility boundaries:
   The shared agent vocabulary (`AgentId`, `AgentStatus`, `AgentDetails`,
   `AgentSnapshot`, `MonitorEvent`, `FocusResult`, `RenameResult`) lives in
   `model::agent`; `app`/`ui` import it there, not from `herdr`.
-  (Approved target, not yet implemented: a sibling `herdr_core` adapter and an
-  `agent_host` facade — see `docs/implementation-guidelines.md`.)
+- `agent_host`: the concrete facade `runtime` uses instead of `HerdrMonitor`
+  (`AgentHostContext` / `AgentHostMonitor`, Herdr only in production). It
+  forwards typed events, focus results, and rename results, drops requests the
+  host's `model::agent::AgentCapabilities` do not allow, and owns stop/join.
+  Not a trait registry or plugin layer. (Approved target, not yet implemented:
+  a sibling `herdr_core` adapter — see `docs/implementation-guidelines.md`.)
 - `theme`: theme names and palette definitions.
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.

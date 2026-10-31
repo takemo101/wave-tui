@@ -19,7 +19,7 @@
 //! except back to the Herdr adapter through the controller.
 
 use crate::model::agent::{
-    AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
+    AgentCapabilities, AgentDetails, AgentId, AgentSnapshot, AgentStatus, FocusResult, RenameResult,
 };
 use crate::model::VizFrame;
 
@@ -176,12 +176,18 @@ pub(super) struct AgentPulse {
     /// Per-agent solar-orbit phase sources, keyed by the private identity;
     /// entries live exactly as long as their agent stays in a snapshot.
     orbits: HashMap<AgentId, AgentOrbit>,
+    /// Which explicit requests the active host honors; startup context set
+    /// once by the controller. Focus and rename are refused here, at the
+    /// reducer, rather than merely hidden by the renderer.
+    capabilities: AgentCapabilities,
 }
 
 impl AgentPulse {
-    /// The standalone default: hidden and inert.
+    /// The standalone default: hidden and inert. Capabilities default to
+    /// Herdr's, the only host that exists until another is configured.
     pub(super) fn hidden() -> Self {
         Self {
+            capabilities: AgentCapabilities::HERDR,
             connection: AgentPulseConnection::Hidden,
             active: Vec::new(),
             selected: None,
@@ -194,6 +200,25 @@ impl AgentPulse {
             first_failure: None,
             stale_viz: None,
             orbits: HashMap::new(),
+        }
+    }
+
+    // --- host capabilities -------------------------------------------------
+
+    pub(super) fn capabilities(&self) -> AgentCapabilities {
+        self.capabilities
+    }
+
+    /// Adopt the host's capabilities. Withdrawing rename also drops an open
+    /// editor, so an unsupported request can never be submitted afterwards.
+    pub(super) fn configure_capabilities(&mut self, capabilities: AgentCapabilities) {
+        self.capabilities = capabilities;
+        if !capabilities.rename {
+            self.rename = AgentRenameOverlay::Closed;
+            self.rename_notice = None;
+        }
+        if !capabilities.focus {
+            self.focus_notice = None;
         }
     }
 
@@ -463,7 +488,10 @@ impl AgentPulse {
     // --- inline rename ----------------------------------------------------
 
     pub(super) fn open_rename(&mut self, display: DisplayMode) {
-        if !self.selection_interactive(display) || !self.is_details_open() {
+        if !self.capabilities.rename
+            || !self.selection_interactive(display)
+            || !self.is_details_open()
+        {
             return;
         }
         let Some(agent) = self.selected_agent() else {
@@ -508,7 +536,7 @@ impl AgentPulse {
     }
 
     pub(super) fn submit_rename(&mut self) {
-        if self.connection != AgentPulseConnection::Connected {
+        if !self.capabilities.rename || self.connection != AgentPulseConnection::Connected {
             return;
         }
         if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.rename {
@@ -525,6 +553,11 @@ impl AgentPulse {
     }
 
     pub(super) fn record_rename_result(&mut self, result: RenameResult, now: Instant) {
+        // A host without rename never produced this request, so its result
+        // (and any version notice) is not meaningful.
+        if !self.capabilities.rename {
+            return;
+        }
         if self.connection != AgentPulseConnection::Connected {
             if let AgentRenameOverlay::Editing { submitting, .. } = &mut self.rename {
                 *submitting = false;
@@ -563,6 +596,10 @@ impl AgentPulse {
     // --- explicit pane focus ----------------------------------------------
 
     pub(super) fn record_focus_result(&mut self, result: FocusResult, now: Instant) {
+        // A host without focus never produced this request; no notice.
+        if !self.capabilities.focus {
+            return;
+        }
         self.focus_notice = match result {
             FocusResult::Focused => None,
             _ => Some(AgentFocusNotice {
@@ -576,7 +613,7 @@ impl AgentPulse {
     /// snapshot. The controller passes it straight back to the Herdr adapter;
     /// UI and persistence never receive a text representation.
     pub(super) fn focus_target(&self, display: DisplayMode) -> Option<AgentId> {
-        self.selection_interactive(display)
+        (self.capabilities.focus && self.selection_interactive(display))
             .then(|| self.selected_agent().map(|agent| agent.id.clone()))
             .flatten()
     }
@@ -651,7 +688,7 @@ impl AgentPulse {
     /// never exposes the private id to UI or persistence, and stale snapshots
     /// intentionally return `None` without clearing the user's input.
     pub(super) fn rename_request(&self) -> Option<(AgentId, Option<String>)> {
-        if self.connection != AgentPulseConnection::Connected {
+        if !self.capabilities.rename || self.connection != AgentPulseConnection::Connected {
             return None;
         }
         let AgentRenameOverlay::Editing {

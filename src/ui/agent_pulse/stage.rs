@@ -50,7 +50,13 @@ pub(super) fn render_agent_planets_stage(
     let stage = agent_stage_layout(area);
     render_stage_heading(theme, agents.len(), stale, stage.heading, buf);
     render_stage_title_block(app, theme, stale, stage.title_block, buf);
-    render_stage_footer(theme, app.is_agent_details_open(), stage.footer, buf);
+    render_stage_footer(
+        theme,
+        app.is_agent_details_open(),
+        app.agent_capabilities().focus,
+        stage.footer,
+        buf,
+    );
 
     if connection == AgentPulseConnection::Unavailable {
         center_copy(buf, stage.field, "agents · unavailable · retrying", muted);
@@ -255,14 +261,16 @@ fn render_stage_title_block(app: &App, theme: &Theme, stale: bool, area: Rect, b
 /// deliberately not advertised — Single View is not a stage action. Pane
 /// focus belongs to the agent table while it is open, so its `O` hint never
 /// competes with the modal-local control.
-fn render_stage_footer(theme: &Theme, table_open: bool, area: Rect, buf: &mut Buffer) {
+fn render_stage_footer(theme: &Theme, table_open: bool, focus: bool, area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let hint = if table_open {
         "Tab/↑↓ select · Enter/Esc close · a close"
-    } else {
+    } else if focus {
         "Tab/↑↓/click select · Enter table · O open pane · Space play · a/Esc close"
+    } else {
+        "Tab/↑↓/click select · Enter table · Space play · a/Esc close"
     };
     Paragraph::new(hint)
         .alignment(Alignment::Center)

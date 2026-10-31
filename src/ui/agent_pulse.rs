@@ -77,6 +77,9 @@ mod modal;
 mod stage;
 mod surface;
 
+#[cfg(test)]
+mod capabilities_tests;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,

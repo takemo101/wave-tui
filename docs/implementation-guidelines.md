@@ -48,9 +48,10 @@ transport constant.
 **Approved target, not yet implemented (dual-host Agent Planets).** To let one
 run observe either Herdr or herdr-core (behavior in
 [`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented)),
-the target boundaries are below; the `model::agent` row is now implemented, and
-until the remaining implementation issues land (`herdr_core`, `agent_host`,
-`--agent-host`) the layout above is what the code does.
+the target boundaries are below; the `model::agent` row (including
+`AgentCapabilities`) and the concrete `agent_host` facade over the Herdr
+monitor are now implemented, and until the remaining implementation issues land
+(`herdr_core`, `--agent-host` selection) production selects Herdr only.
 
 | Module | Responsibility | Hide from others |
 | --- | --- | --- |
@@ -63,7 +64,14 @@ until the remaining implementation issues land (`herdr_core`, `agent_host`,
 Rules for the target:
 
 - `agent_host` is a concrete type or enum, not a trait-object plugin layer; the
-  two hosts are the only hosts.
+  two hosts are the only hosts. Today `AgentHostContext` has the Herdr variant
+  only and `AgentHostMonitor` forwards the typed events, focus results, and
+  rename results as three receivers; a `#[cfg(test)]` synthetic backend stands
+  in for a read-only host. `runtime` speaks the facade, never `HerdrMonitor`.
+- Capabilities (`AgentCapabilities`) are gated at the reducer
+  (`app::agent_pulse`) and at the runtime effect boundary (`runtime::input`),
+  with the facade dropping unsupported requests as a last guard; the renderer
+  only reads them to omit hints.
 - `app` and `ui` consume `model::agent` types and capabilities only and never
   import `herdr` or `herdr_core`. Whether a control exists is a capability, not
   an `if host == ...` test in UI code.

@@ -54,7 +54,10 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   Agent table. It never reads agent output; explicit `o`/`O` may focus the
   selected live agent pane, while `r`/`R` can rename only its explicit display
   name, and standalone launches are completely unchanged (see [Herdr Agent
-  Planets](#herdr-agent-planets-optional)).
+  Planets](#herdr-agent-planets-optional)). The same stage can instead observe
+  [herdr-core](https://github.com/herdrdev/herdr-core) terminals, read-only,
+  when you launch it explicitly for that (see [Using herdr-core instead of
+  Herdr](#using-herdr-core-instead-of-herdr)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
@@ -160,7 +163,7 @@ search controls act on the focused pane.
 | `t`         | cycle theme                  |
 | `v`         | cycle visualizer mode        |
 | `z`         | toggle Signal View           |
-| `a`         | toggle the Agent Planets stage (Herdr plugin launches only) |
+| `a`         | toggle the Agent Planets stage (Herdr plugin or herdr-core launches only) |
 | `/`         | search Radio Browser         |
 | `Esc`       | clear search / return        |
 | `q` / `Esc` | quit when not searching      |
@@ -240,8 +243,11 @@ When `wave-tui` is launched by its official Herdr plugin, it can quietly show
 the live status of the AI coding agents visible on that Herdr session's local
 control socket, across the session's workspaces. It is observational about
 agent output and a companion to radio playback: it never affects audio, search,
-settings, or standalone use, and it is invisible outside Herdr. Its only
-explicit controls are selected-pane focus and explicit-name rename.
+settings, or standalone use, and it is invisible unless the launch is an
+eligible Herdr plugin launch or an explicit, qualified
+[herdr-core launch](#using-herdr-core-instead-of-herdr). The Herdr host's only
+explicit controls are selected-pane focus and explicit-name rename; this section
+and the ones below it describe the Herdr host unless they say otherwise.
 
 The full plugin manual — install, verify, open, local development,
 update/reinstall, uninstall, and troubleshooting — is
@@ -279,7 +285,7 @@ Herdr's normal pane lifecycle.
 
 ### When Agent Planets is active
 
-The Agent Planets companion enables itself only when **all** of the following hold:
+The Herdr host of the Agent Planets companion enables itself only when **all** of the following hold:
 
 1. `--no-agent-pulse` was not passed and `--agent-host` is `auto` (the default)
    or `herdr`.
@@ -467,47 +473,63 @@ Disable the integration for one launch with `--no-agent-pulse` or
 
 `wave-tui` can show the same Agent Planets stage from
 [herdr-core](https://github.com/herdrdev/herdr-core) (`hc`) terminals instead
-of Herdr. This path is implemented but has not yet been checked against a live
-`hc` runtime. A run uses at most one host, chosen once at startup with
-`--agent-host auto|herdr|herdr-core|off` (default `auto`, never persisted):
+of Herdr. herdr-core is independent of Herdr and its plugin. The path is
+implemented, but no check against a live `hc` runtime has been performed.
+
+A run uses at most one host, chosen once at startup with
+`--agent-host auto|herdr|herdr-core|off` (default `auto`; per run, never
+persisted):
 
 - `auto` uses Herdr when the plugin environment above is eligible; only
   otherwise does it consider herdr-core.
 - `herdr` and `herdr-core` consider only that host and never fall back to the
-  other. If the chosen host is not eligible, `wave-tui` looks exactly like a
-  standalone launch.
-- `off` and `--no-agent-pulse` disable the integration entirely, whichever
-  order the flags appear in, and neither host's environment is read.
+  other, not even after a later connection failure. If the chosen host is not
+  eligible, `wave-tui` looks exactly like a standalone launch.
+- `off` and the legacy `--no-agent-pulse` disable the integration entirely.
+  `--no-agent-pulse` wins over `--agent-host` in either argument order, and
+  neither host's environment is read.
 
 herdr-core is eligible when `HC_SOCKET` is set and nonblank, or when
-`HC_TERMINAL_ID` is set and nonblank and a socket resolves (the
-`HC_TERMINAL_SOCKET` that `hc` injects into its terminals, the core's
-configured socket, or its default session socket). `HC_TERMINAL_SOCKET` alone,
-`HC_SESSION` alone, or merely the default socket path do not opt in, and
-`wave-tui` never starts `hc` or looks for other cores.
+`HC_TERMINAL_ID` is set and nonblank and a socket resolves. The socket is the
+first of: `HC_SOCKET`; the `HC_TERMINAL_SOCKET` that `hc` injects into its
+terminals; the `socket` key of the core's `config.toml`
+(`$XDG_CONFIG_HOME/herdr-core/` or `~/.config/herdr-core/`); the core's default
+socket for `HC_SESSION` (or `default`). `HC_TERMINAL_SOCKET` alone,
+`HC_SESSION` alone, or merely a default socket path do not opt in, so an
+ambient default core is never picked up on its own. `wave-tui` never starts `hc`
+or a daemon and never scans for other cores or sessions.
 
-Quick start, pointing straight at a core's socket:
+Launch examples (illustrative; use your own socket path):
 
 ```bash
+# point straight at a core's socket
 HC_SOCKET=/actual/socket wave-tui --agent-host herdr-core --no-auto-play
+
+# or, from a terminal that hc launched (HC_TERMINAL_ID and
+# HC_TERMINAL_SOCKET are already set there)
+wave-tui --agent-host herdr-core --no-auto-play
 ```
 
-Or run `wave-tui --agent-host herdr-core` inside a terminal that `hc` launched;
-`hc` supplies `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` there.
-
-herdr-core is **observation only**. `wave-tui` polls `terminal.list` every
-5 seconds and shows a live terminal only when its program has declared an
-application in its status (`status.app`); the Agent column is that declared
-name, the Name column is the terminal's explicit name, and Activity is its
-terminal title. Nothing is inferred from text or brand, so a non-AI program that
-declares a status appears too, and a terminal that never reported one does not.
-Status `working`, `blocked`, `done`, and `idle` map directly; `error`, a cleared
-status, or any other value shows as Unknown. A terminal stays listed, as
-Unknown, after it clears its status, until it finishes or disappears. The
-focus (`o`/`O`) and rename (`r`/`R`) controls do not exist for herdr-core: no
-hint, no editor, no effect. A core with a slow connected remote machine can take
-longer than the 3-second socket timeout, which shows as the usual
-reconnecting/unavailable state without affecting playback.
+herdr-core is **observation only**: `wave-tui` sends `terminal.list {}` and
+nothing else — no focus, rename, attach, input, or output reading. It polls
+immediately and then 5 seconds after each finished attempt. One attempt has a
+3-second total deadline for connecting, sending, and receiving one reply of at
+most 8 MiB. Every connected terminal the core reports is considered, including
+those of connected remote machines. A live terminal is shown only when its
+program has declared an application in its status (`status.app`, nonblank);
+the Agent column is that declared name, the Name column is the terminal's
+explicit name, and Activity is its terminal title. Nothing is inferred from
+text or brand, so a non-AI program that declares a status appears too, and a
+terminal that never reported one does not. Status `working`, `blocked`,
+`done`, and `idle` map directly; `error`, a cleared status, or any other value
+shows as Unknown. A terminal that was shown stays listed, as Unknown, after it
+clears its status (even if a state value remains but the app is blank) until it
+finishes or disappears. The focus (`o`/`O`) and rename (`r`/`R`) controls do
+not exist for herdr-core: no hint, no editor, no effect. A core with a slow
+connected remote machine can take longer than the 3-second deadline, which
+shows as the usual reconnecting/unavailable state without affecting playback.
+Herdr's own polling keeps its original per-read and per-write 3-second socket
+timeouts.
 
 ## Command-line options
 

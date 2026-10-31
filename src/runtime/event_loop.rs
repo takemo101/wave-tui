@@ -461,6 +461,305 @@ mod tests {
         assert_eq!(app.agent_rename_notice(Instant::now()), None);
     }
 
+    fn named_agent(
+        id: crate::model::agent::AgentId,
+        name: &str,
+        status: crate::model::agent::AgentStatus,
+    ) -> crate::model::agent::AgentSnapshot {
+        crate::model::agent::AgentSnapshot {
+            id,
+            details: crate::model::agent::AgentDetails {
+                name: Some(name.to_string()),
+                agent: None,
+                activity: None,
+            },
+            status,
+        }
+    }
+
+    fn herdr_host_id(key: &str) -> crate::model::agent::AgentId {
+        crate::model::agent::AgentId::herdr("ws", key)
+    }
+
+    fn core_host_id(key: &str) -> crate::model::agent::AgentId {
+        crate::model::agent::AgentId::core(format!("core-addr-{key}"))
+    }
+
+    fn active_names(app: &App) -> Vec<String> {
+        app.active_agents()
+            .iter()
+            .map(|view| view.name.clone().unwrap_or_default())
+            .collect()
+    }
+
+    /// An app whose host last answered 20 s ago, with the stage open and the
+    /// details modal on `alpha`: only a tick that runs *after* this pass's
+    /// events can leave it connected with the modal still open.
+    fn app_last_answered_long_ago(
+        capabilities: AgentCapabilities,
+        id: fn(&str) -> crate::model::agent::AgentId,
+    ) -> App {
+        use crate::model::agent::AgentStatus;
+
+        let (mut app, _debounce, _persistence) = controller();
+        app.configure_agent_capabilities(capabilities);
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(20))
+            .expect("monotonic clock has 20 s of history");
+        app.apply(Action::AgentSnapshot {
+            agents: vec![named_agent(id("p1"), "alpha", AgentStatus::Working)],
+            now: long_ago,
+        });
+        app.apply(Action::ToggleAgentOverlay);
+        app.apply(Action::SelectNextAgent);
+        app.apply(Action::OpenAgentDetails);
+        assert!(app.is_agent_details_open());
+        app
+    }
+
+    /// Queue several events per host channel and drain once. Every channel
+    /// must empty, and each channel's *last* event must win, in the order
+    /// snapshot, focus, rename, tick.
+    fn assert_ordered_multi_event_drain(
+        capabilities: AgentCapabilities,
+        id: fn(&str) -> crate::model::agent::AgentId,
+    ) {
+        use crate::app::AgentPulseConnection;
+        use crate::model::agent::{
+            AgentStatus, FocusResult, MonitorEvent, RenameCompletion, RenameRequestId, RenameResult,
+        };
+
+        let live = capabilities.rename;
+        let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
+        let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
+        let (_response_tx, response_rx) = mpsc::channel::<SearchResponse>();
+        let (_, debounce, persistence) = controller();
+        let (monitor, control) = AgentHostMonitor::synthetic(capabilities);
+        let mut app = app_last_answered_long_ago(monitor.capabilities(), id);
+
+        // A live host's editor is submitted before the drain; a read-only host
+        // never opens one.
+        app.apply(Action::OpenAgentRename);
+        assert_eq!(app.is_agent_rename_open(), live);
+        let submitted = app.agent_rename_request();
+        if let Some(request) = submitted.clone() {
+            assert!(monitor.rename_agent(request));
+            app.apply(Action::SubmitAgentRename);
+        }
+        let submission = submitted.as_ref().map(|request| request.request);
+        let settings_before = app.settings().clone();
+        let search_before = app.search_status().clone();
+        let selection_before = (app.selected_index(), app.playback().clone());
+
+        control
+            .events
+            .send(MonitorEvent::Snapshot(vec![
+                named_agent(id("p2"), "beta", AgentStatus::Idle),
+                named_agent(id("p1"), "alpha", AgentStatus::Working),
+            ]))
+            .unwrap();
+        control.events.send(MonitorEvent::Failed).unwrap();
+        control
+            .events
+            .send(MonitorEvent::Snapshot(vec![
+                named_agent(id("p3"), "gamma", AgentStatus::Done),
+                named_agent(id("p1"), "alpha", AgentStatus::Working),
+            ]))
+            .unwrap();
+        for result in [
+            FocusResult::Unsupported,
+            FocusResult::Unavailable,
+            FocusResult::Missing,
+        ] {
+            control.focus_results.send(result).unwrap();
+        }
+        // The first completion settles the submission as a failure and keeps
+        // the editor; the second names the same, now settled, submission and
+        // must be ignored. Reversed, the rename would succeed and close it.
+        let first = submission.unwrap_or(RenameRequestId::FIRST);
+        for result in [RenameResult::Unavailable, RenameResult::Renamed] {
+            control
+                .rename_results
+                .send(RenameCompletion {
+                    request: first,
+                    result,
+                })
+                .unwrap();
+        }
+
+        let adapters = Adapters {
+            audio: &audio,
+            request_tx: &request_tx,
+            response_rx: &response_rx,
+            monitor: Some(&monitor),
+        };
+        drain_runtime_events(&mut app, &adapters, &debounce, &persistence);
+
+        assert!(monitor.events().try_recv().is_err(), "snapshots drained");
+        assert!(monitor.focus_events().try_recv().is_err(), "focus drained");
+        assert!(
+            monitor.rename_events().try_recv().is_err(),
+            "rename drained"
+        );
+
+        // Snapshots: the newest wins, and the failure between them recovered.
+        assert_eq!(active_names(&app), ["alpha", "gamma"]);
+        assert_eq!(
+            app.agent_pulse_connection(),
+            AgentPulseConnection::Connected
+        );
+        // Tick last: had it run first, a 20 s-old host would be Unavailable
+        // and would have closed the modal before the snapshots recovered it.
+        assert!(app.is_agent_details_open(), "tick ran after the events");
+
+        let now = Instant::now();
+        if live {
+            assert_eq!(
+                app.agent_focus_notice(now),
+                Some("pane is no longer available"),
+                "the last focus result wins"
+            );
+            assert!(app.is_agent_rename_open());
+            assert!(!app.agent_rename_is_submitting());
+            assert_eq!(app.agent_rename_input(), Some("alpha"));
+            assert_eq!(
+                app.agent_rename_notice(now),
+                Some("rename unavailable · retrying"),
+                "the first completion settled it; the later one was ignored"
+            );
+            assert_eq!(control.rename_request_ids(), vec![submission.unwrap()]);
+        } else {
+            assert_eq!(app.agent_focus_notice(now), None);
+            assert!(!app.is_agent_rename_open());
+            assert_eq!(app.agent_rename_notice(now), None);
+            assert!(control.rename_request_ids().is_empty());
+        }
+        assert_eq!(control.focus_requests(), 0, "draining never dispatches");
+
+        // Observation moved none of the radio-owned state.
+        assert_eq!(app.settings(), &settings_before);
+        assert_eq!(app.search_status(), &search_before);
+        assert_eq!(
+            (app.selected_index(), app.playback().clone()),
+            selection_before
+        );
+    }
+
+    #[test]
+    fn a_herdr_host_drains_many_events_per_channel_in_snapshot_focus_rename_tick_order() {
+        assert_ordered_multi_event_drain(AgentCapabilities::HERDR, herdr_host_id);
+    }
+
+    #[test]
+    fn a_read_only_host_drains_many_events_per_channel_in_the_same_order() {
+        assert_ordered_multi_event_drain(AgentCapabilities::READ_ONLY, core_host_id);
+    }
+
+    #[test]
+    fn rename_completions_are_folded_after_the_snapshot_events_of_the_same_pass() {
+        use crate::model::agent::{AgentStatus, MonitorEvent, RenameCompletion, RenameResult};
+
+        let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
+        let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
+        let (_response_tx, response_rx) = mpsc::channel::<SearchResponse>();
+        let (_, debounce, persistence) = controller();
+        let (monitor, control) = AgentHostMonitor::synthetic(AgentCapabilities::HERDR);
+        let mut app = app_last_answered_long_ago(monitor.capabilities(), herdr_host_id);
+        app.apply(Action::OpenAgentRename);
+        let request = app.agent_rename_request().expect("editor can submit");
+        let submission = request.request;
+        assert!(monitor.rename_agent(request));
+        app.apply(Action::SubmitAgentRename);
+
+        // The pass ends with the host failing again, so by the time the
+        // completion is folded the table is Stale. A completion applied first
+        // would still see Connected and report the agent as gone instead.
+        control
+            .events
+            .send(MonitorEvent::Snapshot(vec![named_agent(
+                herdr_host_id("p1"),
+                "alpha",
+                AgentStatus::Working,
+            )]))
+            .unwrap();
+        control.events.send(MonitorEvent::Failed).unwrap();
+        control
+            .rename_results
+            .send(RenameCompletion {
+                request: submission,
+                result: RenameResult::Missing,
+            })
+            .unwrap();
+
+        let adapters = Adapters {
+            audio: &audio,
+            request_tx: &request_tx,
+            response_rx: &response_rx,
+            monitor: Some(&monitor),
+        };
+        drain_runtime_events(&mut app, &adapters, &debounce, &persistence);
+
+        assert_eq!(
+            app.agent_pulse_connection(),
+            crate::app::AgentPulseConnection::Stale
+        );
+        assert!(app.is_agent_rename_open(), "the editor and input survive");
+        assert_eq!(
+            app.agent_rename_notice(Instant::now()),
+            Some("rename unavailable · retrying"),
+            "settled against the stale table, not the pre-pass connected one"
+        );
+    }
+
+    #[test]
+    fn a_silent_live_host_still_ticks_to_unavailable_on_every_drain() {
+        use crate::app::AgentPulseConnection;
+
+        for (capabilities, id) in [
+            (
+                AgentCapabilities::HERDR,
+                herdr_host_id as fn(&str) -> crate::model::agent::AgentId,
+            ),
+            (AgentCapabilities::READ_ONLY, core_host_id),
+        ] {
+            let (audio, _cmd_rx, _event_tx) = fake_audio_with_events();
+            let (request_tx, _request_rx) = mpsc::channel::<SearchRequest>();
+            let (_response_tx, response_rx) = mpsc::channel::<SearchResponse>();
+            let (_, debounce, persistence) = controller();
+            let (monitor, _control) = AgentHostMonitor::synthetic(capabilities);
+
+            // No monitor: nothing ticks, so the old host stays "connected".
+            let mut standalone = app_last_answered_long_ago(capabilities, id);
+            let none = Adapters {
+                audio: &audio,
+                request_tx: &request_tx,
+                response_rx: &response_rx,
+                monitor: None,
+            };
+            drain_runtime_events(&mut standalone, &none, &debounce, &persistence);
+            assert_eq!(
+                standalone.agent_pulse_connection(),
+                AgentPulseConnection::Connected
+            );
+
+            // A live but silent monitor: the tick alone crosses 15 s.
+            let mut app = app_last_answered_long_ago(capabilities, id);
+            let live = Adapters {
+                audio: &audio,
+                request_tx: &request_tx,
+                response_rx: &response_rx,
+                monitor: Some(&monitor),
+            };
+            drain_runtime_events(&mut app, &live, &debounce, &persistence);
+            assert_eq!(
+                app.agent_pulse_connection(),
+                AgentPulseConnection::Unavailable
+            );
+            assert!(!app.is_agent_details_open(), "unavailable drops the modal");
+            assert_eq!(active_names(&app), ["alpha"], "last-known agents remain");
+        }
+    }
+
     #[test]
     fn low_power_poll_keeps_search_fire_within_spec_ceiling() {
         assert!(SEARCH_DEBOUNCE + POLL_INTERVAL_LOW_POWER <= Duration::from_millis(500));

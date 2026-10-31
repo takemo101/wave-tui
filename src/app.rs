@@ -14,6 +14,8 @@
 //! reducer pure and testable without a terminal, audio device, or network.
 
 mod agent_pulse;
+#[cfg(test)]
+mod host_regression_tests;
 
 use crate::audio::AudioEvent;
 use crate::catalog::{

@@ -49,22 +49,25 @@ Stay inside the MVP unless the user explicitly expands scope:
 - ICY/Shoutcast now-playing metadata when available;
 - three responsive layout tiers;
 - Minimal, Neon, CRT, Solarized, Midnight, and Sakura themes;
-- the optional observational Herdr Agent Pulse companion when launched as the
-  official Herdr plugin (current presentation: the Agent Planets stage over
-  the Dual Phase Scope — disc-mask planets, details modal, interior-only
-  surface status, static sun with Working-only invisible orbits, and
-  selection focus brackets — as recorded in `docs/ui-design-decisions.md`
-  and `docs/SPEC.md`).
-  It observes approved agent details via `agent.list` on the plugin's local Herdr
-  socket (across that session's workspaces) and may explicitly focus the selected
-  live pane via `agent.focus` or rename its explicit display name via
-  `agent.rename`; it is not a daemon, remote control service, or an internal
-  plugin system.
-  A read-only herdr-core host is also implemented (`herdr_core` adapter,
-  `--agent-host auto|herdr|herdr-core|off`, legacy `--no-agent-pulse` always
-  wins). It only polls `terminal.list {}`; focus and rename do not exist for
-  it. Keep changes to it inside the contract in `docs/SPEC.md` (herdr-core
-  Agent Host); live-runtime verification is still pending.
+- the optional observational Agent Planets companion (current presentation:
+  the Agent Planets stage over the Dual Phase Scope — disc-mask planets,
+  details modal, interior-only surface status, static sun with Working-only
+  invisible orbits, and selection focus brackets — as recorded in
+  `docs/ui-design-decisions.md` and `docs/SPEC.md`). One run has at most one
+  host, chosen by `--agent-host auto|herdr|herdr-core|off` (legacy
+  `--no-agent-pulse` always wins; per run, never persisted):
+  - the Herdr host, when launched as the official Herdr plugin, observes
+    approved agent details via `agent.list` on the plugin's local Herdr socket
+    (across that session's workspaces) and may explicitly focus the selected
+    live pane via `agent.focus` or rename its explicit display name via
+    `agent.rename`;
+  - the read-only herdr-core host (`herdr_core` adapter), for an explicit or
+    qualified core launch, only polls `terminal.list {}`; focus and rename do
+    not exist for it. Keep changes to it inside the contract in
+    `docs/SPEC.md` (herdr-core Agent Host).
+
+  Neither host is a daemon, remote control service, or an internal plugin
+  system. No check against a live Herdr or `hc` runtime has been performed.
 
 Do not add these in MVP without an explicit design update:
 

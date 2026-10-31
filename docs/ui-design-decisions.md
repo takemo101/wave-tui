@@ -322,11 +322,10 @@ Implications:
 
 > **IMPLEMENTED.** Capability-gated stage and table hints are in place and the
 > herdr-core host and `--agent-host` selection are wired in. No visual intent
-> changed; a real visual check against a live `hc` runtime has not been done.
-> The herdr-core host's behavior and
-> data mapping are specified in
-> [`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented);
-> only its presentation consequences are recorded here.
+> changed; no real visual check has been performed against a live `hc` or Herdr
+> runtime. The herdr-core host's behavior and data mapping are specified in
+> [`SPEC.md`](SPEC.md#herdr-core-agent-host); only its presentation
+> consequences are recorded here.
 
 - **One stage, two sources.** The Agent Planets stage, Dual Phase Scope,
   planets, interior status, brackets, quiet count, stale/unavailable ladder,

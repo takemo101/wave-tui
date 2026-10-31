@@ -398,7 +398,8 @@ agent reported by the session's socket is shown.
 | `o` / `O`          | focus the selected current pane; errors stay as temporary stage/modal feedback |
 | `r` / `R`          | open inline Name rename in a live table |
 | `Esc`              | cancel rename; otherwise close the table, then the stage |
-| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | consumed while the table or rename input is open || `q` / `Ctrl+C`     | quit the app                             |
+| `Space`, `+`/`-`, `f`, `t`, `v`, `z` | consumed while the table or rename input is open |
+| `q` / `Ctrl+C`     | quit the app                             |
 
 Search (`/`) and station navigation/selection (`g`/`G`/`Home`/`End`) are
 suppressed while the stage is open. `Enter` opens the table rather than playing
@@ -563,6 +564,7 @@ for findings and caveats.
   deployment workflow
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) — tagged
   release asset workflow
+- [`docs/README.md`](docs/README.md) — documentation index
 - [`docs/SPEC.md`](docs/SPEC.md) — product specification and MVP scope
 - [`docs/implementation-guidelines.md`](docs/implementation-guidelines.md) —
   implementation principles adapted from okite-ai skills

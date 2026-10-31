@@ -30,6 +30,14 @@ For `wave-tui`, the expected change boundaries are:
 | `ui` | rendering changes | domain mutation logic |
 | `cli` | flags, help text, or key meaning change | terminal/adapter lifecycle |
 | `runtime` | startup, teardown, or event-loop wiring changes | terminal, worker, and channel details |
+| `herdr` | Herdr socket protocol or agent request behavior changes | Herdr JSON and opaque pane ids |
+
+Larger modules split by responsibility behind a narrow facade rather than
+growing: `audio::session` (playback-session lifecycle), `app::agent_pulse`
+(Agent Pulse state kept out of the radio reducer), `ui::agent_pulse` (rendering
+facade over private `geometry`/`surface`/`stage`/`modal`), and the `runtime`
+children (`key_policy` decides what a key means as pure data; `input` applies
+that decision once at the adapter boundary).
 
 Rules:
 
@@ -105,6 +113,21 @@ Guidelines:
 - Do not wrap every primitive by default; wrap when it prevents invalid states,
   argument mixups, or repeated validation.
 
+Current enforced invariants:
+
+- `StreamUrl::parse` accepts only a real `http`/`https` URL with a non-empty
+  host (a bare prefix such as `http://` is rejected) and keeps the original raw
+  value in `DomainError::InvalidStreamUrl`. It never rewrites or appends to the
+  URL; resolution rules such as curated `/stream` suffixes belong to `audio`.
+- `VizFrame` and `PhaseTrace` keep their fields private and normalize bands, RMS,
+  waveform, and phase pairs on construction. Renderers and `audio` use
+  constructors and read-only accessors, so no caller can bypass normalization.
+- Playback work is identified by a typed, monotonically increasing
+  `PlaybackRequestId`. The controller allocates one per play or replay request
+  and `App` ignores station-scoped audio events from any other request, so a
+  late completion from a replaced or cancelled session cannot alter playback,
+  selection, health, or metadata, including when the same station is replayed.
+
 ### 5. Parse, don't validate
 
 Source skill: `parse-dont-validate`
@@ -179,6 +202,13 @@ Rules:
 - Do not panic for broken remote stations.
 - Do not swallow defects with generic `catch all` handling.
 - Audio thread failures should become `AudioEvent::Failed`, not crash the TUI.
+- Settings, search, audio, and Herdr failures stay recoverable. A failed
+  settings save must not leave a partial `settings.json` (the write is atomic;
+  see `docs/SPEC.md`) and surfaces a nonfatal notice instead of being silently
+  dropped.
+- Background work that cannot be cancelled is bounded rather than queued:
+  debounced search is latest-wins, connect attempts are capped and coalesced,
+  and at most one Herdr focus request is in flight at a time.
 - Use `anyhow` at app boundaries; use typed errors inside stable modules when it
   improves tests and decisions.
 

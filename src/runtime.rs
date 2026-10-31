@@ -112,14 +112,15 @@ fn run_app(args: CliArgs) -> Result<()> {
     // audio event, so the App can freeze the first visual frame's geometry.
     app.configure_low_power_visuals(args.low_power);
 
-    // Agent Pulse monitor: created only when an Agent Planets host is
-    // eligible (production selects the official Herdr plugin environment only)
-    // and `--no-agent-pulse` is absent. `None` keeps standalone behavior
-    // exact. The polling thread is joined on every exit path: explicitly in the
+    // Agent Pulse monitor: created only when the `--agent-host` selection
+    // (default auto: an eligible Herdr plugin environment, else an eligible
+    // herdr-core terminal) names an eligible Agent Planets host and
+    // `--no-agent-pulse` is absent. `None` keeps standalone behavior exact.
+    // The polling thread is joined on every exit path: explicitly in the
     // shutdown block on a normal return, and by the monitor's `Drop` on the
     // early `?` returns below.
-    let monitor =
-        AgentHostContext::from_env(args.no_agent_pulse).map(AgentHostContext::spawn_monitor);
+    let monitor = AgentHostContext::from_env(args.no_agent_pulse, args.agent_host)
+        .map(AgentHostContext::spawn_monitor);
     // Host capabilities are startup context, configured once before the first
     // agent event can be drained.
     configure_agent_capabilities(&mut app, monitor.as_ref());

@@ -135,7 +135,8 @@ standalone binary, use the [README uninstall steps](../README.md#uninstall).
 
 The Agent Planets companion enables itself only when **all** of the following hold at launch:
 
-1. `--no-agent-pulse` was not passed.
+1. `--no-agent-pulse` was not passed and `--agent-host` is `auto` (the default)
+   or `herdr`.
 2. `HERDR_ENV` is exactly `1`.
 3. `HERDR_SOCKET_PATH` is set and non-empty.
 4. `HERDR_WORKSPACE_ID` is set and non-empty.
@@ -164,20 +165,25 @@ restarts, closes, or sends pane input to a pane; missing/moved panes, socket
 failures, and unsupported Herdr (update to 0.7.0+) remain recoverable local
 notices. Stale state disables rename while retaining its input; unavailable
 closes the table/input. Disable the integration for one run with
-`--no-agent-pulse` (never written to settings).
+`--no-agent-pulse` or `--agent-host off` (never written to settings).
 
-## Roadmap: herdr-core host (not yet implemented)
+## herdr-core host
 
-An optional second host that observes
+An optional second host observes
 [herdr-core](https://github.com/herdrdev/herdr-core) terminals instead of
-Herdr is approved but **not implemented**. Nothing on this page changes for it
-yet: the plugin, its eligibility conditions, and the commands above remain the
-only supported path. The approved behavior — including `--agent-host`
-selection, herdr-core eligibility, and why focus/rename will not apply to it —
-is in
+Herdr. It is not part of the plugin install: the plugin, its eligibility
+conditions, and the commands above are unchanged, and the plugin's `open`
+action does not pass `--agent-host`, so inside the plugin the default `auto`
+selects Herdr first. Pass `--agent-host herdr-core` yourself to use herdr-core
+(for example, `HC_SOCKET=/actual/socket wave-tui --agent-host herdr-core
+--no-auto-play` outside Herdr); `--agent-host herdr` pins Herdr, and an
+explicit host never falls back to the other. herdr-core is observation only —
+no focus or rename — and its eligibility rules (`HC_SOCKET`, or
+`HC_TERMINAL_ID` plus a resolved socket) are in the
+[README](../README.md#using-herdr-core-instead-of-herdr) and
 [`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented),
 with source evidence in [`herdr-core-research.md`](herdr-core-research.md).
-This manual will gain herdr-core instructions when it ships.
+It has not yet been checked against a live `hc` runtime.
 
 ## Troubleshooting
 

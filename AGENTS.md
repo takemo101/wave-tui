@@ -60,12 +60,11 @@ Stay inside the MVP unless the user explicitly expands scope:
   live pane via `agent.focus` or rename its explicit display name via
   `agent.rename`; it is not a daemon, remote control service, or an internal
   plugin system.
-  A read-only herdr-core host is an approved target. Only its `agent_host`
-  facade and capability gates exist so far; the core adapter and
-  `--agent-host` are **not yet implemented**, so do not add them or any
-  herdr-core code except through the dual-host implementation issues, and
-  follow the target contract in `docs/SPEC.md` (herdr-core Agent Host) when
-  you do.
+  A read-only herdr-core host is also implemented (`herdr_core` adapter,
+  `--agent-host auto|herdr|herdr-core|off`, legacy `--no-agent-pulse` always
+  wins). It only polls `terminal.list {}`; focus and rename do not exist for
+  it. Keep changes to it inside the contract in `docs/SPEC.md` (herdr-core
+  Agent Host); live-runtime verification is still pending.
 
 Do not add these in MVP without an explicit design update:
 
@@ -106,12 +105,18 @@ Expected responsibility boundaries:
   The shared agent vocabulary (`AgentId`, `AgentStatus`, `AgentDetails`,
   `AgentSnapshot`, `MonitorEvent`, `FocusResult`, `RenameResult`) lives in
   `model::agent`; `app`/`ui` import it there, not from `herdr`.
+- `herdr_core`: read-only herdr-core eligibility, endpoint resolution, the
+  `terminal.list {}` monitor thread, and admission/membership rules; the only
+  module that sees core JSON or addresses as wire strings. It exposes only a
+  typed event receiver, `stop`, and join-on-drop — no control channel.
 - `agent_host`: the concrete facade `runtime` uses instead of `HerdrMonitor`
-  (`AgentHostContext` / `AgentHostMonitor`, Herdr only in production). It
-  forwards typed events, focus results, and rename results, drops requests the
-  host's `model::agent::AgentCapabilities` do not allow, and owns stop/join.
-  Not a trait registry or plugin layer. (Approved target, not yet implemented:
-  a sibling `herdr_core` adapter — see `docs/implementation-guidelines.md`.)
+  or the core monitor (`AgentHostContext` / `AgentHostMonitor`, a Herdr and a
+  core variant). Its pure `select` function applies `--agent-host` and the
+  legacy `--no-agent-pulse` disable over injected eligibility resolvers
+  (core is resolved only after Herdr is absent or ineligible; an explicit host
+  never falls back). It forwards typed events, focus results, and rename
+  results, drops requests the host's `model::agent::AgentCapabilities` do not
+  allow, and owns stop/join. Not a trait registry or plugin layer.
 - `theme`: theme names and palette definitions.
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.

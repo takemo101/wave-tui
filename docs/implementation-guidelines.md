@@ -47,32 +47,41 @@ seeds and the UI characterization digests are unchanged. The stale-connection
 window is app lifecycle policy (`app::agent_pulse::STALE_AFTER`), not a Herdr
 transport constant.
 
-**Approved target, not yet implemented (dual-host Agent Planets).** To let one
-run observe either Herdr or herdr-core (behavior in
-[`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented)),
-the target boundaries are below; the `model::agent` row (including
-`AgentCapabilities`) and the concrete `agent_host` facade over the Herdr
-monitor are now implemented, and until the remaining implementation issues land
-(`herdr_core`, `--agent-host` selection) production selects Herdr only.
+**Dual-host Agent Planets.** One run observes either Herdr or herdr-core
+(behavior in
+[`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented)).
+The boundaries below are implemented: `model::agent` (including
+`AgentCapabilities` and the `AgentHostSelection` CLI value), `herdr`,
+`herdr_core`, the concrete `agent_host` facade, and selection in `runtime`.
+Real-runtime verification is still pending (see `SPEC.md`).
 
 | Module | Responsibility | Hide from others |
 | --- | --- | --- |
-| `model::agent` | shared agent vocabulary: opaque identity, status, display fields, host capabilities | which host produced a value |
+| `model::agent` | shared agent vocabulary: opaque identity, status, display fields, host capabilities, the `--agent-host` selection value | which host produced a value |
 | `herdr` | Herdr eligibility, socket protocol, `agent.list`, `agent.focus`/`agent.rename` | Herdr JSON and opaque pane ids |
 | `herdr_core` | core eligibility, `terminal.list {}` polling, admission and membership rules | core JSON, addresses as wire strings, `status`/`state` raw values |
 | `agent_host` | concrete facade that holds the one selected host and exposes monitor events plus capability-gated requests | which adapter is behind it |
-| `runtime` | host selection (`--agent-host`, `--no-agent-pulse` precedence) and adapter construction | — |
+| `cli` | parses `--agent-host` and `--no-agent-pulse` into typed `CliArgs` fields; never selects or constructs a host | adapters, environment, monitor lifecycle |
+| `runtime` | passes the parsed disable flag and selection to the facade and owns the monitor lifecycle | — |
 
-Rules for the target:
+Rules:
 
 - `agent_host` is a concrete type or enum, not a trait-object plugin layer; the
-  two hosts are the only hosts. Today `AgentHostContext` has the Herdr variant
-  only and `AgentHostMonitor` forwards the typed events, focus results, and
-  rename completions as three receivers; a `#[cfg(test)]` synthetic backend
-  stands in for a read-only host. `rename_agent` reports whether the host
-  accepted the request (Herdr runs one rename worker, no queue), and the effect
-  boundary settles a refusal itself. `runtime` speaks the facade, never
-  `HerdrMonitor`.
+  two hosts are the only hosts. `AgentHostContext` has a Herdr and a core
+  variant; its one pure `select` function applies the legacy disable, `off`,
+  explicit-host, and `auto` rules over injected eligibility resolvers (core is
+  resolved only after Herdr was absent or ineligible; an explicit host never
+  falls back), and `from_env` merely wires the real resolvers in. That keeps
+  the whole matrix testable with no process-environment mutation.
+  `AgentHostMonitor` forwards the typed events, focus results, and rename
+  completions as three receivers. The core variant wraps the observation-only
+  core monitor, which has no control channel, so the facade supplies
+  never-written focus and rename receivers and the `READ_ONLY` capabilities;
+  a `#[cfg(test)]` synthetic backend remains for gating tests. `rename_agent`
+  reports whether the host accepted the request (Herdr runs one rename worker,
+  no queue), and the effect boundary settles a refusal itself. `runtime`
+  speaks the facade, never `HerdrMonitor` or the core monitor, and
+  `--help`/`--version` return before any selection runs.
 - Capabilities (`AgentCapabilities`) are gated at the reducer
   (`app::agent_pulse`) and at the runtime effect boundary (`runtime::input`),
   with the facade dropping unsupported requests as a last guard; the renderer

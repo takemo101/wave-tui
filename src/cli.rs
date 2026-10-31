@@ -13,6 +13,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::model::agent::AgentHostSelection;
 use crate::model::VolumePercent;
 use crate::settings::Settings;
 use crate::theme::ThemeName;
@@ -31,8 +32,11 @@ OPTIONS:
     --no-auto-play                Start silently even if a previous station exists
     --audio-output-device <name>  CPAL output device name
     --low-power                   Lower UI update cadence (audio unaffected)
-    --no-agent-pulse              Disable the Herdr Agent Pulse integration for
-                                  this run (never persisted)
+    --agent-host <host>           Agent Planets host for this run: auto | herdr |
+                                  herdr-core | off (default auto; an explicit
+                                  host never falls back; never persisted)
+    --no-agent-pulse              Disable every Agent Planets host for this run,
+                                  whatever --agent-host says (never persisted)
     --search <query>              Start in search mode with this query
     -h, --help                    Print help
     -V, --version                 Print version
@@ -56,9 +60,13 @@ pub struct CliArgs {
     pub no_auto_play: bool,
     pub audio_output_device: Option<String>,
     pub low_power: bool,
-    /// Disable the Herdr Agent Pulse integration for this run only; never
-    /// persisted and never applied to settings.
+    /// Disable every Agent Planets host for this run only, regardless of
+    /// `--agent-host` or argument order; never persisted and never applied to
+    /// settings.
     pub no_agent_pulse: bool,
+    /// Which Agent Planets host this run may use (`--agent-host`); defaults to
+    /// auto. Per-run only: never persisted and never applied to settings.
+    pub agent_host: AgentHostSelection,
     pub search: Option<String>,
 }
 
@@ -80,6 +88,7 @@ pub enum CliError {
     MissingValue(String),
     InvalidVolume(String),
     InvalidTheme(String),
+    InvalidAgentHost(String),
 }
 
 impl std::fmt::Display for CliError {
@@ -95,6 +104,13 @@ impl std::fmt::Display for CliError {
                     f,
                     "invalid --theme {raw:?} \
                      (expected minimal, neon, crt, solarized, midnight, or sakura)"
+                )
+            }
+            CliError::InvalidAgentHost(raw) => {
+                write!(
+                    f,
+                    "invalid --agent-host {raw:?} \
+                     (expected auto, herdr, herdr-core, or off)"
                 )
             }
         }
@@ -140,6 +156,11 @@ where
             "--no-auto-play" => parsed.no_auto_play = true,
             "--low-power" => parsed.low_power = true,
             "--no-agent-pulse" => parsed.no_agent_pulse = true,
+            "--agent-host" => {
+                let raw = take_value("--agent-host")?;
+                parsed.agent_host =
+                    AgentHostSelection::parse(&raw).ok_or(CliError::InvalidAgentHost(raw))?;
+            }
             "--theme" => {
                 let raw = take_value("--theme")?;
                 parsed.theme =
@@ -319,6 +340,8 @@ mod tests {
             "Speakers",
             "--low-power",
             "--no-agent-pulse",
+            "--agent-host",
+            "herdr-core",
             "--search",
             "lofi",
         ])
@@ -332,6 +355,7 @@ mod tests {
                 audio_output_device: Some("Speakers".to_string()),
                 low_power: true,
                 no_agent_pulse: true,
+                agent_host: AgentHostSelection::HerdrCore,
                 search: Some("lofi".to_string()),
             })
         );
@@ -442,6 +466,106 @@ mod tests {
         assert!(
             USAGE.contains("--no-agent-pulse"),
             "help text must document --no-agent-pulse"
+        );
+    }
+
+    fn run_args(args: &[&str]) -> CliArgs {
+        match parse(args).unwrap() {
+            CliInvocation::Run(parsed) => parsed,
+            other => panic!("expected a run invocation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_host_defaults_to_auto() {
+        assert_eq!(run_args(&[]).agent_host, AgentHostSelection::Auto);
+    }
+
+    #[test]
+    fn parse_args_reads_every_agent_host_in_space_and_equals_form() {
+        let cases = [
+            ("auto", AgentHostSelection::Auto),
+            ("herdr", AgentHostSelection::Herdr),
+            ("herdr-core", AgentHostSelection::HerdrCore),
+            ("off", AgentHostSelection::Off),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(run_args(&["--agent-host", raw]).agent_host, expected);
+            let equals = format!("--agent-host={raw}");
+            assert_eq!(run_args(&[equals.as_str()]).agent_host, expected);
+        }
+    }
+
+    #[test]
+    fn invalid_agent_host_is_a_recoverable_error_naming_every_value() {
+        let err = parse(&["--agent-host", "core"]).unwrap_err();
+        assert_eq!(err, CliError::InvalidAgentHost("core".to_string()));
+        let message = err.to_string();
+        for value in ["auto", "herdr", "herdr-core", "off"] {
+            assert!(
+                message.contains(value),
+                "{message:?} should mention {value}"
+            );
+        }
+        assert!(matches!(
+            parse(&["--agent-host="]).unwrap_err(),
+            CliError::InvalidAgentHost(_)
+        ));
+    }
+
+    #[test]
+    fn missing_agent_host_value_is_a_missing_value_error() {
+        assert_eq!(
+            parse(&["--agent-host"]).unwrap_err(),
+            CliError::MissingValue("--agent-host".to_string())
+        );
+    }
+
+    #[test]
+    fn a_repeated_agent_host_follows_the_last_wins_policy_of_other_value_flags() {
+        assert_eq!(
+            run_args(&["--agent-host", "herdr", "--agent-host", "off"]).agent_host,
+            AgentHostSelection::Off
+        );
+        // A later invalid repeat is still an error, never silently ignored.
+        assert!(matches!(
+            parse(&["--agent-host", "herdr", "--agent-host", "bogus"]).unwrap_err(),
+            CliError::InvalidAgentHost(_)
+        ));
+    }
+
+    #[test]
+    fn legacy_no_agent_pulse_is_independent_of_argument_order_and_host() {
+        for args in [
+            ["--no-agent-pulse", "--agent-host", "herdr"],
+            ["--agent-host", "herdr", "--no-agent-pulse"],
+        ] {
+            let parsed = run_args(&args);
+            assert!(parsed.no_agent_pulse, "{args:?}");
+            assert_eq!(parsed.agent_host, AgentHostSelection::Herdr, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn usage_documents_agent_host_values_and_legacy_precedence() {
+        assert!(USAGE.contains("--agent-host <host>"));
+        for value in ["auto", "herdr", "herdr-core", "off"] {
+            assert!(USAGE.contains(value), "help must list {value}");
+        }
+        assert!(USAGE.contains("--agent-host says"));
+    }
+
+    #[test]
+    fn help_and_version_win_over_a_bad_agent_host_that_follows() {
+        // Help/version return before any later argument is examined, so they
+        // never reach host selection (which only runs for `Run`).
+        assert_eq!(
+            parse(&["--help", "--agent-host", "bogus"]).unwrap(),
+            CliInvocation::Help
+        );
+        assert_eq!(
+            parse(&["--version", "--agent-host", "bogus"]).unwrap(),
+            CliInvocation::Version
         );
     }
 
@@ -577,12 +701,14 @@ mod tests {
     }
 
     #[test]
-    fn no_agent_pulse_leaves_settings_untouched() {
-        // The flag is a one-run disable: it must not flow into the in-memory
-        // settings (and therefore never into what persistence writes back).
+    fn no_agent_pulse_and_agent_host_leave_settings_untouched() {
+        // Both flags are one-run choices: they must not flow into the
+        // in-memory settings (and therefore never into what persistence
+        // writes back).
         let saved = Settings::default();
         let args = CliArgs {
             no_agent_pulse: true,
+            agent_host: AgentHostSelection::HerdrCore,
             ..CliArgs::default()
         };
         assert_eq!(apply_overrides(saved.clone(), &args), saved);

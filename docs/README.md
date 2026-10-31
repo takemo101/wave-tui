@@ -10,6 +10,7 @@ the topic you are changing, and update it in the same change as the behavior.
 | [`ui-design-decisions.md`](ui-design-decisions.md) | Selected UI direction: layouts, visualizer, themes, splash, Signal View, and the Agent Planets presentation (plus its superseded lineage) |
 | [`audio-spike.md`](audio-spike.md) | Native audio pipeline findings, playback caveats, control-thread and cleanup behavior |
 | [`herdr-plugin.md`](herdr-plugin.md) | Herdr plugin operations: install, verify, open, develop, update, uninstall, troubleshoot |
+| [`herdr-core-research.md`](herdr-core-research.md) | Pinned source evidence (commit `4a3591a`, schema 0.1.15) for the approved, not-yet-implemented herdr-core Agent Planets host; evidence only — behavior is owned by `SPEC.md` |
 
 Related files outside this directory:
 

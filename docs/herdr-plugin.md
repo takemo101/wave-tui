@@ -164,6 +164,20 @@ failures, and unsupported Herdr (update to 0.7.0+) remain recoverable local
 notices. Stale state disables rename while retaining its input; unavailable
 closes the table/input. Disable the integration for one run with
 `--no-agent-pulse` (never written to settings).
+
+## Roadmap: herdr-core host (not yet implemented)
+
+An optional second host that observes
+[herdr-core](https://github.com/herdrdev/herdr-core) terminals instead of
+Herdr is approved but **not implemented**. Nothing on this page changes for it
+yet: the plugin, its eligibility conditions, and the commands above remain the
+only supported path. The approved behavior — including `--agent-host`
+selection, herdr-core eligibility, and why focus/rename will not apply to it —
+is in
+[`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented),
+with source evidence in [`herdr-core-research.md`](herdr-core-research.md).
+This manual will gain herdr-core instructions when it ships.
+
 ## Troubleshooting
 
 **`herdr plugin install` fails during the build.** The build step runs

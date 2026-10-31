@@ -18,6 +18,8 @@ Start here:
    playback caveats.
 5. [`docs/herdr-plugin.md`](docs/herdr-plugin.md) — Herdr plugin operational
    manual (install, verify, open, develop, update, uninstall, troubleshoot).
+6. [`docs/herdr-core-research.md`](docs/herdr-core-research.md) — pinned
+   herdr-core source evidence (evidence only; behavior lives in `docs/SPEC.md`).
 
 Before changing Agent Pulse presentation, read the Agent Pulse sections of
 `docs/ui-design-decisions.md` and `docs/SPEC.md`; they record the current
@@ -58,6 +60,11 @@ Stay inside the MVP unless the user explicitly expands scope:
   live pane via `agent.focus` or rename its explicit display name via
   `agent.rename`; it is not a daemon, remote control service, or an internal
   plugin system.
+  A read-only herdr-core host is an approved target that is **not yet
+  implemented**; do not add it, `--agent-host`, or any herdr-core code except
+  through the dual-host implementation issues, and follow the target
+  contract in `docs/SPEC.md` (herdr-core Agent Host) when you do.
+
 Do not add these in MVP without an explicit design update:
 
 - Spotify/local library/player features;
@@ -93,7 +100,11 @@ Expected responsibility boundaries:
   and worker reclamation, kept free of CPAL/Symphonia/HTTP details).
 - `herdr`: Herdr plugin environment eligibility, Unix socket protocol, the
   `agent.list` monitor thread, and explicit `agent.focus` / `agent.rename`
-  requests; the only module that sees Herdr JSON or opaque pane ids.- `theme`: theme names and palette definitions.
+  requests; the only module that sees Herdr JSON or opaque pane ids.
+  (Approved target, not yet implemented: shared `model::agent` types, a
+  sibling `herdr_core` adapter, and an `agent_host` facade — see
+  `docs/implementation-guidelines.md`.)
+- `theme`: theme names and palette definitions.
 - `layout`: terminal size to layout tier policy.
 - `app`: app state, actions, reducers, focus, selection, temporary failures.
   Agent Pulse lifecycle, display, and interaction state (connection ladder,

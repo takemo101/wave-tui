@@ -32,6 +32,36 @@ For `wave-tui`, the expected change boundaries are:
 | `runtime` | startup, teardown, or event-loop wiring changes | terminal, worker, and channel details |
 | `herdr` | Herdr socket protocol or agent request behavior changes | Herdr JSON and opaque pane ids |
 
+**Approved target, not yet implemented (dual-host Agent Planets).** To let one
+run observe either Herdr or herdr-core (behavior in
+[`SPEC.md`](SPEC.md#herdr-core-agent-host-approved-target-not-yet-implemented)),
+the target boundaries are below; until the implementation issues land, the
+`herdr` row above and the current module layout are what the code does.
+
+| Module | Responsibility | Hide from others |
+| --- | --- | --- |
+| `model::agent` | shared agent vocabulary: opaque identity, status, display fields, host capabilities | which host produced a value |
+| `herdr` | Herdr eligibility, socket protocol, `agent.list`, `agent.focus`/`agent.rename` | Herdr JSON and opaque pane ids |
+| `herdr_core` | core eligibility, `terminal.list {}` polling, admission and membership rules | core JSON, addresses as wire strings, `status`/`state` raw values |
+| `agent_host` | concrete facade that holds the one selected host and exposes monitor events plus capability-gated requests | which adapter is behind it |
+| `runtime` | host selection (`--agent-host`, `--no-agent-pulse` precedence) and adapter construction | — |
+
+Rules for the target:
+
+- `agent_host` is a concrete type or enum, not a trait-object plugin layer; the
+  two hosts are the only hosts.
+- `app` and `ui` consume `model::agent` types and capabilities only and never
+  import `herdr` or `herdr_core`. Whether a control exists is a capability, not
+  an `if host == ...` test in UI code.
+- `herdr` and `herdr_core` do not depend on each other; shared types move down
+  into `model::agent`, not sideways.
+- The legacy Herdr identity hash sequence and agent ordering stay byte-for-byte
+  unchanged; adding a host must not move an existing planet.
+- Boundary data is parsed once per adapter (`terminal.list` into admitted,
+  typed agents) and never leaks core wire values past the adapter.
+- Default tests use fake sockets or pure payloads; no live `hc`, Herdr, audio
+  device, or terminal.
+
 Larger modules split by responsibility behind a narrow facade rather than
 growing: `audio::session` (playback-session lifecycle), `app::agent_pulse`
 (Agent Pulse state kept out of the radio reducer), `ui::agent_pulse` (rendering

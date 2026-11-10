@@ -93,7 +93,7 @@ Install a specific release tag:
 
 ```bash
 INSTALL_URL=https://raw.githubusercontent.com/takemo101/wave-tui/main/install.sh
-curl -fsSL "$INSTALL_URL" | VERSION=v0.1.8 sh
+curl -fsSL "$INSTALL_URL" | VERSION=v0.1.9 sh
 ```
 
 The installer currently publishes macOS prebuilt assets:

@@ -257,7 +257,8 @@ Implications:
   the sun and planets behind one calm `agents · unavailable · retrying` line
   while the stage chrome stays.
 - **On-demand table, explicit-name-only labels.** The stage field renders no
-  agent text except an explicit Herdr name as a one-line, ellipsized label
+  agent text except an explicit Herdr name (or another host's permitted Name
+  field, as mapped below) as a one-line, ellipsized label
   directly beneath its planet disc. Unnamed planets remain label-free; labels
   stay within their planet tiles and are omitted when their candidate rectangles
   collide with a prior displayed label, the sun, or stage chrome. Selecting a
@@ -318,7 +319,7 @@ Implications:
   selection cannot change (`a`/`Esc` still close the stage) — selection
   input should not act on possibly outdated data.
 
-#### Dual-host presentation (implemented; real visual check pending)
+#### Multi-host presentation (implemented; real visual check pending)
 
 > **IMPLEMENTED.** Capability-gated stage and table hints are in place and the
 > herdr-core host and `--agent-host` selection are wired in. No visual intent
@@ -327,12 +328,23 @@ Implications:
 > [`SPEC.md`](SPEC.md#herdr-core-agent-host); only its presentation
 > consequences are recorded here.
 
-- **One stage, two sources.** The Agent Planets stage, Dual Phase Scope,
+- **One stage, three sources.** Herdr, herdr-core and Rex feed the same
+  Agent Planets stage, Dual Phase Scope,
   planets, interior status, brackets, quiet count, stale/unavailable ladder,
   low-power freezing, and selection are identical whichever host supplies the
   agents. No host name, badge, color, or explanatory copy is added: the
   presentation never tells the user which runtime is behind it.
 - **Controls follow capability.** Herdr keeps `o`/`O` focus and `r`/`R` rename.
+  Rex keeps focus only; its table/stage never offers rename or an editor.
+  Rex displays one planet per current declared status record, including child
+  records; only the record's optional reported title supplies Name/field labels,
+  the effective application supplies Agent, and Activity is blank. Generic
+  block labels, terminal titles and status messages do not appear. The existing
+  Unknown treatment handles Rex `error` and unknown states. No screen parsing,
+  host badge or new visual style is introduced. See
+  [`SPEC.md`](SPEC.md#rex-agent-host) and [`rex-host.md`](rex-host.md).
+  Rex API/state/focus checks passed on a disposable live session; real-agent
+  status emission and visual quality inside Rex remain unchecked.
   For herdr-core those controls do not exist: the Agent table footer omits
   `O open pane`, the stage footer omits any focus or rename hint, the keys do
   nothing, no rename editor opens, and no "unsupported" notice appears. The

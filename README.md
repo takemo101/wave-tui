@@ -57,7 +57,8 @@ Project site: [takemo101.github.io/wave-tui](https://takemo101.github.io/wave-tu
   Planets](#herdr-agent-planets-optional)). The same stage can instead observe
   [herdr-core](https://github.com/herdrdev/herdr-core) terminals, read-only,
   when you launch it explicitly for that (see [Using herdr-core instead of
-  Herdr](#using-herdr-core-instead-of-herdr)).
+  Herdr](#using-herdr-core-instead-of-herdr)), or declared program statuses
+  from a local Rex session with pane focus (see [Using Rex](#using-rex)).
 - **Six themes** — `Minimal` (calm default), `Neon`, `CRT`, `Solarized`,
   `Midnight`, and `Sakura`. Each carries a distinct palette tuned to stay
   readable on a dark terminal during long work sessions.
@@ -163,7 +164,7 @@ search controls act on the focused pane.
 | `t`         | cycle theme                  |
 | `v`         | cycle visualizer mode        |
 | `z`         | toggle Signal View           |
-| `a`         | toggle the Agent Planets stage (Herdr plugin or herdr-core launches only) |
+| `a`         | toggle the Agent Planets stage (eligible Herdr, herdr-core, or Rex launches) |
 | `/`         | search Radio Browser         |
 | `Esc`       | clear search / return        |
 | `q` / `Esc` | quit when not searching      |
@@ -477,17 +478,16 @@ of Herdr. herdr-core is independent of Herdr and its plugin. The path is
 implemented, but no check against a live `hc` runtime has been performed.
 
 A run uses at most one host, chosen once at startup with
-`--agent-host auto|herdr|herdr-core|off` (default `auto`; per run, never
+`--agent-host auto|herdr|herdr-core|rex|off` (default `auto`; per run, never
 persisted):
 
-- `auto` uses Herdr when the plugin environment above is eligible; only
-  otherwise does it consider herdr-core.
-- `herdr` and `herdr-core` consider only that host and never fall back to the
-  other, not even after a later connection failure. If the chosen host is not
+- `auto` tries Herdr, then herdr-core, then Rex, taking the first eligible host.
+- `herdr`, `herdr-core`, and `rex` consider only that host and never fall back to
+  another, not even after a later connection failure. If the chosen host is not
   eligible, `wave-tui` looks exactly like a standalone launch.
 - `off` and the legacy `--no-agent-pulse` disable the integration entirely.
   `--no-agent-pulse` wins over `--agent-host` in either argument order, and
-  neither host's environment is read.
+  no host's environment is read.
 
 herdr-core is eligible when `HC_SOCKET` is set and nonblank, or when
 `HC_TERMINAL_ID` is set and nonblank and a socket resolves. The socket is the
@@ -540,6 +540,30 @@ shows as the usual reconnecting/unavailable state without affecting playback.
 Herdr's own polling keeps its original per-read and per-write 3-second socket
 timeouts.
 
+### Using Rex
+
+Run the rebuilt player inside a **local Rex terminal**:
+
+```bash
+wave-tui --agent-host rex --no-auto-play
+# From this checkout:
+cargo run --bin wave-tui -- --agent-host rex --no-auto-play
+```
+
+The host uses Rex's injected `REX_SERVER` (a local Unix endpoint) and
+`REX_SESSION`, plus `rex` on PATH or the CLI bundled in the standard Mac
+application. It observes only that session, never starts a server, and never
+reads terminal screens or sends input. Each declared OSC 7501 status record
+with an application becomes a planet, including child records; agents that
+do not report status will not appear. `o`/`O` focuses the selected record's
+pane; rename is not offered. The optional reported record title is Name,
+Agent is the declared/inherited application, and Activity stays blank.
+
+A disposable-session live check verified the five status mappings and actual
+pane focus on Rex API revision 11. Actual agent status emission and visual
+quality inside Rex remain manual checks. See the [Rex host guide](docs/rex-host.md)
+for requirements, limitations, timing, troubleshooting and verification details.
+
 ## Command-line options
 
 ```text
@@ -553,7 +577,7 @@ OPTIONS:
     --audio-output-device <name>  CPAL output device name
     --low-power                   Lower UI update cadence (audio unaffected)
     --agent-host <host>           Agent Planets host for this run: auto | herdr |
-                                  herdr-core | off (default auto; an explicit
+                                  herdr-core | rex | off (default auto; an explicit
                                   host never falls back; never persisted)
     --no-agent-pulse              Disable every Agent Planets host for this run,
                                   whatever --agent-host says (never persisted)

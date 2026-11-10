@@ -10,6 +10,7 @@ pub mod herdr;
 pub(crate) mod herdr_core;
 pub mod layout;
 pub mod model;
+pub(crate) mod rex;
 pub mod runtime;
 pub mod search;
 pub mod settings;

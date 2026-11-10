@@ -179,12 +179,12 @@ the default `auto` selects Herdr first.
 Host selection is per run and never persisted:
 
 ```bash
-wave-tui --agent-host auto|herdr|herdr-core|off
+wave-tui --agent-host auto|herdr|herdr-core|rex|off
 ```
 
-- `auto` (default) tries Herdr first, then herdr-core.
-- `herdr` or `herdr-core` considers only that host and never falls back to the
-  other, including after a later connection failure.
+- `auto` (default) tries Herdr first, then herdr-core, then Rex.
+- `herdr`, `herdr-core`, or `rex` considers only that host and never falls back
+  to another, including after a later connection failure.
 - `off` and the legacy `--no-agent-pulse` disable the integration; the legacy
   flag overrides `--agent-host` in either argument order.
 
@@ -207,6 +207,17 @@ Eligibility, endpoint priority, membership rules, and timing are in the
 [`SPEC.md`](SPEC.md#herdr-core-agent-host), with source evidence in
 [`herdr-core-research.md`](herdr-core-research.md). No check against a live
 `hc` runtime has been performed.
+
+## Rex host (alternative)
+
+Rex does not require this plugin. Run `wave-tui --agent-host rex --no-auto-play`
+inside a local Rex terminal to observe that one session's declared OSC 7501
+records. Pane focus is supported; rename is not. Rex must supply
+`REX_SERVER`/`REX_SESSION` and a usable CLI; no daemon is started. Agents that
+do not emit status do not appear. The Herdr plugin's default launch still
+chooses Herdr first and is unchanged. See the [Rex host guide](rex-host.md)
+and [specification](SPEC.md#rex-agent-host) for the full contract and live
+verification limits.
 
 ## Troubleshooting
 

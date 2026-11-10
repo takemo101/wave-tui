@@ -3,8 +3,7 @@
 //!
 //! The runtime, event loop, and input effects speak only this module's
 //! [`AgentHostContext`] and [`AgentHostMonitor`]. A run has at most one host:
-//! the Herdr plugin monitor (focus and rename) or the read-only herdr-core
-//! monitor. There is no host registry, no trait object, and no multi-host
+//! Herdr (focus and rename), herdr-core (observation only), or Rex (focus). There is no host registry, no trait object, and no multi-host
 //! aggregation; a host is one more variant here, never a framework.
 //!
 //! What the facade guarantees:
@@ -12,7 +11,7 @@
 //! - **One host, chosen once.** [`AgentHostContext::from_env`] applies the
 //!   `--agent-host` selection and the legacy `--no-agent-pulse` disable. A
 //!   disabled or `off` launch resolves no eligibility at all; `auto` tries
-//!   Herdr and only then herdr-core; an explicit host resolves only its own
+//!   Herdr, then herdr-core, then Rex; an explicit host resolves only its own
 //!   adapter and never falls back. The choice is never revisited, so a host
 //!   that later fails does not switch the run to the other.
 //! - **Typed surface.** Snapshots, focus results, and rename results arrive on
@@ -37,6 +36,7 @@ use crate::model::agent::{
     AgentCapabilities, AgentHostSelection, AgentId, FocusResult, MonitorEvent, RenameCompletion,
     RenameRequest,
 };
+use crate::rex::{self, RexContext, RexMonitor};
 
 /// Eligibility of an Agent Planets host for this launch, with the host's
 /// startup context. Absent for standalone, ineligible, `off`, and
@@ -46,6 +46,7 @@ use crate::model::agent::{
 pub(crate) enum AgentHostContext {
     Herdr(HerdrContext),
     Core(HerdrCoreContext),
+    Rex(RexContext),
 }
 
 impl AgentHostContext {
@@ -58,6 +59,7 @@ impl AgentHostContext {
             selection,
             || herdr::context_from_env(false),
             herdr_core::context_from_env,
+            rex::context_from_env,
         )
     }
 
@@ -66,6 +68,7 @@ impl AgentHostContext {
         match self {
             Self::Herdr(_) => AgentCapabilities::HERDR,
             Self::Core(_) => AgentCapabilities::READ_ONLY,
+            Self::Rex(_) => AgentCapabilities::REX,
         }
     }
 
@@ -75,6 +78,13 @@ impl AgentHostContext {
         let backend = match self {
             Self::Herdr(context) => Backend::Herdr(herdr::spawn_monitor(context)),
             Self::Core(context) => Backend::Core(CoreHost::new(herdr_core::spawn_monitor(context))),
+            Self::Rex(context) => {
+                let (_, rename_events) = mpsc::channel();
+                Backend::Rex(RexHost {
+                    monitor: rex::spawn_monitor(context),
+                    rename_events,
+                })
+            }
         };
         AgentHostMonitor {
             capabilities,
@@ -86,13 +96,14 @@ impl AgentHostContext {
 /// Pure host selection with injected eligibility resolvers, so the whole
 /// matrix is testable without touching the process environment. Each resolver
 /// runs at most once and only when its host can still be chosen: a disabled or
-/// `off` launch resolves neither, `auto` resolves herdr-core only when Herdr
-/// was absent or ineligible, and an explicit host resolves only itself.
+/// `off` launch resolves none; `auto` tries Herdr, core, then Rex lazily;
+/// an explicit host resolves only itself.
 fn select(
     disabled: bool,
     selection: AgentHostSelection,
     herdr_context: impl FnOnce() -> Option<HerdrContext>,
     core_context: impl FnOnce() -> Option<HerdrCoreContext>,
+    rex_context: impl FnOnce() -> Option<RexContext>,
 ) -> Option<AgentHostContext> {
     if disabled {
         return None;
@@ -101,9 +112,11 @@ fn select(
         AgentHostSelection::Off => None,
         AgentHostSelection::Herdr => herdr_context().map(AgentHostContext::Herdr),
         AgentHostSelection::HerdrCore => core_context().map(AgentHostContext::Core),
+        AgentHostSelection::Rex => rex_context().map(AgentHostContext::Rex),
         AgentHostSelection::Auto => herdr_context()
             .map(AgentHostContext::Herdr)
-            .or_else(|| core_context().map(AgentHostContext::Core)),
+            .or_else(|| core_context().map(AgentHostContext::Core))
+            .or_else(|| rex_context().map(AgentHostContext::Rex)),
     }
 }
 
@@ -128,9 +141,15 @@ impl CoreHost {
     }
 }
 
+struct RexHost {
+    monitor: RexMonitor,
+    rename_events: Receiver<RenameCompletion>,
+}
+
 enum Backend {
     Herdr(HerdrMonitor),
     Core(CoreHost),
+    Rex(RexHost),
     #[cfg(test)]
     Synthetic(synthetic::Backend),
 }
@@ -153,6 +172,7 @@ impl AgentHostMonitor {
         match &self.backend {
             Backend::Herdr(monitor) => monitor.events(),
             Backend::Core(core) => core.monitor.events(),
+            Backend::Rex(rex) => rex.monitor.events(),
             #[cfg(test)]
             Backend::Synthetic(synthetic) => &synthetic.events,
         }
@@ -163,6 +183,7 @@ impl AgentHostMonitor {
         match &self.backend {
             Backend::Herdr(monitor) => monitor.focus_events(),
             Backend::Core(core) => &core.focus_events,
+            Backend::Rex(rex) => rex.monitor.focus_events(),
             #[cfg(test)]
             Backend::Synthetic(synthetic) => &synthetic.focus_events,
         }
@@ -174,6 +195,7 @@ impl AgentHostMonitor {
         match &self.backend {
             Backend::Herdr(monitor) => monitor.rename_events(),
             Backend::Core(core) => &core.rename_events,
+            Backend::Rex(rex) => &rex.rename_events,
             #[cfg(test)]
             Backend::Synthetic(synthetic) => &synthetic.rename_events,
         }
@@ -191,6 +213,7 @@ impl AgentHostMonitor {
             // Unreachable while the core descriptor is READ_ONLY; if it ever
             // advertised focus, silence still beats a misleading result.
             Backend::Core(_) => {}
+            Backend::Rex(rex) => rex.monitor.focus_agent(id),
             #[cfg(test)]
             Backend::Synthetic(synthetic) => synthetic.record_focus(),
         }
@@ -208,7 +231,7 @@ impl AgentHostMonitor {
         }
         match &self.backend {
             Backend::Herdr(monitor) => monitor.rename_agent(request),
-            Backend::Core(_) => false,
+            Backend::Core(_) | Backend::Rex(_) => false,
             #[cfg(test)]
             Backend::Synthetic(synthetic) => synthetic.record_rename(request),
         }
@@ -219,6 +242,7 @@ impl AgentHostMonitor {
         match self.backend {
             Backend::Herdr(monitor) => monitor.stop(),
             Backend::Core(core) => core.monitor.stop(),
+            Backend::Rex(rex) => rex.monitor.stop(),
             #[cfg(test)]
             Backend::Synthetic(_) => {}
         }
@@ -365,10 +389,11 @@ mod tests {
         }
     }
 
-    const ALL_SELECTIONS: [AgentHostSelection; 4] = [
+    const ALL_SELECTIONS: [AgentHostSelection; 5] = [
         AgentHostSelection::Auto,
         AgentHostSelection::Herdr,
         AgentHostSelection::HerdrCore,
+        AgentHostSelection::Rex,
         AgentHostSelection::Off,
     ];
 
@@ -405,6 +430,7 @@ mod tests {
                 core_calls.set(core_calls.get() + 1);
                 core_eligible.then(core_context)
             },
+            || None,
         );
         (chosen, herdr_calls.get(), core_calls.get())
     }
@@ -415,6 +441,99 @@ mod tests {
 
     fn core_host() -> Option<AgentHostContext> {
         Some(AgentHostContext::Core(core_context()))
+    }
+
+    fn rex_context() -> RexContext {
+        RexContext::test_context()
+    }
+
+    #[test]
+    fn three_host_matrix_is_lazy_and_explicit_hosts_never_fall_back() {
+        for disabled in [false, true] {
+            for selection in ALL_SELECTIONS {
+                for h in [false, true] {
+                    for c in [false, true] {
+                        for r in [false, true] {
+                            let calls = [Cell::new(0), Cell::new(0), Cell::new(0)];
+                            let chosen = select(
+                                disabled,
+                                selection,
+                                || {
+                                    calls[0].set(1);
+                                    h.then(herdr_context)
+                                },
+                                || {
+                                    calls[1].set(1);
+                                    c.then(core_context)
+                                },
+                                || {
+                                    calls[2].set(1);
+                                    r.then(rex_context)
+                                },
+                            );
+                            let (expected, expected_calls) = if disabled
+                                || selection == AgentHostSelection::Off
+                            {
+                                (None, [0, 0, 0])
+                            } else {
+                                match selection {
+                                    AgentHostSelection::Auto if h => (herdr_host(), [1, 0, 0]),
+                                    AgentHostSelection::Auto if c => (core_host(), [1, 1, 0]),
+                                    AgentHostSelection::Auto => {
+                                        (r.then(|| AgentHostContext::Rex(rex_context())), [1, 1, 1])
+                                    }
+                                    AgentHostSelection::Herdr => (
+                                        h.then(|| AgentHostContext::Herdr(herdr_context())),
+                                        [1, 0, 0],
+                                    ),
+                                    AgentHostSelection::HerdrCore => (
+                                        c.then(|| AgentHostContext::Core(core_context())),
+                                        [0, 1, 0],
+                                    ),
+                                    AgentHostSelection::Rex => {
+                                        (r.then(|| AgentHostContext::Rex(rex_context())), [0, 0, 1])
+                                    }
+                                    AgentHostSelection::Off => unreachable!(),
+                                }
+                            };
+                            assert_eq!(chosen, expected);
+                            assert_eq!(calls.map(|c| c.get()), expected_calls);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rex_facade_exposes_focus_but_never_rename() {
+        let context = AgentHostContext::Rex(rex_context());
+        assert_eq!(context.capabilities(), AgentCapabilities::REX);
+        assert!(context.capabilities().focus);
+        assert!(!context.capabilities().rename);
+        let monitor = context.spawn_monitor();
+        assert_eq!(
+            monitor
+                .events()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            MonitorEvent::Failed
+        );
+        monitor.focus_agent(AgentId::core("wrong-host"));
+        assert_eq!(
+            monitor
+                .focus_events()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            FocusResult::Missing
+        );
+        assert!(!monitor.rename_agent(RenameRequest {
+            request: RenameRequestId::FIRST,
+            target: AgentId::rex("session:test", "block:test", ""),
+            name: Some("unused".into())
+        }));
+        assert!(monitor.rename_events().try_recv().is_err());
+        monitor.stop();
     }
 
     #[test]

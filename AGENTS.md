@@ -54,7 +54,7 @@ Stay inside the MVP unless the user explicitly expands scope:
   details modal, interior-only surface status, static sun with Working-only
   invisible orbits, and selection focus brackets — as recorded in
   `docs/ui-design-decisions.md` and `docs/SPEC.md`). One run has at most one
-  host, chosen by `--agent-host auto|herdr|herdr-core|off` (legacy
+  host, chosen by `--agent-host auto|herdr|herdr-core|rex|off` (legacy
   `--no-agent-pulse` always wins; per run, never persisted):
   - the Herdr host, when launched as the official Herdr plugin, observes
     approved agent details via `agent.list` on the plugin's local Herdr socket
@@ -64,9 +64,12 @@ Stay inside the MVP unless the user explicitly expands scope:
   - the read-only herdr-core host (`herdr_core` adapter), for an explicit or
     qualified core launch, only polls `terminal.list {}`; focus and rename do
     not exist for it. Keep changes to it inside the contract in
-    `docs/SPEC.md` (herdr-core Agent Host).
+    `docs/SPEC.md` (herdr-core Agent Host);
+  - the local Rex host observes declared status records and supports explicit
+    pane focus, not rename. Read `docs/rex-host.md` and the Rex Agent Host
+    section of `docs/SPEC.md` before changing it.
 
-  Neither host is a daemon, remote control service, or an internal plugin
+  No host is a daemon, remote control service, or an internal plugin
   system. No check against a live Herdr or `hc` runtime has been performed.
 
 Do not add these in MVP without an explicit design update:
@@ -112,12 +115,13 @@ Expected responsibility boundaries:
   `terminal.list {}` monitor thread, and admission/membership rules; the only
   module that sees core JSON or addresses as wire strings. It exposes only a
   typed event receiver, `stop`, and join-on-drop — no control channel.
+- `rex`: local Rex eligibility, bounded CLI/Lua status polling and explicit
+  pane focus; transport/lifecycle rules live in `docs/rex-host.md`.
 - `agent_host`: the concrete facade `runtime` uses instead of `HerdrMonitor`
-  or the core monitor (`AgentHostContext` / `AgentHostMonitor`, a Herdr and a
-  core variant). Its pure `select` function applies `--agent-host` and the
+  or another adapter monitor (`AgentHostContext` / `AgentHostMonitor`, with
+  Herdr, core and Rex variants). Its pure `select` function applies `--agent-host` and the
   legacy `--no-agent-pulse` disable over injected eligibility resolvers
-  (core is resolved only after Herdr is absent or ineligible; an explicit host
-  never falls back). It forwards typed events, focus results, and rename
+  (auto tries Herdr, then core, then Rex; an explicit host never falls back). It forwards typed events, focus results, and rename
   results, drops requests the host's `model::agent::AgentCapabilities` do not
   allow, and owns stop/join. Not a trait registry or plugin layer.
 - `theme`: theme names and palette definitions.

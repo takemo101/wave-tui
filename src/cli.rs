@@ -33,7 +33,7 @@ OPTIONS:
     --audio-output-device <name>  CPAL output device name
     --low-power                   Lower UI update cadence (audio unaffected)
     --agent-host <host>           Agent Planets host for this run: auto | herdr |
-                                  herdr-core | off (default auto; an explicit
+                                  herdr-core | rex | off (default auto; an explicit
                                   host never falls back; never persisted)
     --no-agent-pulse              Disable every Agent Planets host for this run,
                                   whatever --agent-host says (never persisted)
@@ -110,7 +110,7 @@ impl std::fmt::Display for CliError {
                 write!(
                     f,
                     "invalid --agent-host {raw:?} \
-                     (expected auto, herdr, herdr-core, or off)"
+                     (expected auto, herdr, herdr-core, rex, or off)"
                 )
             }
         }
@@ -487,6 +487,7 @@ mod tests {
             ("auto", AgentHostSelection::Auto),
             ("herdr", AgentHostSelection::Herdr),
             ("herdr-core", AgentHostSelection::HerdrCore),
+            ("rex", AgentHostSelection::Rex),
             ("off", AgentHostSelection::Off),
         ];
         for (raw, expected) in cases {
@@ -501,7 +502,7 @@ mod tests {
         let err = parse(&["--agent-host", "core"]).unwrap_err();
         assert_eq!(err, CliError::InvalidAgentHost("core".to_string()));
         let message = err.to_string();
-        for value in ["auto", "herdr", "herdr-core", "off"] {
+        for value in ["auto", "herdr", "herdr-core", "rex", "off"] {
             assert!(
                 message.contains(value),
                 "{message:?} should mention {value}"
@@ -549,7 +550,7 @@ mod tests {
     #[test]
     fn usage_documents_agent_host_values_and_legacy_precedence() {
         assert!(USAGE.contains("--agent-host <host>"));
-        for value in ["auto", "herdr", "herdr-core", "off"] {
+        for value in ["auto", "herdr", "herdr-core", "rex", "off"] {
             assert!(USAGE.contains(value), "help must list {value}");
         }
         assert!(USAGE.contains("--agent-host says"));

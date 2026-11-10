@@ -39,7 +39,8 @@ correlation types (`RenameRequestId`, `RenameRequest`, `RenameCompletion`);
 `app`, `ui`,
 and `runtime` import them from there, and `herdr` translates its wire format
 into them (re-exporting the public ones for source compatibility). `AgentId`
-is opaque with a private Herdr(workspace, pane) / core(address) representation
+is opaque with a private Herdr(workspace, pane) / core(address) /
+Rex(session, block, record) representation
 and no fabricated workspace; only `herdr` reads its transport pane target, which
 a source-scan test enforces. The Herdr identity hashes the exact legacy
 workspace-then-pane sequence and keeps its legacy `Debug` text, so planet
@@ -47,19 +48,21 @@ seeds and the UI characterization digests are unchanged. The stale-connection
 window is app lifecycle policy (`app::agent_pulse::STALE_AFTER`), not a Herdr
 transport constant.
 
-**Dual-host Agent Planets.** One run observes either Herdr or herdr-core
+**Multi-host Agent Planets.** One run observes Herdr, herdr-core or Rex
 (behavior in
 [`SPEC.md`](SPEC.md#herdr-core-agent-host)).
 The boundaries below are implemented: `model::agent` (including
 `AgentCapabilities` and the `AgentHostSelection` CLI value), `herdr`,
-`herdr_core`, the concrete `agent_host` facade, and selection in `runtime`.
-No live-runtime verification has been performed (see `SPEC.md`).
+`herdr_core`, `rex`, the concrete `agent_host` facade, and selection in `runtime`.
+Rex API/state/focus checks passed on a disposable session; Herdr/core live
+checks and Rex visual quality remain unverified (see `SPEC.md`).
 
 | Module | Responsibility | Hide from others |
 | --- | --- | --- |
 | `model::agent` | shared agent vocabulary: opaque identity, status, display fields, host capabilities, the `--agent-host` selection value | which host produced a value |
 | `herdr` | Herdr eligibility, socket protocol, `agent.list`, `agent.focus`/`agent.rename` | Herdr JSON and opaque pane ids |
 | `herdr_core` | core eligibility, `terminal.list {}` polling, admission and membership rules | core JSON, addresses as wire strings, `status`/`state` raw values |
+| `rex` | local session eligibility, bounded CLI/Lua polling of declared status records and explicit focus | Rex executable/arguments, Lua, JSON, raw session/block/record ids |
 | `agent_host` | concrete facade that holds the one selected host and exposes monitor events plus capability-gated requests | which adapter is behind it |
 | `cli` | parses `--agent-host` and `--no-agent-pulse` into typed `CliArgs` fields; never selects or constructs a host | adapters, environment, monitor lifecycle |
 | `runtime` | passes the parsed disable flag and selection to the facade and owns the monitor lifecycle | — |
@@ -67,11 +70,11 @@ No live-runtime verification has been performed (see `SPEC.md`).
 Rules:
 
 - `agent_host` is a concrete type or enum, not a trait-object plugin layer; the
-  two hosts are the only hosts. `AgentHostContext` has a Herdr and a core
-  variant; its one pure `select` function applies the legacy disable, `off`,
+  three hosts are the only hosts. `AgentHostContext` has Herdr, core and Rex
+  variants; its one pure `select` function applies the legacy disable, `off`,
   explicit-host, and `auto` rules over injected eligibility resolvers (core is
-  resolved only after Herdr was absent or ineligible; an explicit host never
-  falls back), and `from_env` merely wires the real resolvers in. That keeps
+  resolved only after Herdr was absent or ineligible, Rex only after both;
+  an explicit host never falls back), and `from_env` merely wires the real resolvers in. That keeps
   the whole matrix testable with no process-environment mutation.
   `AgentHostMonitor` forwards the typed events, focus results, and rename
   completions as three receivers. The core variant wraps the observation-only
@@ -80,23 +83,30 @@ Rules:
   a `#[cfg(test)]` synthetic backend remains for gating tests. `rename_agent`
   reports whether the host accepted the request (Herdr runs one rename worker,
   no queue), and the effect boundary settles a refusal itself. `runtime`
-  speaks the facade, never `HerdrMonitor` or the core monitor, and
+  speaks the facade, never an adapter monitor, and
   `--help`/`--version` return before any selection runs.
 - Capabilities (`AgentCapabilities`) are gated at the reducer
   (`app::agent_pulse`) and at the runtime effect boundary (`runtime::input`),
   with the facade dropping unsupported requests as a last guard; the renderer
   only reads them to omit hints.
 - `app` and `ui` consume `model::agent` types and capabilities only and never
-  import `herdr` or `herdr_core`. Whether a control exists is a capability, not
+  import `herdr`, `herdr_core` or `rex`. Whether a control exists is a capability, not
   an `if host == ...` test in UI code.
-- `herdr` and `herdr_core` do not depend on each other; shared types move down
+- `herdr`, `herdr_core` and `rex` do not depend on each other; shared types move down
   into `model::agent`, not sideways.
 - The legacy Herdr identity hash sequence and agent ordering stay byte-for-byte
   unchanged; adding a host must not move an existing planet.
 - Boundary data is parsed once per adapter (`terminal.list` into admitted,
   typed agents) and never leaks core wire values past the adapter.
-- Default tests use fake sockets or pure payloads; no live `hc`, Herdr, audio
-  device, or terminal.
+- Rex keeps `context` (eligibility/CLI location), `command` (nonblocking,
+  bounded child lifecycle) and the fixed `observe.lua` private behind its
+  typed monitor. One worker serializes polls and focus; only Rex consumes its
+  transport target. No shell, screen scraping, daemon startup, or UI-side
+  host checks are introduced. Rex advertises focus only; its facade supplies
+  a never-written rename receiver.
+- Default tests use fake sockets, injected runners or pure payloads; no live
+  Rex, `hc`, Herdr, audio device, or terminal. Rex's opt-in ignored live test
+  requires an explicitly provisioned disposable session.
 
 Larger modules split by responsibility behind a narrow facade rather than
 growing: `audio::session` (playback-session lifecycle), `app::agent_pulse`

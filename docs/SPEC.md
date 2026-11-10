@@ -570,6 +570,7 @@ only when launched by that plugin — shows a **read-only Agent Pulse**: the
 live status of the AI coding agents visible on that Herdr session's local
 control socket, presented as ambient context beside radio playback. The same
 Agent Planets presentation can alternatively be fed by herdr-core (see below);
+Rex is another supported source (see [Rex Agent Host](#rex-agent-host));
 the statements in this section about plugin launch, `agent.list`, `agent.focus`,
 and `agent.rename` describe the Herdr host only. The canvas background is the Dual
 Phase Scope and the agent presentation is the Agent Planets stage — the
@@ -738,7 +739,8 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
   silent startup renders the live frame, Working orbit drift included,
   until audio becomes audible) while fresh agent snapshots may still
   update the per-status interior treatment and colors.
-- Only an explicit Herdr name may render in the stage field: as a single-line,
+- Only an explicit Herdr name (or another host's permitted Name field, as
+  specified in its mapping below) may render in the stage field: as a single-line,
   ellipsized label directly beneath its planet disc. Unnamed planets remain
   label-free. A label stays within its planet tile and is omitted when its
   candidate rectangle would collide with an earlier displayed label, the sun,
@@ -841,6 +843,72 @@ Connected→Stale edge, so later audio frames and elapsed time do not thaw it.
 - Nothing is persisted: agent state exists only in process memory, and
   `--no-agent-pulse` is never written to settings.
 
+### Rex Agent Host
+
+**Implemented; live API checks performed against Rex API revision 11.** The
+same Agent Planets stage can observe one local Rex session without a Herdr
+plugin. Operational instructions, pinned source evidence and live-test details
+are in [`rex-host.md`](rex-host.md).
+
+- `--agent-host rex` selects only Rex. `auto` keeps Herdr → herdr-core priority
+  and considers Rex last. Explicit hosts never fall back, including after
+  connection failure; disable/off resolve no host environment.
+- Eligibility requires nonblank `REX_SERVER` and `REX_SESSION`, a local
+  `unix:///...` server endpoint (no remote authority), and an executable Rex
+  CLI. Resolve `rex` from absolute PATH directories (ignore empty/relative
+  entries), then the standard `/Applications/Rex.app` or
+  `/Applications/Rex Beta.app` bundled CLI on macOS. No ambient default
+  server/session, socket scan, or daemon startup is allowed.
+- One worker runs a fixed Lua script via `rex do --json`, explicitly targeting
+  that server/session with `--autostart=false` and `--timeout 3s`. It calls
+  `session.list_blocks`, then `com.superlogical.terminal.program_status` on
+  placed terminal blocks only. It never subscribes, discovers other hosts,
+  reads screens/output/processes/cwd, or sends terminal input.
+- Each current status record with a nonblank `effective_app` is a planet.
+  Root and child records are distinct, privately identified by session,
+  block and record id; `effective_app` includes Rex's ancestor inheritance.
+  This includes non-AI programs that declare an app and excludes unreported
+  agents: there is no brand or foreground-process heuristic.
+- Agent is `effective_app`; Name is the optional status-record `title`
+  (a program-declared label, not a block/window title); Activity is blank.
+  No `msg`, owner/PID, progress, directories, raw ids or error text reaches
+  the app/UI. `working`, `blocked`, `done`, `idle` map directly; `error`,
+  missing and unknown states use Unknown. The existing stage, modal and
+  privacy rules otherwise apply unchanged.
+- Successful snapshots replace all membership. A cleared/omitted record or
+  blank app disappears; `done`/`error` may survive process exit under Rex's
+  protocol and stay until cleared/omitted. This is not process-exit detection.
+  A failed terminal call, malformed response, or transport failure is a failed
+  poll, never a partial/empty successful snapshot. Rex's Lua empty-table `{}`
+  encoding is accepted only for an empty entries collection.
+- Poll immediately, then wait five seconds after each completed attempt.
+  Each full CLI attempt has an additional three-second absolute deadline
+  spanning every RPC and an 8 MiB stdout cap. Nonzero exit, timeout, malformed
+  output, or missing/unsupported methods recover through the existing
+  stale/15-second-unavailable ladder without affecting playback. Stderr is
+  discarded; timed-out or cancelled children are killed and reaped.
+- `o`/`O` explicitly focuses the selected live record's block through
+  `session.focus_block`. Fixed Lua and JSON arguments prevent code/shell
+  interpolation. Poll and focus calls serialize on one owned worker; at
+  most one focus is outstanding, even while waiting behind a poll. Busy
+  presses are ignored, foreign-host/session ids never dispatch, failures
+  produce generic Unavailable (or Missing for a foreign target), and focus
+  does not change selection, the stage/table, or playback. Stop/drop cancels
+  the active command and joins the worker.
+- Rename is absent at the UI/reducer/effect/facade gates: a block label is
+  not a status-record name. `AgentCapabilities::REX` allows focus only.
+  Core remains read-only; Herdr retains both controls. No host information
+  is persisted and no new presentation theme or host badge is added.
+
+Live verification used an isolated session with five reported states and a
+second split: the Rust monitor normalized all five, and `session.view`
+confirmed explicit focus changed the selected block. A second isolated-HOME
+real-player terminal-text smoke check opened the stage/table with all five
+planets, confirmed focus-only hints, and moved focus via the `o` key. Only
+those disposable sessions were removed. Actual agent-specific OSC reporting,
+screenshot/resize visual quality inside Rex and real audio playback were not
+manually verified.
+
 ### herdr-core Agent Host
 
 > **IMPLEMENTED — LIVE CHECKS NOT PERFORMED.** The host-neutral `model::agent`
@@ -866,7 +934,7 @@ and nothing outside the one selected host is discovered.
 
 #### Host selection
 
-- A run has **at most one** agent host. `--agent-host auto|herdr|herdr-core|off`
+- A run has **at most one** agent host. `--agent-host auto|herdr|herdr-core|rex|off`
   selects it; the default is `auto`. Like `--no-agent-pulse`, it applies to
   this run only and is never persisted. The value is parsed once at the CLI
   boundary into `model::agent::AgentHostSelection`; matching is
@@ -876,14 +944,13 @@ and nothing outside the one selected host is discovered.
   host is selected, so they never read the environment or construct a monitor.
 - The legacy `--no-agent-pulse` always wins over `--agent-host`, whichever
   order they appear in, and disables the integration for the run. Together
-  with `--agent-host off` it resolves no eligibility at all: neither Herdr's
-  nor herdr-core's environment is consulted and nothing is spawned.
+  with `--agent-host off` it resolves no eligibility at all: no host's
+  environment is consulted and nothing is spawned.
 - `auto` tests Herdr eligibility first (unchanged — the four conditions in
-  *Eligibility* above), then herdr-core eligibility, and takes the first host
-  that is eligible. herdr-core eligibility is evaluated only when Herdr is
-  absent or ineligible, so an eligible Herdr environment always wins.
-- An explicit `herdr` or `herdr-core` considers only that host and **never falls
-  back** to the other. If it is ineligible the launch is the exact
+  *Eligibility* above), then herdr-core, then Rex, taking the first eligible
+  host. Later resolvers run only when earlier hosts are absent/ineligible.
+- An explicit `herdr`, `herdr-core`, or `rex` considers only that host and
+  **never falls back** to another. If it is ineligible the launch is the exact
   pre-integration appearance, as for any ineligible launch.
 - The choice is made once at startup. A host that later fails goes through the
   existing connection ladder and recovers or stays unavailable; the run never
@@ -987,11 +1054,11 @@ planet-seed mechanism.
 Each host declares what it supports; the UI offers only what the active host
 can perform.
 
-| Capability | Herdr | herdr-core |
-| --- | --- | --- |
-| Observe agents | yes | yes |
-| Focus selected pane (`o`/`O`, `agent.focus`) | yes, as above | **no** — released core has no focus method |
-| Rename explicit name (`r`/`R`, `agent.rename`) | yes, as above | **no** — released core has no rename method |
+| Capability | Herdr | herdr-core | Rex |
+| --- | --- | --- | --- |
+| Observe agents | yes | yes | declared status records |
+| Focus selected pane (`o`/`O`) | `agent.focus` | **no** — released core has no focus method | `session.focus_block` |
+| Rename explicit name (`r`/`R`) | `agent.rename` | **no** — released core has no rename method | **no** — block label is not a record name |
 
 For herdr-core the focus and rename controls are absent, not disabled: no
 footer or modal hint, no keystroke effect, no inline editor, and no
@@ -1035,8 +1102,8 @@ unsupported-version feedback.
 
 #### Module boundaries
 
-Shared agent vocabulary lives in `model::agent`; `herdr` and `herdr_core` are
-sibling adapters; an `agent_host` facade selects and runs the one host;
+Shared agent vocabulary lives in `model::agent`; `herdr`, `herdr_core` and
+`rex` are sibling adapters; an `agent_host` facade selects and runs the one host;
 `runtime` composes them; `app` and `ui` import no adapter. See
 `docs/implementation-guidelines.md`.
 

@@ -19,18 +19,20 @@ pub enum AgentHostSelection {
     Auto,
     Herdr,
     HerdrCore,
+    Rex,
     Off,
 }
 
 impl AgentHostSelection {
     /// Strict boundary parser for the `--agent-host` value. Accepts exactly
-    /// `auto`, `herdr`, `herdr-core`, and `off` (case-insensitive, trimmed);
+    /// `auto`, `herdr`, `herdr-core`, `rex`, and `off` (case-insensitive, trimmed);
     /// anything else is `None`.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "auto" => Some(Self::Auto),
             "herdr" => Some(Self::Herdr),
             "herdr-core" => Some(Self::HerdrCore),
+            "rex" => Some(Self::Rex),
             "off" => Some(Self::Off),
             _ => None,
         }
@@ -51,8 +53,8 @@ pub enum AgentStatus {
 /// The representation is private so no caller can display or leak raw host
 /// identifiers; identity is only compared, ordered, and hashed. A Herdr
 /// identity is the workspace-qualified pane served by the current control
-/// socket; a core identity is a single host-assigned address with no
-/// workspace. The two kinds never compare equal.
+/// socket; a core identity is a host address; a Rex identity is a session,
+/// block and status record. The host kinds never compare equal.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AgentId(Identity);
 
@@ -64,6 +66,11 @@ enum Identity {
     },
     Core {
         address: String,
+    },
+    Rex {
+        session: String,
+        block: String,
+        record: String,
     },
 }
 
@@ -88,6 +95,16 @@ impl Hash for AgentId {
                 CORE_HASH_TAG.hash(state);
                 address.hash(state);
             }
+            Identity::Rex {
+                session,
+                block,
+                record,
+            } => {
+                "rex".hash(state);
+                session.hash(state);
+                block.hash(state);
+                record.hash(state);
+            }
         }
     }
 }
@@ -109,6 +126,7 @@ impl std::fmt::Debug for AgentId {
             Identity::Core { address } => {
                 f.debug_struct("AgentId").field("address", address).finish()
             }
+            Identity::Rex { .. } => f.write_str("AgentId { rex: [opaque] }"),
         }
     }
 }
@@ -131,13 +149,30 @@ impl AgentId {
         })
     }
 
+    /// A Rex terminal's root or child status record. Wire ids stay opaque.
+    pub(crate) fn rex(session: &str, block: &str, record: &str) -> Self {
+        Self(Identity::Rex {
+            session: session.to_owned(),
+            block: block.to_owned(),
+            record: record.to_owned(),
+        })
+    }
+
+    /// Transport-only target; only the Rex adapter may consume it.
+    pub(crate) fn rex_pane_target(&self) -> Option<(&str, &str)> {
+        match &self.0 {
+            Identity::Rex { session, block, .. } => Some((session, block)),
+            _ => None,
+        }
+    }
+
     /// Transport-only pane target for an explicit Herdr request. The opaque
     /// value must never be displayed; only `crate::herdr` may call this
     /// (enforced by a source-scan test). Core identities have no pane target.
     pub(crate) fn herdr_pane_target(&self) -> Option<&str> {
         match &self.0 {
             Identity::Herdr { pane_id, .. } => Some(pane_id),
-            Identity::Core { .. } => None,
+            Identity::Core { .. } | Identity::Rex { .. } => None,
         }
     }
 }
@@ -239,6 +274,12 @@ impl AgentCapabilities {
     pub(crate) const HERDR: Self = Self {
         focus: true,
         rename: true,
+    };
+
+    /// Rex supports explicit pane focus; status-record rename is not offered.
+    pub(crate) const REX: Self = Self {
+        focus: true,
+        rename: false,
     };
 
     /// An observe-only host (herdr-core): neither request exists, so the
@@ -378,13 +419,26 @@ mod tests {
     }
 
     #[test]
+    fn rex_identity_is_qualified_opaque_and_distinct_from_other_hosts() {
+        let id = AgentId::rex("session", "block", "record");
+        assert_eq!(id.rex_pane_target(), Some(("session", "block")));
+        assert_eq!(id.herdr_pane_target(), None);
+        assert_ne!(id, AgentId::rex("other-session", "block", "record"));
+        assert_ne!(id, AgentId::rex("session", "other-block", "record"));
+        assert_ne!(id, AgentId::rex("session", "block", ""));
+        assert_ne!(id, AgentId::core("record"));
+        assert_ne!(id, AgentId::herdr("session", "block"));
+        assert_eq!(format!("{id:?}"), "AgentId { rex: [opaque] }");
+    }
+
+    #[test]
     fn identity_debug_does_not_fabricate_a_workspace_for_core() {
         let rendered = format!("{:?}", AgentId::core("addr"));
         assert!(!rendered.contains("workspace"));
     }
 
     #[test]
-    fn only_the_herdr_adapter_reads_the_transport_pane_target() {
+    fn only_the_adapters_read_their_transport_pane_targets() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut stack = vec![src];
         let mut offenders = Vec::new();
@@ -399,18 +453,20 @@ mod tests {
                     continue;
                 }
                 let name = path.to_string_lossy();
-                if name.ends_with("src/herdr.rs") || name.ends_with("src/model/agent.rs") {
+                if name.ends_with("src/model/agent.rs") {
                     continue;
                 }
                 let text = std::fs::read_to_string(&path).expect("read source");
-                if text.contains("herdr_pane_target") {
+                if (text.contains("herdr_pane_target") && !name.ends_with("src/herdr.rs"))
+                    || (text.contains("rex_pane_target") && !name.ends_with("src/rex.rs"))
+                {
                     offenders.push(name.into_owned());
                 }
             }
         }
         assert!(
             offenders.is_empty(),
-            "raw pane targeting escaped the Herdr adapter: {offenders:?}"
+            "raw pane targeting escaped its adapter: {offenders:?}"
         );
     }
 
@@ -420,9 +476,22 @@ mod tests {
         let read_only = AgentCapabilities::READ_ONLY;
         assert_eq!((herdr.focus, herdr.rename), (true, true));
         assert_eq!((read_only.focus, read_only.rename), (false, false));
+        assert_eq!(
+            (AgentCapabilities::REX.focus, AgentCapabilities::REX.rename),
+            (true, false)
+        );
         assert_ne!(AgentCapabilities::HERDR, AgentCapabilities::READ_ONLY);
         let copied = AgentCapabilities::HERDR;
         assert_eq!(copied, AgentCapabilities::HERDR);
+    }
+
+    #[test]
+    fn agent_host_selection_accepts_rex_case_insensitively() {
+        assert!(AgentHostSelection::parse("rex").is_some());
+        assert_eq!(
+            AgentHostSelection::parse(" REX "),
+            AgentHostSelection::parse("rex")
+        );
     }
 
     #[test]
@@ -431,12 +500,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_host_selection_parses_exactly_the_four_documented_values() {
+    fn agent_host_selection_parses_exactly_the_five_documented_values() {
         let cases = [
             ("auto", AgentHostSelection::Auto),
             ("herdr", AgentHostSelection::Herdr),
             ("herdr-core", AgentHostSelection::HerdrCore),
             ("off", AgentHostSelection::Off),
+            ("rex", AgentHostSelection::Rex),
             (" Herdr-Core ", AgentHostSelection::HerdrCore),
         ];
         for (raw, expected) in cases {
